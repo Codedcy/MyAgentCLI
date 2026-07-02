@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import AsyncIterator
@@ -336,6 +337,16 @@ class AgentEngine:
         if not text:
             return None
         text_lower = text.lower().strip()
+
+        # Detect brief continue phrases (< 30 chars)
+        if len(text) < 30:
+            continue_phrases = [
+                "continue", "go on", "继续", "proceed", "resume",
+                "carry on", "keep going", "go ahead",
+            ]
+            if any(p in text_lower for p in continue_phrases):
+                return "continue"
+
         stop_phrases = [
             "i'll stop",
             "stopping now",
@@ -403,7 +414,26 @@ class AgentEngine:
                 subagent_pool=self.subagent_pool,
                 working_dir=self.project_dir,
             )
+
+            t0 = time.monotonic()
             result = await tool.execute(tc.params, ctx)
+            duration_ms = (time.monotonic() - t0) * 1000
+
+            # Log successful tool execution
+            params_str = str(tc.params)
+            params_summary = params_str[:200] if len(params_str) > 200 else params_str
+            logger.info(
+                "Tool '%s' succeeded: %.1fms, %d chars",
+                tc.name, duration_ms, len(result.output),
+                extra={
+                    "category": "tool",
+                    "tool_name": tc.name,
+                    "params_summary": params_summary,
+                    "permission_result": "allowed",
+                    "duration_ms": round(duration_ms, 1),
+                    "result_size_chars": len(result.output),
+                },
+            )
 
             # Summarize large results via sub-agent; fall back to truncation
             if len(result.output) > self.TOOL_RESULT_MAX_CHARS:
