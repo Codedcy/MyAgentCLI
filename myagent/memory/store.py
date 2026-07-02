@@ -94,7 +94,12 @@ class MemoryStore:
     async def delete(self, name: str) -> None:
         for d in (self.project_dir, self.user_dir):
             for f in d.glob("*.md"):
-                if f.stem == name:
+                if f.name == "MEMORY.md":
+                    continue
+                content = f.read_text(encoding="utf-8")
+                fm = self._parse_frontmatter(content)
+                fm_name = fm.get("name", "")
+                if f.stem == name or fm_name == name:
                     f.unlink()
                     self._session_log.deleted.append(name)
                     await self._update_index(d)

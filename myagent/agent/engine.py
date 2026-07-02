@@ -151,15 +151,15 @@ class AgentEngine:
                 tools=tools_list,
                 thinking=thinking_mode,
             ):
-                match event:
-                    case type() as e if hasattr(e, "content") and type(e).__name__ == "TextDelta":
-                        yield TextChunk(content=e.content)
-                    case type() as e if hasattr(e, "content") and type(e).__name__ == "ThinkingDelta":
-                        yield ThinkingChunk(content=e.content)
-                    case type() as e if type(e).__name__ == "ToolCall":
-                        tool_calls_in_turn.append(e)
-                    case type() as e if type(e).__name__ == "Done":
-                        has_done = True
+                event_type = type(event).__name__
+                if event_type == "TextDelta":
+                    yield TextChunk(content=getattr(event, "content", ""))
+                elif event_type == "ThinkingDelta":
+                    yield ThinkingChunk(content=getattr(event, "content", ""))
+                elif event_type == "ToolCall":
+                    tool_calls_in_turn.append(event)
+                elif event_type == "Done":
+                    has_done = True
 
             # Execute tool calls
             for tc in tool_calls_in_turn:
