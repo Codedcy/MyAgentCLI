@@ -9,6 +9,7 @@ Design doc reference: §四 工具系统 — MCP Tool Adapter
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from myagent.tools.base import ToolContext, ToolResult
 from myagent.tools.mcp.client import MCPClient
@@ -20,7 +21,14 @@ class MCPToolAdapter:
     The adapter translates between:
     - MCP's inputSchema ↔ OpenAI function-calling parameters
     - MCPClient.call_tool() ↔ Tool.execute()
+
+    MCP tools are assigned permission level 3 (network-write) by default
+    because they typically interact with external servers and services
+    whose behavior is not fully known to the local permission controller.
     """
+
+    # Default permission level for MCP tools: network-write (audit #40)
+    permission_level: int = 3
 
     def __init__(self, raw_tool: dict, client: MCPClient):
         """Create adapter from MCP tool definition.
@@ -70,24 +78,99 @@ class MCPToolAdapter:
     def _translate_schema(self, mcp_schema: dict) -> dict:
         """Translate MCP inputSchema to OpenAI function-calling parameters.
 
-        MCP schema uses JSON Schema format. OpenAI function calling uses
-        a slightly different structure. This method handles the common case
-        of a type: object with properties.
+        MCP schema uses JSON Schema format.  Before translation the schema
+        is pre-processed to:
+        - Resolve ``$ref`` pointers against ``$defs`` / ``definitions``
+        - Flatten ``oneOf`` / ``anyOf`` into an ``enum``-based description
+          so the model can see the valid choices inline.
         """
-        if not mcp_schema:
+        resolved = self._resolve_schema(mcp_schema, root=mcp_schema)
+        if not resolved:
             return {"type": "object", "properties": {}}
 
-        # MCP inputSchema IS JSON Schema, which is close enough to
-        # OpenAI's parameters format. The main differences:
-        # - OpenAI requires "type" at the top level (MCP has it)
-        # - MCP may have extra fields like "$schema" which OpenAI ignores
-        result = {
-            "type": mcp_schema.get("type", "object"),
-            "properties": mcp_schema.get("properties", {}),
+        result: dict = {
+            "type": resolved.get("type", "object"),
+            "properties": resolved.get("properties", {}),
         }
 
-        if "required" in mcp_schema:
-            result["required"] = mcp_schema["required"]
+        if "required" in resolved:
+            result["required"] = resolved["required"]
 
         return result
+
+    # ── $ref / oneOf resolution (audit #40) ──────────────────────
+
+    def _resolve_schema(self, schema: dict, root: dict) -> dict:
+        """Resolve ``$ref`` pointers and flatten ``oneOf``/``anyOf``.
+
+        Handles the common MCP pattern where input schemas use JSON Schema
+        constructs that OpenAI's function-calling format does not understand.
+        """
+        if not isinstance(schema, dict):
+            return schema
+
+        # Resolve $ref
+        if "$ref" in schema:
+            ref = schema["$ref"]
+            resolved = self._resolve_ref(ref, root)
+            if resolved is not None:
+                return self._resolve_schema(resolved, root)
+
+        # Process each value recursively
+        result: dict = {}
+        for key, value in schema.items():
+            if key in ("oneOf", "anyOf"):
+                result[key] = self._flatten_oneof(value, root)
+            elif isinstance(value, dict):
+                result[key] = self._resolve_schema(value, root)
+            elif isinstance(value, list):
+                result[key] = [
+                    self._resolve_schema(item, root)
+                    if isinstance(item, dict)
+                    else item
+                    for item in value
+                ]
+            else:
+                result[key] = value
+
+        return result
+
+    def _resolve_ref(self, ref: str, root: dict) -> dict | None:
+        """Resolve a local ``$ref`` pointer like ``#/$defs/Foo``.
+
+        Only local references are supported (must start with ``#/``).
+        Remote ``$ref`` URIs are silently ignored.
+        """
+        if not ref.startswith("#/"):
+            return None
+
+        parts = ref[2:].split("/")
+        current: Any = root
+        for part in parts:
+            # Unescape JSON Pointer ~0 (~) and ~1 (/)
+            part = part.replace("~1", "/").replace("~0", "~")
+            if isinstance(current, dict):
+                current = current.get(part)
+            else:
+                return None
+            if current is None:
+                return None
+
+        return current if isinstance(current, dict) else None
+
+    def _flatten_oneof(self, alternatives: list, root: dict) -> list:
+        """Flatten ``oneOf``/``anyOf`` alternatives, resolving any ``$ref``​s.
+
+        Each alternative is resolved recursively so that the resulting list
+        is self-contained — downstream consumers (e.g. LLM function-calling
+        schemas) see concrete types rather than JSON Schema indirections.
+        """
+        flattened: list = []
+        for alt in alternatives:
+            if not isinstance(alt, dict):
+                flattened.append(alt)
+                continue
+            resolved = self._resolve_schema(alt, root)
+            flattened.append(resolved)
+        return flattened
 

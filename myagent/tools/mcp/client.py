@@ -51,6 +51,7 @@ class MCPClient:
         self._request_id = 0
         self._pending: dict[int, asyncio.Future] = {}
         self._reader_task: asyncio.Task | None = None
+        self._stderr_task: asyncio.Task | None = None
         self._started = False
 
     # ── public API ─────────────────────────────────────────────
@@ -73,6 +74,9 @@ class MCPClient:
 
         # Start reader loop
         self._reader_task = asyncio.create_task(self._reader_loop())
+
+        # Start stderr drainer to prevent pipe buffer deadlock (audit #39)
+        self._stderr_task = asyncio.create_task(self._drain_stderr())
 
         # Initialize handshake
         init_result = await self._send_request("initialize", {
@@ -122,6 +126,13 @@ class MCPClient:
             self._reader_task.cancel()
             try:
                 await self._reader_task
+            except asyncio.CancelledError:
+                pass
+
+        if self._stderr_task:
+            self._stderr_task.cancel()
+            try:
+                await self._stderr_task
             except asyncio.CancelledError:
                 pass
 
@@ -193,6 +204,33 @@ class MCPClient:
         )
         self._process.stdin.write(message.encode("utf-8"))
         await self._process.stdin.drain()
+
+    async def _drain_stderr(self) -> None:
+        """Read stderr line-by-line to prevent pipe buffer deadlock.
+
+        If the subprocess writes enough to stderr to fill the OS pipe buffer
+        (typically 64 KiB on Linux), it will block on the next write and never
+        make progress.  This background task keeps the pipe drained by reading
+        every line and logging it at DEBUG level (audit #39).
+        """
+        if not self._process or self._process.stderr is None:
+            return
+        try:
+            while True:
+                line = await self._process.stderr.readline()
+                if not line:
+                    break
+                logger.debug(
+                    "MCP stderr [%s]: %s",
+                    self.command,
+                    line.decode("utf-8", errors="replace").rstrip(),
+                )
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.debug(
+                "MCP stderr drainer stopped for %s", self.command, exc_info=True
+            )
 
     async def _reader_loop(self) -> None:
         """Read JSON-RPC messages from subprocess stdout."""
