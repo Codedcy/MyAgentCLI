@@ -49,13 +49,11 @@ class REPLEngine:
         self._console.print(f"Project: [bold]{self._project_dir.name}[/bold]")
 
         try:
-            import pathlib
-
             from prompt_toolkit import PromptSession
             from prompt_toolkit.history import FileHistory
             from prompt_toolkit.key_binding import KeyBindings
 
-            history_file = pathlib.Path.home() / ".myagent" / ".history"
+            history_file = Path.home() / ".myagent" / ".history"
             history_file.parent.mkdir(parents=True, exist_ok=True)
 
             # Key bindings: Ctrl+C clears buffer, Ctrl+D on empty exits
@@ -91,7 +89,7 @@ class REPLEngine:
                 try:
                     user_input = input("myagent> ").strip()
                 except (EOFError, KeyboardInterrupt):
-                    self._console.print("\nGoodbye!") if self._console else print("\nGoodbye!")
+                    self._console.print() if self._console else print()
                     break
 
                 if not user_input:
@@ -131,9 +129,6 @@ class REPLEngine:
 
                 if not result.success:
                     return
-                # Check if the command was exit/quit
-                if text in ("/exit", "/quit"):
-                    self._running = False
                 return
 
             if self._console:

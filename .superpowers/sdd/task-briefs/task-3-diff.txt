@@ -1,0 +1,317 @@
+=== COMMITS ===
+89a24e1 fix(cli): wire CommandDispatcher, Renderer, StatusBar; fix --resume; enable multi-line REPL
+
+=== DIFF ===
+diff --git a/myagent/cli/main.py b/myagent/cli/main.py
+index d16032d..0d5e7cb 100644
+--- a/myagent/cli/main.py
++++ b/myagent/cli/main.py
+@@ -130,34 +130,65 @@ async def async_main(argv: list[str] | None = None) -> int:
+         print(f"Sessions for {project_dir.name}:")
+         for s in sessions:
+             print(f"  {s.session_id} — {s.first_message[:50]}...")
+         return 0
+ 
+     if args.session and args.export:
+         path = await session_mgr.export_session(args.session, args.export, project_dir)
+         print(f"Exported to: {path}")
+         return 0
+ 
++    # Wire CLI components
++    from myagent.cli.commands import CommandDispatcher
++    commands = CommandDispatcher()
++
++    from myagent.cli.renderer import Renderer
++    renderer = Renderer()
++
++    from myagent.cli.status import StatusBar
++    status_bar = StatusBar(config.ui) if config.ui.show_status_bar else None
++
+     # Start REPL
+     from myagent.cli.repl import REPLEngine
+-    repl = REPLEngine(engine=engine, commands=None, session_mgr=session_mgr, config=config, project_dir=project_dir)
++
++    if args.resume:
++        session_id = None if args.resume == "__latest__" else args.resume
++        session = await session_mgr.resume(session_id, project_dir)
++        if session:
++            repl = REPLEngine(
++                engine=engine, commands=commands, session_mgr=session_mgr,
++                config=config, project_dir=project_dir,
++                renderer=renderer, status_bar=status_bar,
++            )
++            repl._current_session = session
++            await repl.run()
++            return 0
++        else:
++            print("No session found to resume.")
++            return 1
++
++    repl = REPLEngine(
++        engine=engine, commands=commands, session_mgr=session_mgr,
++        config=config, project_dir=project_dir,
++        renderer=renderer, status_bar=status_bar,
++    )
+     await repl.run()
+     return 0
+ 
+ 
+ def _register_builtin_tools(registry) -> None:
++    from myagent.tools.builtin.agent_tools import SendMessageTool, SpawnSubagentTool
++    from myagent.tools.builtin.exec_tools import BashTool
+     from myagent.tools.builtin.file_tools import EditTool, GlobTool, ReadTool, WriteTool
++    from myagent.tools.builtin.memory_tools import MemoryWriteTool
+     from myagent.tools.builtin.search_tools import GrepTool
+-    from myagent.tools.builtin.exec_tools import BashTool
+-    from myagent.tools.builtin.agent_tools import SendMessageTool, SpawnSubagentTool
+     from myagent.tools.builtin.session_tools import TaskCreateTool, TaskUpdateTool
+-    from myagent.tools.builtin.memory_tools import MemoryWriteTool
+     from myagent.tools.builtin.web_tools import WebFetchTool, WebSearchTool
+ 
+     for tool_cls in [
+         ReadTool, WriteTool, EditTool, GlobTool,
+         GrepTool, BashTool,
+         SpawnSubagentTool, SendMessageTool,
+         TaskCreateTool, TaskUpdateTool,
+         MemoryWriteTool, WebFetchTool, WebSearchTool,
+     ]:
+         registry.register(tool_cls())
+diff --git a/myagent/cli/repl.py b/myagent/cli/repl.py
+index fcc63f7..2533c3b 100644
+--- a/myagent/cli/repl.py
++++ b/myagent/cli/repl.py
+@@ -1,122 +1,203 @@
+ """REPL engine — prompt_toolkit interactive loop."""
+ 
+ from __future__ import annotations
+ 
+-import asyncio
+ from pathlib import Path
+ 
+ 
+ class REPLEngine:
+     """Interactive REPL using prompt_toolkit."""
+ 
+     def __init__(
+         self,
+         engine=None,
+         commands=None,
+         session_mgr=None,
+         config=None,
+         project_dir: Path | None = None,
++        renderer=None,
++        status_bar=None,
+     ):
+         self._engine = engine
+         self._commands = commands
+         self._session_mgr = session_mgr
+         self._config = config
+         self._project_dir = project_dir or Path.cwd()
++        self._renderer = renderer
++        self._status_bar = status_bar
+         self._running = False
+         self._current_session = None
++        self._console = None
+ 
+     async def run(self) -> None:
+         """Start the REPL loop."""
+         self._running = True
+ 
++        # Initialize Rich console for renderer output
++        from rich.console import Console
++        self._console = Console()
++
+         # Start session
+-        if self._session_mgr:
++        if self._session_mgr and self._current_session is None:
+             self._current_session = await self._session_mgr.start_new(self._project_dir)
+ 
+-        print("MyAgentCLI — Type /help for commands, Ctrl+D to exit.")
+-        print(f"Project: {self._project_dir.name}")
++        # Start status bar
++        if self._status_bar:
++            await self._status_bar.start()
++
++        self._console.print("MyAgentCLI — Type /help for commands, Ctrl+D to exit.")
++        self._console.print(f"Project: [bold]{self._project_dir.name}[/bold]")
+ 
+         try:
++            import pathlib
++
+             from prompt_toolkit import PromptSession
+             from prompt_toolkit.history import FileHistory
+-            from pathlib import Path as P
++            from prompt_toolkit.key_binding import KeyBindings
+ 
+-            history_file = P.home() / ".myagent" / ".history"
++            history_file = pathlib.Path.home() / ".myagent" / ".history"
+             history_file.parent.mkdir(parents=True, exist_ok=True)
+ 
+-            session = PromptSession(history=FileHistory(str(history_file)))
++            # Key bindings: Ctrl+C clears buffer, Ctrl+D on empty exits
++            kb = KeyBindings()
++
++            @kb.add("c-c")
++            def _(event):
++                buffer = event.app.current_buffer
++                buffer.reset()
++
++            session = PromptSession(
++                history=FileHistory(str(history_file)),
++                multiline=True,
++                key_bindings=kb,
++            )
+ 
+             while self._running:
+                 try:
+                     user_input = await session.prompt_async("myagent> ")
+                 except (EOFError, KeyboardInterrupt):
+-                    print("\nGoodbye!")
++                    self._console.print()
+                     break
+ 
+                 user_input = user_input.strip()
+                 if not user_input:
+                     continue
+ 
+                 await self.process_input(user_input)
+ 
+         except ImportError:
+             # Fallback: simple input without prompt_toolkit
+             while self._running:
+                 try:
+                     user_input = input("myagent> ").strip()
+                 except (EOFError, KeyboardInterrupt):
+-                    print("\nGoodbye!")
++                    self._console.print("\nGoodbye!") if self._console else print("\nGoodbye!")
+                     break
+ 
+                 if not user_input:
+                     continue
+ 
+                 await self.process_input(user_input)
+ 
++        await self._shutdown()
++
+     async def process_input(self, text: str) -> None:
+         """Handle one input line."""
+         # Slash commands
+         if text.startswith("/"):
+             if text in ("/exit", "/quit"):
+                 self._running = False
+-                if self._session_mgr and self._current_session:
+-                    await self._session_mgr.end_session(self._current_session)
+                 return
+ 
+             if self._commands:
+                 from myagent.cli.commands import CommandContext
+                 ctx = CommandContext(
+                     engine=self._engine,
+                     config=self._config,
+                     session=self._current_session,
++                    session_manager=self._session_mgr,
++                    goal_tracker=(
++                        self._engine.goal_tracker if self._engine else None
++                    ),
++                    skill_registry=(
++                        self._engine.skill_registry if self._engine else None
++                    ),
+                 )
+                 result = await self._commands.dispatch(text, ctx)
+-                print(result.output)
++                if self._console:
++                    self._console.print(result.output)
++                else:
++                    print(result.output)
++
++                if not result.success:
++                    return
++                # Check if the command was exit/quit
++                if text in ("/exit", "/quit"):
++                    self._running = False
+                 return
+ 
+-            print(f"Unknown command: {text}")
++            if self._console:
++                self._console.print(f"Unknown command: {text}")
++            else:
++                print(f"Unknown command: {text}")
+             return
+ 
+         # Natural language → AgentEngine
+         if self._engine and self._current_session:
+             async for event in self._engine.run(text, self._current_session):
+-                match type(event).__name__:
+-                    case "TextChunk":
+-                        print(event.content, end="", flush=True)
+-                    case "ThinkingChunk":
+-                        pass  # Thinking content is usually hidden
+-                    case "ToolCallStart":
+-                        print(f"\n🔧 {event.name}...", end="", flush=True)
+-                    case "ToolCallEnd":
+-                        if event.result.error:
+-                            print(f" ❌ {event.result.error}")
++                if self._renderer:
++                    rendered = self._renderer.render_event(event)
++                    if rendered and self._console:
++                        event_type = type(event).__name__
++                        if event_type == "TextChunk":
++                            self._console.print(rendered, end="")
++                        elif event_type == "ThinkingChunk":
++                            pass  # Thinking content is usually hidden
+                         else:
+-                            print(" ✅")
+-                    case "Done":
+-                        print()
+-                    case "Error":
+-                        print(f"\n❌ Error: {event.message}")
+-                    case _:
+-                        pass
++                            self._console.print(rendered)
++                else:
++                    # Fallback: simple print-based rendering
++                    self._render_event_fallback(event)
++
++            if self._console:
++                self._console.print()  # trailing newline after streaming
+         else:
+-            print(f"Echo: {text}")
++            if self._console:
++                self._console.print(f"Echo: {text}")
++            else:
++                print(f"Echo: {text}")
++
++    def _render_event_fallback(self, event) -> None:
++        """Fallback renderer when no Rich Renderer is wired."""
++        match type(event).__name__:
++            case "TextChunk":
++                print(event.content, end="", flush=True)
++            case "ThinkingChunk":
++                pass
++            case "ToolCallStart":
++                print(f"\n🔧 {event.name}...", end="", flush=True)
++            case "ToolCallEnd":
++                if event.result.error:
++                    print(f" ❌ {event.result.error}")
++                else:
++                    print(" ✅")
++            case "Done":
++                print()
++            case "Error":
++                print(f"\n❌ Error: {event.message}")
++            case _:
++                pass
++
++    async def _shutdown(self) -> None:
++        """Graceful shutdown: stop status bar, end session, clean up."""
++        self._running = False
++
++        # Stop status bar
++        if self._status_bar:
++            self._status_bar.stop()
++
++        # End session
++        if self._session_mgr and self._current_session:
++            await self._session_mgr.end_session(self._current_session)
++
++        self._console.print("\nGoodbye!") if self._console else print("\nGoodbye!")

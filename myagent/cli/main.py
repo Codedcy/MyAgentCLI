@@ -176,12 +176,12 @@ async def async_main(argv: list[str] | None = None) -> int:
 
 
 def _register_builtin_tools(registry) -> None:
-    from myagent.tools.builtin.agent_tools import SendMessageTool, SpawnSubagentTool
-    from myagent.tools.builtin.exec_tools import BashTool
     from myagent.tools.builtin.file_tools import EditTool, GlobTool, ReadTool, WriteTool
-    from myagent.tools.builtin.memory_tools import MemoryWriteTool
     from myagent.tools.builtin.search_tools import GrepTool
+    from myagent.tools.builtin.exec_tools import BashTool
+    from myagent.tools.builtin.agent_tools import SendMessageTool, SpawnSubagentTool
     from myagent.tools.builtin.session_tools import TaskCreateTool, TaskUpdateTool
+    from myagent.tools.builtin.memory_tools import MemoryWriteTool
     from myagent.tools.builtin.web_tools import WebFetchTool, WebSearchTool
 
     for tool_cls in [
