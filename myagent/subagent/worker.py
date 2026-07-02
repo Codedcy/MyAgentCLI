@@ -34,6 +34,7 @@ class SubAgentWorker:
         tools: list[str] | None = None,
         mode: str = "Think High",
         isolation: str | None = None,
+        model: str | None = None,
         llm=None,
         tool_registry=None,
         interrupt_event: asyncio.Event | None = None,
@@ -43,6 +44,7 @@ class SubAgentWorker:
         self.tools = tools
         self.mode = mode
         self.isolation = isolation
+        self.model = model
         self.llm = llm
         self.tool_registry = tool_registry
         self.interrupt_event = interrupt_event
@@ -208,6 +210,8 @@ class SubAgentWorker:
         # Duck-typing fallback for test doubles
         if hasattr(event, "name") and hasattr(event, "params") and hasattr(event, "id"):
             return "tool_call"
+        if hasattr(event, "reasoning_content"):
+            return "thinking"
         if hasattr(event, "content") and not hasattr(event, "name"):
             return "text"
         if hasattr(event, "stop_reason"):

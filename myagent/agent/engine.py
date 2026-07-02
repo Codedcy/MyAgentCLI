@@ -264,13 +264,14 @@ class AgentEngine:
                     yield Done()
                     return
 
-            # Detect AskUserQuestion
+            # Detect AskUserQuestion — stop this turn; wait for user reply
             if self._is_question(full_text):
                 yield AskUserQuestion(question=full_text)
+                return
 
             # ── Goal check ──────────────────────────────────────
             goal = self.goal_tracker.get_goal() if self.goal_tracker else None
-            if goal and hasattr(session, "goal") and session.goal:
+            if goal:
                 try:
                     goal_check = await self.goal_tracker.check_goal(session, messages)
                 except Exception as e:
@@ -315,6 +316,8 @@ class AgentEngine:
         # Duck-typing fallback for test doubles
         if hasattr(event, "name") and hasattr(event, "params") and hasattr(event, "id"):
             return "tool_call"
+        if hasattr(event, "reasoning_content"):
+            return "thinking"
         if hasattr(event, "content") and not hasattr(event, "name"):
             return "text"
         if hasattr(event, "stop_reason"):
@@ -482,6 +485,7 @@ class AgentEngine:
                 metadata=result.metadata,
             )
         except Exception:
+            logger.exception("Summarization failed", extra={"category": "error", "component": "agent"})
             return self._truncate_result(result)
 
     def _truncate_result(self, result: ToolResult) -> ToolResult:

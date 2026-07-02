@@ -80,7 +80,9 @@ async def async_main(argv: list[str] | None = None) -> int:
     llm = LLMProvider(config.model)
 
     from myagent.subagent.pool import SubAgentPool
-    subagent_pool = SubAgentPool(config.subagents.max_concurrent)
+    subagent_pool = SubAgentPool(
+        config.subagents.max_concurrent, llm=llm, tool_registry=tool_registry,
+    )
 
     from myagent.memory.store import MemoryStore
     memory_store = MemoryStore(
@@ -104,7 +106,7 @@ async def async_main(argv: list[str] | None = None) -> int:
     session_mgr = SessionManager(session_store, project_ctx, memory_store, permissions)
 
     from myagent.agent.goal import GoalTracker
-    goal_tracker = GoalTracker()
+    goal_tracker = GoalTracker(llm=llm)
     if args.goal:
         goal_tracker.set_goal(args.goal)
 

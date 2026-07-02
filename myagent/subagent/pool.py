@@ -87,6 +87,7 @@ class SubAgentPool:
         schema: dict | None = None,
         background: bool = True,
         parent_session: str | None = None,
+        model: str | None = None,
         llm=None,
         tool_registry=None,
         tool_context=None,
@@ -109,13 +110,13 @@ class SubAgentPool:
         if background:
             asyncio.create_task(
                 self._run_background(
-                    handle, prompt, tools, mode, _llm, _tool_registry,
+                    handle, prompt, tools, mode, model, _llm, _tool_registry,
                     handle._interrupt_event, _tool_context,
                 )
             )
         else:
             await self._run_foreground(
-                handle, prompt, tools, mode, _llm, _tool_registry,
+                handle, prompt, tools, mode, model, _llm, _tool_registry,
                 handle._interrupt_event, _tool_context,
             )
 
@@ -127,12 +128,11 @@ class SubAgentPool:
             await self._agents[agent_id].send_message(message)
 
     async def shutdown(self) -> None:
-        """Interrupt all running sub-agents and release completion events."""
+        """Interrupt all running sub-agents. Let _run_background finish naturally."""
         for handle in self._agents.values():
             if handle.status == AgentStatus.RUNNING:
                 handle.status = AgentStatus.INTERRUPTED
                 handle._interrupt_event.set()
-                handle._completion_event.set()
 
     # ── internal ──────────────────────────────────────────────────
 
@@ -142,6 +142,7 @@ class SubAgentPool:
         prompt: str,
         tools: list[str] | None,
         mode: str,
+        model: str | None,
         llm,
         tool_registry,
         interrupt_event: asyncio.Event,
@@ -155,6 +156,7 @@ class SubAgentPool:
                 prompt=prompt,
                 tools=tools,
                 mode=mode,
+                model=model,
                 llm=llm,
                 tool_registry=tool_registry,
                 interrupt_event=interrupt_event,
@@ -195,6 +197,7 @@ class SubAgentPool:
         prompt: str,
         tools: list[str] | None,
         mode: str,
+        model: str | None,
         llm,
         tool_registry,
         interrupt_event: asyncio.Event,
@@ -202,6 +205,6 @@ class SubAgentPool:
     ) -> None:
         """Run a sub-agent worker in foreground (caller awaits)."""
         await self._run_background(
-            handle, prompt, tools, mode, llm, tool_registry,
+            handle, prompt, tools, mode, model, llm, tool_registry,
             interrupt_event, tool_context,
         )
