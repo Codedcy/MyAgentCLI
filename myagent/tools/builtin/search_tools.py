@@ -53,6 +53,36 @@ class GrepTool:
                 "type": "integer",
                 "description": "Limit output to first N lines/entries",
             },
+            "-n": {
+                "type": "boolean",
+                "description": "Show line numbers in output (default: true)",
+                "default": True,
+            },
+            "-o": {
+                "type": "boolean",
+                "description": "Print only the matched (non-empty) parts of each matching line, "
+                "one match per output line (rg -o / --only-matching). Requires output_mode: "
+                "\"content\", ignored otherwise. Defaults to false.",
+                "default": False,
+            },
+            "type": {
+                "type": "string",
+                "description": "File type to search (rg --type). Common types: py, js, rust, go, "
+                "java, etc. More efficient than include for standard file types.",
+            },
+            "offset": {
+                "type": "integer",
+                "description": "Skip first N lines/entries before applying head_limit, "
+                "equivalent to \"| tail -n +N | head -N\". Works across all output modes. "
+                "Defaults to 0.",
+                "default": 0,
+            },
+            "multiline": {
+                "type": "boolean",
+                "description": "Enable multiline mode where . matches newlines and patterns "
+                "can span lines (rg -U --multiline-dotall). Default: false.",
+                "default": False,
+            },
         },
         "required": ["pattern"],
     }
@@ -75,6 +105,40 @@ class GrepTool:
         ".proto",
     }
 
+    # Mapping from ripgrep --type names to file extensions (for Python fallback)
+    _TYPE_EXTENSIONS: dict[str, set[str]] = {
+        "py": {".py"},
+        "js": {".js", ".jsx", ".mjs", ".cjs"},
+        "ts": {".ts", ".tsx"},
+        "rust": {".rs"},
+        "go": {".go"},
+        "java": {".java"},
+        "c": {".c", ".h"},
+        "cpp": {".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx"},
+        "rb": {".rb"},
+        "php": {".php"},
+        "swift": {".swift"},
+        "kt": {".kt", ".kts"},
+        "scala": {".scala"},
+        "md": {".md"},
+        "txt": {".txt"},
+        "yaml": {".yaml", ".yml"},
+        "toml": {".toml"},
+        "json": {".json"},
+        "xml": {".xml"},
+        "html": {".html", ".htm"},
+        "css": {".css", ".scss", ".less"},
+        "sh": {".sh", ".bash", ".zsh", ".fish"},
+        "sql": {".sql"},
+        "vue": {".vue"},
+        "svelte": {".svelte"},
+        "tf": {".tf", ".tfvars"},
+        "gradle": {".gradle"},
+        "proto": {".proto"},
+        "csv": {".csv"},
+        "log": {".log"},
+    }
+
     async def execute(self, params: dict, context: ToolContext) -> ToolResult:
         pattern = params["pattern"]
         search_path = Path(params.get("path", str(context.project_dir)))
@@ -93,7 +157,11 @@ class GrepTool:
         self, rg_path: str, params: dict, search_path: Path, context: ToolContext
     ) -> ToolResult:
         pattern = params["pattern"]
-        cmd = [rg_path, "--no-heading", "--with-filename", "--line-number", "--color=never"]
+        cmd = [rg_path, "--no-heading", "--with-filename", "--color=never"]
+
+        # Line numbers (default true)
+        if params.get("-n", True):
+            cmd.append("--line-number")
 
         output_mode = params.get("output_mode", "files_with_matches")
         if output_mode == "files_with_matches":
@@ -112,6 +180,12 @@ class GrepTool:
             cmd.append("-i")
         if "glob" in params:
             cmd.extend(["--glob", params["glob"]])
+        if params.get("-o"):
+            cmd.append("--only-matching")
+        if "type" in params:
+            cmd.extend(["--type", params["type"]])
+        if params.get("multiline"):
+            cmd.extend(["--multiline", "--multiline-dotall"])
 
         cmd.append(pattern)
         cmd.append(str(search_path))
@@ -134,9 +208,16 @@ class GrepTool:
                     error=stderr.decode().strip(),
                     metadata={"exit_code": proc.returncode, "engine": "rg"},
                 )
-            output = stdout.decode("utf-8", errors="replace")
+            output = stdout.decode("utf-8", errors="replace").strip() or "(no matches)"
+
+            # Apply offset (post-process for rg since it has no native --offset)
+            offset = params.get("offset", 0)
+            if offset and offset > 0:
+                lines = output.split("\n")
+                output = "\n".join(lines[offset:]) or "(no matches)"
+
             return ToolResult(
-                output=output.strip() or "(no matches)",
+                output=output,
                 metadata={"exit_code": 0, "engine": "rg"},
             )
         except asyncio.TimeoutError:
@@ -155,15 +236,23 @@ class GrepTool:
         context_before = params.get("-B") or params.get("-C") or 0
         context_after = params.get("-A") or params.get("-C") or 0
         head_limit = params.get("head_limit")
+        show_line_numbers = params.get("-n", True)
+        only_matching = params.get("-o", False)
+        file_type = params.get("type")
+        multiline = params.get("multiline", False)
+        offset = params.get("offset", 0)
 
+        # Build regex flags
         try:
             flags = re.IGNORECASE if ignore_case else 0
+            if multiline:
+                flags |= re.MULTILINE | re.DOTALL
             regex = re.compile(pattern, flags)
         except re.error as e:
             return ToolResult(error=f"Invalid regex pattern: {e}")
 
         # Collect matching files
-        files = self._collect_files(search_path, file_glob)
+        files = self._collect_files(search_path, file_glob, file_type)
         if not files:
             return ToolResult(output="(no matches)", metadata={"engine": "python"})
 
@@ -176,13 +265,31 @@ class GrepTool:
             except (PermissionError, OSError):
                 continue
 
-            lines = content.split("\n")
-            file_matches: list[tuple[int, str]] = []
+            if multiline:
+                # Multiline: search full content and map spans to line numbers
+                file_matches: list[tuple[int, str]] = []
+                for m in regex.finditer(content):
+                    line_no = content[: m.start()].count("\n") + 1
+                    match_text = m.group() if only_matching else m.group()
+                    file_matches.append((line_no, match_text))
+            else:
+                lines = content.split("\n")
+                file_matches: list[tuple[int, str]] = []
+                for line_no, line in enumerate(lines, start=1):
+                    if only_matching:
+                        for m in regex.finditer(line):
+                            if m.group():  # skip empty matches
+                                file_matches.append((line_no, m.group()))
+                    else:
+                        if regex.search(line):
+                            file_matches.append((line_no, line))
 
-            for line_no, line in enumerate(lines, start=1):
-                if regex.search(line):
-                    file_matches.append((line_no, line))
+            if not file_matches:
+                continue
 
+            # Apply offset
+            if offset > 0:
+                file_matches = file_matches[offset:]
             if not file_matches:
                 continue
 
@@ -193,9 +300,18 @@ class GrepTool:
                 results[str(file_path)] = []
                 total_lines += 1
             else:  # content
-                formatted = self._format_content_matches(
-                    file_path, file_matches, lines, context_before, context_after
-                )
+                all_lines = content.split("\n")
+                if only_matching and not context_before and not context_after:
+                    # Only matching without context: just list match texts
+                    formatted = [
+                        f"{file_path}:{line_no}:{text}" if show_line_numbers else text
+                        for line_no, text in file_matches
+                    ]
+                else:
+                    formatted = self._format_content_matches(
+                        file_path, file_matches, all_lines, context_before, context_after,
+                        show_line_numbers=show_line_numbers,
+                    )
                 results[str(file_path)] = formatted
                 total_lines += len(formatted)
 
@@ -220,23 +336,38 @@ class GrepTool:
             },
         )
 
-    def _collect_files(self, search_path: Path, file_glob: str | None) -> list[Path]:
-        """Collect files to search, filtering by glob and binary heuristics."""
+    def _collect_files(
+        self, search_path: Path, file_glob: str | None, file_type: str | None = None
+    ) -> list[Path]:
+        """Collect files to search, filtering by glob, type, and binary heuristics."""
         if search_path.is_file():
             return [search_path]
+
+        # Resolve file_type to a set of allowed extensions
+        type_extensions: set[str] | None = None
+        if file_type:
+            type_extensions = self._TYPE_EXTENSIONS.get(file_type)
+            if type_extensions is None:
+                # Unknown type: treat as an extension (e.g. "py" → ".py")
+                type_extensions = {f".{file_type}"}
 
         files: list[Path] = []
         for f in search_path.rglob("*"):
             if not f.is_file():
                 continue
-            if f.name.startswith(".") and ".git" in str(f):
-                # Skip git internals
-                if any(part.startswith(".git") for part in f.parts):
-                    continue
+            # Skip git internals
+            if any(part.startswith(".git") for part in f.parts):
+                continue
             # Skip common non-text locations
             parts_lower = {p.lower() for p in f.parts}
             if parts_lower & {"__pycache__", "node_modules", ".git", "dist", "build", ".venv", "venv"}:
                 continue
+            # Apply file type filter
+            if type_extensions is not None:
+                if f.suffix.lower() not in type_extensions:
+                    # Also match files without extension by basename (e.g. "Makefile")
+                    if f.name not in type_extensions:
+                        continue
             # Apply file glob filter
             if file_glob and not fnmatch.fnmatch(f.name, file_glob):
                 continue
@@ -260,22 +391,26 @@ class GrepTool:
         all_lines: list[str],
         before: int,
         after: int,
+        show_line_numbers: bool = True,
     ) -> list[str]:
         """Format content output with line numbers and context."""
         output: list[str] = []
         shown_ranges: set[int] = set()
 
-        for line_no, line in matches:
+        for line_no, _line in matches:
             start = max(0, line_no - before - 1)
             end = min(len(all_lines), line_no + after)
             for ctx_line in range(start, end):
                 if ctx_line in shown_ranges:
                     continue
                 shown_ranges.add(ctx_line)
-                marker = ":" if ctx_line == line_no - 1 else "-"
-                output.append(
-                    f"{file_path}:{ctx_line + 1}{marker}{all_lines[ctx_line]}"
-                )
+                if show_line_numbers:
+                    marker = ":" if ctx_line == line_no - 1 else "-"
+                    output.append(
+                        f"{file_path}:{ctx_line + 1}{marker}{all_lines[ctx_line]}"
+                    )
+                else:
+                    output.append(all_lines[ctx_line])
 
         return output
 
@@ -293,5 +428,9 @@ class GrepTool:
                 lines.append(path)
             else:
                 if isinstance(data, list):
-                    lines.extend(str(item) if isinstance(item, str) else f"{path}:{item[0]}:{item[1]}" for item in data)
+                    lines.extend(
+                        str(item) if isinstance(item, str)
+                        else f"{path}:{item[0]}:{item[1]}"
+                        for item in data
+                    )
         return "\n".join(lines)

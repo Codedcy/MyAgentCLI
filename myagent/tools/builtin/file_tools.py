@@ -30,6 +30,8 @@ class ReadTool:
         "required": ["file_path"],
     }
 
+    _MAX_LINES_NO_RANGE = 2000
+
     async def execute(self, params: dict, context: ToolContext) -> ToolResult:
         path = Path(params["file_path"])
         if not path.is_absolute():
@@ -45,11 +47,21 @@ class ReadTool:
             lines = content.split("\n")
             offset = params.get("offset", 0)
             limit = params.get("limit")
+            original_total = len(lines)
+
             if offset or limit:
                 start = offset or 0
                 end = (start + limit) if limit else None
                 lines = lines[start:end]
                 content = "\n".join(lines)
+            elif original_total > self._MAX_LINES_NO_RANGE:
+                lines = lines[: self._MAX_LINES_NO_RANGE]
+                content = "\n".join(lines)
+                content += (
+                    f"\n\n[... File truncated at {self._MAX_LINES_NO_RANGE} lines. "
+                    f"Total: {original_total} lines. Use offset/limit to read more.]"
+                )
+
             return ToolResult(
                 output=content,
                 metadata={

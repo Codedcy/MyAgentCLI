@@ -22,11 +22,19 @@ class ToolResult:
         error: Error message if execution failed, None otherwise.
         metadata: Arbitrary key-value for downstream use
                   (e.g., exit_code, file_path, tokens_used).
+        success: Whether execution succeeded (auto-set False when error is not None).
+        artifacts: List of artifact references (e.g., file paths) produced by the tool.
     """
 
     output: str = ""
     error: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    success: bool = True
+    artifacts: list[str] = field(default_factory=list)
+
+    def __post_init__(self):
+        if self.error is not None:
+            self.success = False
 
 
 @dataclass
