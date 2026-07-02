@@ -137,20 +137,51 @@ async def async_main(argv: list[str] | None = None) -> int:
         print(f"Exported to: {path}")
         return 0
 
+    # Wire CLI components
+    from myagent.cli.commands import CommandDispatcher
+    commands = CommandDispatcher()
+
+    from myagent.cli.renderer import Renderer
+    renderer = Renderer()
+
+    from myagent.cli.status import StatusBar
+    status_bar = StatusBar(config.ui) if config.ui.show_status_bar else None
+
     # Start REPL
     from myagent.cli.repl import REPLEngine
-    repl = REPLEngine(engine=engine, commands=None, session_mgr=session_mgr, config=config, project_dir=project_dir)
+
+    if args.resume:
+        session_id = None if args.resume == "__latest__" else args.resume
+        session = await session_mgr.resume(session_id, project_dir)
+        if session:
+            repl = REPLEngine(
+                engine=engine, commands=commands, session_mgr=session_mgr,
+                config=config, project_dir=project_dir,
+                renderer=renderer, status_bar=status_bar,
+            )
+            repl._current_session = session
+            await repl.run()
+            return 0
+        else:
+            print("No session found to resume.")
+            return 1
+
+    repl = REPLEngine(
+        engine=engine, commands=commands, session_mgr=session_mgr,
+        config=config, project_dir=project_dir,
+        renderer=renderer, status_bar=status_bar,
+    )
     await repl.run()
     return 0
 
 
 def _register_builtin_tools(registry) -> None:
-    from myagent.tools.builtin.file_tools import EditTool, GlobTool, ReadTool, WriteTool
-    from myagent.tools.builtin.search_tools import GrepTool
-    from myagent.tools.builtin.exec_tools import BashTool
     from myagent.tools.builtin.agent_tools import SendMessageTool, SpawnSubagentTool
-    from myagent.tools.builtin.session_tools import TaskCreateTool, TaskUpdateTool
+    from myagent.tools.builtin.exec_tools import BashTool
+    from myagent.tools.builtin.file_tools import EditTool, GlobTool, ReadTool, WriteTool
     from myagent.tools.builtin.memory_tools import MemoryWriteTool
+    from myagent.tools.builtin.search_tools import GrepTool
+    from myagent.tools.builtin.session_tools import TaskCreateTool, TaskUpdateTool
     from myagent.tools.builtin.web_tools import WebFetchTool, WebSearchTool
 
     for tool_cls in [

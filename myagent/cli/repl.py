@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 
 
@@ -16,41 +15,68 @@ class REPLEngine:
         session_mgr=None,
         config=None,
         project_dir: Path | None = None,
+        renderer=None,
+        status_bar=None,
     ):
         self._engine = engine
         self._commands = commands
         self._session_mgr = session_mgr
         self._config = config
         self._project_dir = project_dir or Path.cwd()
+        self._renderer = renderer
+        self._status_bar = status_bar
         self._running = False
         self._current_session = None
+        self._console = None
 
     async def run(self) -> None:
         """Start the REPL loop."""
         self._running = True
 
+        # Initialize Rich console for renderer output
+        from rich.console import Console
+        self._console = Console()
+
         # Start session
-        if self._session_mgr:
+        if self._session_mgr and self._current_session is None:
             self._current_session = await self._session_mgr.start_new(self._project_dir)
 
-        print("MyAgentCLI — Type /help for commands, Ctrl+D to exit.")
-        print(f"Project: {self._project_dir.name}")
+        # Start status bar
+        if self._status_bar:
+            await self._status_bar.start()
+
+        self._console.print("MyAgentCLI — Type /help for commands, Ctrl+D to exit.")
+        self._console.print(f"Project: [bold]{self._project_dir.name}[/bold]")
 
         try:
+            import pathlib
+
             from prompt_toolkit import PromptSession
             from prompt_toolkit.history import FileHistory
-            from pathlib import Path as P
+            from prompt_toolkit.key_binding import KeyBindings
 
-            history_file = P.home() / ".myagent" / ".history"
+            history_file = pathlib.Path.home() / ".myagent" / ".history"
             history_file.parent.mkdir(parents=True, exist_ok=True)
 
-            session = PromptSession(history=FileHistory(str(history_file)))
+            # Key bindings: Ctrl+C clears buffer, Ctrl+D on empty exits
+            kb = KeyBindings()
+
+            @kb.add("c-c")
+            def _(event):
+                buffer = event.app.current_buffer
+                buffer.reset()
+
+            session = PromptSession(
+                history=FileHistory(str(history_file)),
+                multiline=True,
+                key_bindings=kb,
+            )
 
             while self._running:
                 try:
                     user_input = await session.prompt_async("myagent> ")
                 except (EOFError, KeyboardInterrupt):
-                    print("\nGoodbye!")
+                    self._console.print()
                     break
 
                 user_input = user_input.strip()
@@ -65,7 +91,7 @@ class REPLEngine:
                 try:
                     user_input = input("myagent> ").strip()
                 except (EOFError, KeyboardInterrupt):
-                    print("\nGoodbye!")
+                    self._console.print("\nGoodbye!") if self._console else print("\nGoodbye!")
                     break
 
                 if not user_input:
@@ -73,14 +99,14 @@ class REPLEngine:
 
                 await self.process_input(user_input)
 
+        await self._shutdown()
+
     async def process_input(self, text: str) -> None:
         """Handle one input line."""
         # Slash commands
         if text.startswith("/"):
             if text in ("/exit", "/quit"):
                 self._running = False
-                if self._session_mgr and self._current_session:
-                    await self._session_mgr.end_session(self._current_session)
                 return
 
             if self._commands:
@@ -89,34 +115,89 @@ class REPLEngine:
                     engine=self._engine,
                     config=self._config,
                     session=self._current_session,
+                    session_manager=self._session_mgr,
+                    goal_tracker=(
+                        self._engine.goal_tracker if self._engine else None
+                    ),
+                    skill_registry=(
+                        self._engine.skill_registry if self._engine else None
+                    ),
                 )
                 result = await self._commands.dispatch(text, ctx)
-                print(result.output)
+                if self._console:
+                    self._console.print(result.output)
+                else:
+                    print(result.output)
+
+                if not result.success:
+                    return
+                # Check if the command was exit/quit
+                if text in ("/exit", "/quit"):
+                    self._running = False
                 return
 
-            print(f"Unknown command: {text}")
+            if self._console:
+                self._console.print(f"Unknown command: {text}")
+            else:
+                print(f"Unknown command: {text}")
             return
 
         # Natural language → AgentEngine
         if self._engine and self._current_session:
             async for event in self._engine.run(text, self._current_session):
-                match type(event).__name__:
-                    case "TextChunk":
-                        print(event.content, end="", flush=True)
-                    case "ThinkingChunk":
-                        pass  # Thinking content is usually hidden
-                    case "ToolCallStart":
-                        print(f"\n🔧 {event.name}...", end="", flush=True)
-                    case "ToolCallEnd":
-                        if event.result.error:
-                            print(f" ❌ {event.result.error}")
+                if self._renderer:
+                    rendered = self._renderer.render_event(event)
+                    if rendered and self._console:
+                        event_type = type(event).__name__
+                        if event_type == "TextChunk":
+                            self._console.print(rendered, end="")
+                        elif event_type == "ThinkingChunk":
+                            pass  # Thinking content is usually hidden
                         else:
-                            print(" ✅")
-                    case "Done":
-                        print()
-                    case "Error":
-                        print(f"\n❌ Error: {event.message}")
-                    case _:
-                        pass
+                            self._console.print(rendered)
+                else:
+                    # Fallback: simple print-based rendering
+                    self._render_event_fallback(event)
+
+            if self._console:
+                self._console.print()  # trailing newline after streaming
         else:
-            print(f"Echo: {text}")
+            if self._console:
+                self._console.print(f"Echo: {text}")
+            else:
+                print(f"Echo: {text}")
+
+    def _render_event_fallback(self, event) -> None:
+        """Fallback renderer when no Rich Renderer is wired."""
+        match type(event).__name__:
+            case "TextChunk":
+                print(event.content, end="", flush=True)
+            case "ThinkingChunk":
+                pass
+            case "ToolCallStart":
+                print(f"\n🔧 {event.name}...", end="", flush=True)
+            case "ToolCallEnd":
+                if event.result.error:
+                    print(f" ❌ {event.result.error}")
+                else:
+                    print(" ✅")
+            case "Done":
+                print()
+            case "Error":
+                print(f"\n❌ Error: {event.message}")
+            case _:
+                pass
+
+    async def _shutdown(self) -> None:
+        """Graceful shutdown: stop status bar, end session, clean up."""
+        self._running = False
+
+        # Stop status bar
+        if self._status_bar:
+            self._status_bar.stop()
+
+        # End session
+        if self._session_mgr and self._current_session:
+            await self._session_mgr.end_session(self._current_session)
+
+        self._console.print("\nGoodbye!") if self._console else print("\nGoodbye!")
