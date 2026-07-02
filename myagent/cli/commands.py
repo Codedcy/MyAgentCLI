@@ -21,6 +21,7 @@ class CommandContext:
 class CommandResult:
     output: str
     success: bool = True
+    exit_requested: bool = False
 
 
 class CommandDispatcher:
@@ -95,10 +96,43 @@ class CommandDispatcher:
         return CommandResult(output="Dream engine not available.")
 
     async def _cmd_clear(self, args: str, ctx: CommandContext) -> CommandResult:
-        return CommandResult(output="Conversation history cleared (transcript preserved on disk).")
+        """Clear in-memory conversation messages while preserving disk transcripts."""
+        cleared = 0
+        if ctx.session is not None and hasattr(ctx.session, "_messages"):
+            cleared = len(ctx.session._messages)
+            ctx.session._messages.clear()
+        return CommandResult(
+            output=f"Conversation cleared: {cleared} messages removed (transcripts preserved on disk)."
+        )
 
     async def _cmd_history(self, args: str, ctx: CommandContext) -> CommandResult:
-        return CommandResult(output="Recent conversation history:\n(would show last N turns)")
+        """Show real conversation history from session."""
+        if ctx.session is None or not hasattr(ctx.session, "_messages"):
+            return CommandResult(output="No conversation history available.")
+
+        messages = ctx.session._messages
+        if not messages:
+            return CommandResult(output="No conversation history yet.")
+
+        n = 20  # default
+        if args.strip().isdigit():
+            n = int(args.strip())
+
+        recent = messages[-n:]
+        lines = [f"Recent conversation history (last {len(recent)} of {len(messages)} turns):", ""]
+        for i, m in enumerate(recent, 1):
+            role = m.role.upper() if hasattr(m, "role") else "?"
+            content = m.content if hasattr(m, "content") else str(m)
+            preview = content[:120] + "..." if len(content) > 120 else content
+            lines.append(f"  {i}. [{role}] {preview}")
+        return CommandResult(output="\n".join(lines))
 
     async def _cmd_exit(self, args: str, ctx: CommandContext) -> CommandResult:
-        return CommandResult(output="Goodbye!", success=True)
+        """Request exit with confirmation flag for the REPL layer."""
+        if args.strip().lower() in ("--force", "-f"):
+            return CommandResult(output="Goodbye!", success=True, exit_requested=True)
+        return CommandResult(
+            output="Goodbye! (Type /exit --force or /quit --force to confirm, or /exit -f)",
+            success=True,
+            exit_requested=False,
+        )

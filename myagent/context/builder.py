@@ -89,6 +89,8 @@ web access, sub-agent orchestration, and task tracking.
         history: list[Message],
         project_context: ProjectContext,
         tool_subset: list[str] | None = None,
+        active_skill: str | None = None,
+        goal: str | None = None,
     ) -> LLMRequest:
         # L3: Project context
         l3 = self._format_project_context(project_context)
@@ -103,20 +105,36 @@ web access, sub-agent orchestration, and task tracking.
             except Exception:
                 pass
 
+        # L5: Active skill content — inject full skill instructions when invoked
+        l5 = ""
+        if active_skill and self.skill_registry:
+            skill = self.skill_registry.get(active_skill)
+            if skill:
+                l5 = self._format_skill_content(skill)
+
         # L2: Skills index
         l2 = ""
         if self.skill_registry:
             skills = self.skill_registry.list_all()
             l2 = self._format_skills_index(skills)
 
-        # Assemble system prompt: L0 + L3 + L4 + L2
+        # L6: Goal context — inject current goal when in goal mode
+        l6 = ""
+        if goal:
+            l6 = f"## Current Goal\n{goal}\n\nWork toward this goal. When you believe it is achieved, indicate completion."
+
+        # Assemble system prompt: L0 + L3 + L4 + L5 + L2 + L6
         system_parts = [self.L0_SYSTEM_PROMPT]
         if l3:
             system_parts.append(f"## Project Context\n{l3}")
         if l4:
             system_parts.append(f"## Relevant Memories\n{l4}")
+        if l5:
+            system_parts.append(f"## Active Skill\n{l5}")
         if l2:
             system_parts.append(f"## Available Skills\n{l2}")
+        if l6:
+            system_parts.append(l6)
         system = "\n\n".join(system_parts)
 
         # L1: Tool schemas
@@ -125,7 +143,7 @@ web access, sub-agent orchestration, and task tracking.
         else:
             tool_schemas = self.tool_registry.get_schemas() if self.tool_registry else []
 
-        # L5 + L6: History + current input
+        # History + current input
         messages = [m.to_api_dict() for m in history]
         messages.append({"role": "user", "content": current_input})
 
@@ -157,3 +175,21 @@ web access, sub-agent orchestration, and task tracking.
         if not skills:
             return ""
         return "\n".join(f"- `{s.name}`: {s.description}" for s in skills)
+
+    def _format_skill_content(self, skill) -> str:
+        """Format full skill content for injection as L5 context."""
+        lines = [f"### {skill.name}", skill.description, ""]
+        if skill.content:
+            # Truncate very long skill content to avoid exceeding context window
+            content = skill.content[:4000]
+            if len(skill.content) > 4000:
+                content += "\n... (content truncated for context window)"
+            lines.append(content)
+        if skill.resources:
+            refs = skill.resources.references or []
+            scripts = skill.resources.scripts or []
+            if refs:
+                lines.append("References: " + ", ".join(str(r.name) for r in refs))
+            if scripts:
+                lines.append("Scripts: " + ", ".join(str(s.name) for s in scripts))
+        return "\n".join(lines)

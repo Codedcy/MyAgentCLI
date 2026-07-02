@@ -149,7 +149,7 @@ class SessionStore:
         if not ts.exists():
             return None
         data = json.loads(ts.read_text())
-        return Session(
+        session = Session(
             id=data["session_id"],
             project_name=data["project_name"],
             project_hash=data["project_hash"],
@@ -159,6 +159,15 @@ class SessionStore:
             goal=data.get("goal"),
             goal_achieved=data.get("goal_achieved"),
         )
+        # Restore messages from transcript
+        for msg_data in data.get("messages", []):
+            msg = Message(
+                role=msg_data.get("role", "user"),
+                content=msg_data.get("content", ""),
+                timestamp=datetime.fromisoformat(msg_data.get("timestamp", "2026-01-01T00:00:00")),
+            )
+            session._messages.append(msg)
+        return session
 
     async def export_session(
         self, project_name: str, project_hash: str, session_id: str, fmt: str = "markdown"
@@ -171,7 +180,7 @@ class SessionStore:
         return sess_dir / "transcript.json"
 
     def _write_transcripts(self, sess_dir: Path, session: Session) -> None:
-        # JSON
+        # JSON — save ALL messages (not just last 50)
         ts = sess_dir / "transcript.json"
         ts.write_text(
             json.dumps(
@@ -193,7 +202,7 @@ class SessionStore:
                             "content": m.content[:5000],
                             "timestamp": m.timestamp.isoformat(),
                         }
-                        for m in session._messages[-50:]  # last 50 only
+                        for m in session._messages  # ALL messages
                     ],
                 },
                 ensure_ascii=False,
@@ -201,7 +210,7 @@ class SessionStore:
             )
         )
 
-        # Markdown
+        # Markdown — save ALL messages
         md = sess_dir / "transcript.md"
         lines = [
             f"# Session: {session.id}",
@@ -210,7 +219,7 @@ class SessionStore:
             f"Goal: {session.goal or 'None'}",
             "",
         ]
-        for m in session._messages[-50:]:
+        for m in session._messages:
             lines.append(f"### {m.role}")
             lines.append(m.content[:2000])
             lines.append("")

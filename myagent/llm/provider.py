@@ -1,7 +1,7 @@
 """LiteLLM async provider wrapper.
 
 Wraps litellm.acompletion with streaming, thinking mode mapping,
-error handling, and retry logic.
+error handling, retry logic, request/response logging, and fallback model support.
 
 Design doc reference: §二 核心 Agent 循环 — LLM Error Handling
 """
@@ -10,11 +10,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from dataclasses import dataclass, field
 from typing import AsyncIterator, Literal
 
 import litellm
+
+logger = logging.getLogger("myagent.llm")
 
 
 # ── Event types emitted by the provider ─────────────────────────
@@ -104,9 +107,13 @@ class LLMProvider:
         if model_config is None:
             self.provider = "deepseek"
             self.model = "deepseek/deepseek-v4-pro"
+            self._fallback_models: list[str] = []
         else:
             self.provider = model_config.provider
             self.model = f"{model_config.provider}/{model_config.model}"
+            self._fallback_models = getattr(model_config, "fallback_models", []) or []
+
+        self._current_fallback_index = -1  # -1 = primary model
 
     # ── public API ─────────────────────────────────────────────
 
@@ -127,17 +134,81 @@ class LLMProvider:
             LLMEvent instances: TextDelta, ThinkingDelta, ToolCall, Done.
 
         Raises:
-            LLMError: On fatal errors after retries exhausted.
+            LLMError: On fatal errors after retries exhausted (including all fallbacks).
         """
+        estimated_tokens = self.token_count(messages)
+
+        # Try primary model, then fallbacks
+        fallback_models = getattr(self, "_fallback_models", None) or []
+        models_to_try = [self.model] + fallback_models
+        last_error = None
+
+        for model_idx, model_name in enumerate(models_to_try):
+            self._current_fallback_index = model_idx - 1  # -1 for primary
+
+            if model_idx > 0:
+                logger.warning(
+                    "Falling back to model: %s (attempt %d of %d)",
+                    model_name, model_idx, len(models_to_try) - 1,
+                    extra={
+                        "category": "llm",
+                        "event": "fallback",
+                        "model": model_name,
+                        "fallback_index": model_idx,
+                    },
+                )
+
+            try:
+                async for event in self._complete_with_model(
+                    model_name, messages, tools, thinking, estimated_tokens
+                ):
+                    yield event
+                # Success — reset fallback index for next call
+                self._current_fallback_index = -1
+                return
+            except LLMError as e:
+                last_error = e
+                if not e.retryable:
+                    # Non-retryable error — try next fallback
+                    logger.warning(
+                        "Non-retryable error on model %s: %s — trying fallback",
+                        model_name, str(e),
+                        extra={"category": "error", "component": "llm"},
+                    )
+                    continue
+                else:
+                    # Retryable error — already retried in _complete_with_model,
+                    # so now try fallback
+                    logger.warning(
+                        "Retryable error exhausted on model %s: %s — trying fallback",
+                        model_name, str(e),
+                        extra={"category": "error", "component": "llm"},
+                    )
+                    continue
+
+        # All models exhausted
+        raise last_error or LLMError(
+            code="all_models_exhausted",
+            message="All models (primary + fallbacks) exhausted",
+            retryable=False,
+        )
+
+    async def _complete_with_model(
+        self,
+        model_name: str,
+        messages: list[dict],
+        tools: list[dict] | None,
+        thinking: str,
+        estimated_tokens: int,
+    ) -> AsyncIterator[LLMEvent]:
+        """Internal: try completion with a specific model, with retries."""
         last_error = None
         for attempt in range(MAX_RETRIES + 1):
             try:
                 thinking_param = self._build_thinking_param(thinking)
 
-                # litellm doesn't accept 'thinking' directly — pass as
-                # extra_body for DeepSeek or via the provider-specific mechanism
                 kwargs = {
-                    "model": self.model,
+                    "model": model_name,
                     "messages": messages,
                     "stream": True,
                     "stream_options": {"include_usage": True},
@@ -147,13 +218,47 @@ class LLMProvider:
                     kwargs["tools"] = tools
 
                 # Pass thinking parameter via litellm's extra_body for DeepSeek
-                if "deepseek" in self.model.lower():
+                if "deepseek" in model_name.lower():
                     kwargs["extra_body"] = {"thinking": thinking_param}
+
+                # Log request
+                t0 = time.monotonic()
+                logger.info(
+                    "LLM request: model=%s attempt=%d messages=%d tokens_est=%d",
+                    model_name, attempt + 1, len(messages), estimated_tokens,
+                    extra={
+                        "category": "llm",
+                        "event": "request",
+                        "model": model_name,
+                        "messages_count": len(messages),
+                        "estimated_tokens": estimated_tokens,
+                        "retry_count": attempt,
+                    },
+                )
 
                 response = await litellm.acompletion(**kwargs)
 
+                total_tokens = 0
                 async for event in self._stream_response(response):
                     yield event
+                    # Track token usage from Done events for logging
+                    if isinstance(event, Done) and event.usage:
+                        total_tokens = event.usage.total_tokens
+
+                # Log successful response
+                latency_ms = (time.monotonic() - t0) * 1000
+                logger.info(
+                    "LLM response: model=%s latency_ms=%.1f tokens=%d attempt=%d",
+                    model_name, latency_ms, total_tokens, attempt + 1,
+                    extra={
+                        "category": "llm",
+                        "event": "response",
+                        "model": model_name,
+                        "latency_ms": round(latency_ms, 1),
+                        "token_consumption": total_tokens,
+                        "retry_count": attempt,
+                    },
+                )
                 return
 
             except litellm.exceptions.RateLimitError as e:
@@ -207,6 +312,7 @@ class LLMProvider:
                     message=str(e),
                     retryable=True,
                 )
+
             except Exception as e:
                 raise LLMError(
                     code="unknown",
@@ -219,10 +325,10 @@ class LLMProvider:
                 delay = min(BASE_DELAY * (2**attempt), MAX_DELAY)
                 await asyncio.sleep(delay)
 
-        # Exhausted all retries
+        # All retries exhausted for this model
         raise last_error or LLMError(
             code="max_retries",
-            message="Max retries exhausted",
+            message="Max retries exhausted for this model",
             retryable=False,
         )
 

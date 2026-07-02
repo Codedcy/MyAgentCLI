@@ -112,7 +112,12 @@ class CompressionEngine:
         return result
 
     async def _layer3_summarize(self, messages: list[Message]) -> list[Message]:
-        """Summarize oldest messages using LLM."""
+        """Summarize oldest messages using real LLM call.
+
+        Takes the oldest portion of messages, sends them to the LLM for
+        summarization, and replaces them with a concise summary message.
+        Falls back to placeholder summary if LLM is unavailable or fails.
+        """
         if not self.llm or self._layer3_failures >= 3:
             return messages
 
@@ -124,10 +129,62 @@ class CompressionEngine:
         old = messages[:split]
         recent = messages[split:]
 
-        summary_text = f"[Conversation summary: {len(old)} messages covering {old[0].role} → {old[-1].role} exchanges]"
-        summary_msg = Message(role="system", content=summary_text)
+        # Build a compact representation of old messages for the summarizer
+        conversation_text = self._messages_to_text(old)
 
-        return [summary_msg] + recent
+        try:
+            summary_text = await self._summarize_with_llm(conversation_text, len(old))
+            summary_msg = Message(
+                role="system",
+                content=(
+                    f"[Conversation summary: {len(old)} messages compressed]\n"
+                    f"{summary_text}"
+                ),
+            )
+            return [summary_msg] + recent
+        except Exception:
+            # Fallback to placeholder
+            summary_text = f"[Conversation summary: {len(old)} messages covering {old[0].role} → {old[-1].role} exchanges]"
+            summary_msg = Message(role="system", content=summary_text)
+            return [summary_msg] + recent
+
+    def _messages_to_text(self, messages: list[Message]) -> str:
+        """Convert a list of messages to a compact text representation."""
+        lines = []
+        for m in messages:
+            role = m.role.upper()
+            content = m.content[:500] if m.content else "(empty)"
+            if len(m.content) > 500:
+                content += "..."
+            lines.append(f"[{role}] {content}")
+        return "\n".join(lines)
+
+    async def _summarize_with_llm(self, conversation_text: str, message_count: int) -> str:
+        """Use the LLM to produce a concise summary of the conversation."""
+        if not self.llm:
+            return f"Summary of {message_count} messages (LLM unavailable)."
+
+        summary_prompt = (
+            f"Summarize the following {message_count} conversation messages "
+            f"concisely. Keep all key decisions, facts, findings, and action items. "
+            f"Remove redundant exchanges and filler. Output only the summary, "
+            f"no preamble or meta-commentary.\n\n"
+            f"{conversation_text}"
+        )
+
+        messages_for_llm = [{"role": "user", "content": summary_prompt}]
+
+        collected = []
+        async for event in self.llm.complete(
+            messages=messages_for_llm,
+            tools=None,
+            thinking="Non-think",
+        ):
+            if hasattr(event, "content") and isinstance(event.content, str):
+                collected.append(event.content)
+
+        result = "".join(collected).strip()
+        return result if result else f"Summary of {message_count} messages (empty response)."
 
     def _layer4_truncate(self, messages: list[Message]) -> list[Message]:
         """Drop oldest message blocks to stay under hard limit."""

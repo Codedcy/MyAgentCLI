@@ -40,26 +40,46 @@ class SkillRegistry:
         for source, dir_path in tiers:
             if not dir_path or not dir_path.is_dir():
                 continue
-            for skill_dir in sorted(dir_path.iterdir()):
-                if not skill_dir.is_dir():
-                    continue
-                skill_md = skill_dir / "SKILL.md"
-                if not skill_md.exists():
-                    continue
+            self._scan_directory(dir_path, source)
+
+    def _scan_directory(self, dir_path: Path, source: str, depth: int = 0) -> None:
+        """Recursively scan for SKILL.md files up to one level deeper.
+
+        Top-level (depth 0): skill_dir/SKILL.md
+        One level deeper (depth 1): skill_dir/subdir/SKILL.md
+        """
+        if depth > 1:
+            return
+
+        for entry in sorted(dir_path.iterdir()):
+            if not entry.is_dir():
+                continue
+
+            # Check if this directory itself has a SKILL.md
+            skill_md = entry / "SKILL.md"
+            if skill_md.exists():
                 skill = SkillLoader.parse_skill_md(skill_md)
                 if skill:
-                    self._skills[skill.name] = skill
-                    # Replace entry if same name
-                    self._entries = [
-                        e for e in self._entries if e.name != skill.name
-                    ]
-                    self._entries.append(
-                        SkillEntry(
-                            name=skill.name,
-                            description=skill.description,
-                            source=source,
-                        )
-                    )
+                    self._register_skill(skill, source)
+
+            # Recursively scan one level deeper
+            if depth < 1:
+                self._scan_directory(entry, source, depth + 1)
+
+    def _register_skill(self, skill: Skill, source: str) -> None:
+        """Register a skill, replacing any existing entry with the same name."""
+        self._skills[skill.name] = skill
+        # Replace entry if same name
+        self._entries = [
+            e for e in self._entries if e.name != skill.name
+        ]
+        self._entries.append(
+            SkillEntry(
+                name=skill.name,
+                description=skill.description,
+                source=source,
+            )
+        )
 
     def list_all(self) -> list[SkillEntry]:
         return list(self._entries)

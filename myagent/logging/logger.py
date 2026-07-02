@@ -53,7 +53,7 @@ class LogManager:
         Called once at application startup. Creates:
         - Root logger "myagent" with configured level
         - QueueHandler → QueueListener → file handlers
-        - Daily rotation + retention cleanup
+        - Daily rotation + size-based rotation + retention cleanup
 
         Args:
             config: LoggingConfig dataclass. If None, uses defaults.
@@ -80,31 +80,26 @@ class LogManager:
         root.handlers.clear()
         root.propagate = False
 
+        # Resolve size rotation max_bytes
+        max_bytes = config.max_size_mb * 1024 * 1024
+        size_backup_count = max(config.retention_days, 5)
+
         # Build handlers
         handlers = []
 
         if config.format in ("jsonl", "both"):
-            jsonl_handler = logging.handlers.TimedRotatingFileHandler(
-                filename=str(log_dir / "myagent.log"),
-                when="midnight",
-                interval=1,
-                backupCount=config.retention_days,
-                encoding="utf-8",
-                delay=True,
+            jsonl_path = str(log_dir / "myagent.log")
+            jsonl_handler = LogManager._make_rotating_handler(
+                jsonl_path, max_bytes, size_backup_count
             )
             jsonl_handler.setFormatter(JsonLineFormatter())
             jsonl_handler.setLevel(logging.DEBUG)
-            jsonl_handler.namer = LogManager._rotated_filename
             handlers.append(jsonl_handler)
 
         if config.format in ("text", "both"):
-            text_handler = logging.handlers.TimedRotatingFileHandler(
-                filename=str(log_dir / "myagent-text.log"),
-                when="midnight",
-                interval=1,
-                backupCount=config.retention_days,
-                encoding="utf-8",
-                delay=True,
+            text_path = str(log_dir / "myagent-text.log")
+            text_handler = LogManager._make_rotating_handler(
+                text_path, max_bytes, size_backup_count
             )
             text_handler.setFormatter(
                 logging.Formatter(
@@ -112,7 +107,6 @@ class LogManager:
                 )
             )
             text_handler.setLevel(logging.DEBUG)
-            text_handler.namer = LogManager._rotated_filename
             handlers.append(text_handler)
 
         # Queue handler (async-safe)
@@ -174,6 +168,23 @@ class LogManager:
                     f.unlink()
         except Exception:
             pass  # cleanup is best-effort
+
+    @staticmethod
+    def _make_rotating_handler(
+        filename: str, max_bytes: int, backup_count: int
+    ) -> logging.handlers.RotatingFileHandler:
+        """Create a RotatingFileHandler with size-based rotation.
+
+        Rotates when the file reaches max_bytes, keeping up to backup_count
+        old files.
+        """
+        return logging.handlers.RotatingFileHandler(
+            filename=filename,
+            maxBytes=max_bytes,
+            backupCount=backup_count,
+            encoding="utf-8",
+            delay=True,
+        )
 
     @staticmethod
     def _rotated_filename(default_name: str) -> str:

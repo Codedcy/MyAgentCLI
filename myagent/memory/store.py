@@ -35,6 +35,9 @@ class SessionMemoryLog:
 
 FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 
+# Pattern for [[wiki-style links]] in markdown body
+LINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
+
 
 class MemoryStore:
     """Manages memory files with frontmatter + MEMORY.md index."""
@@ -55,17 +58,35 @@ class MemoryStore:
     async def write(self, file_path: str, content: str) -> MemoryFile:
         path = Path(file_path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        existed = path.exists()
-        path.write_text(content, encoding="utf-8")
 
         fm = self._parse_frontmatter(content)
+        fm_name = fm.get("name", path.stem)
+
+        # Dedup check: look for existing files with the same frontmatter name
+        # (from a different path). If found, treat as update (not duplicate).
+        existed = path.exists()
+        if not existed:
+            existing = await self._find_by_name(fm_name)
+            if existing and existing != path:
+                existed = True
+
+        path.write_text(content, encoding="utf-8")
+
+        # Extract [[wiki-style links]] from the body
+        body = self._body(content)
+        links = LINK_RE.findall(body)
+
         mf = MemoryFile(
-            name=fm.get("name", path.stem),
+            name=fm_name,
             description=fm.get("description", ""),
             metadata=fm.get("metadata", {}),
-            content=self._body(content),
+            content=body,
             path=path,
         )
+
+        # Store extracted links in metadata for cross-reference
+        if links:
+            mf.metadata["links"] = links
 
         if existed:
             self._session_log.updated.append(mf.name)
@@ -76,20 +97,19 @@ class MemoryStore:
         return mf
 
     async def read(self, name: str) -> MemoryFile | None:
-        for d in (self.project_dir, self.user_dir):
-            for f in d.glob("*.md"):
-                content = f.read_text(encoding="utf-8")
-                fm = self._parse_frontmatter(content)
-                fm_name = fm.get("name", "")
-                if f.stem == name or fm_name == name:
-                    return MemoryFile(
-                        name=fm.get("name", f.stem),
-                        description=fm.get("description", ""),
-                        metadata=fm.get("metadata", {}),
-                        content=self._body(content),
-                        path=f,
-                    )
-        return None
+        found = await self._find_by_name(name)
+        if found is None:
+            return None
+        f = found
+        content = f.read_text(encoding="utf-8")
+        fm = self._parse_frontmatter(content)
+        return MemoryFile(
+            name=fm.get("name", f.stem),
+            description=fm.get("description", ""),
+            metadata=fm.get("metadata", {}),
+            content=self._body(content),
+            path=f,
+        )
 
     async def delete(self, name: str) -> None:
         for d in (self.project_dir, self.user_dir):
@@ -125,6 +145,19 @@ class MemoryStore:
     def _body(self, content: str) -> str:
         m = FRONTMATTER_RE.match(content)
         return content[m.end():] if m else content
+
+    async def _find_by_name(self, name: str) -> Path | None:
+        """Find a memory file by frontmatter name or stem across both dirs."""
+        for d in (self.project_dir, self.user_dir):
+            for f in d.glob("*.md"):
+                if f.name == "MEMORY.md":
+                    continue
+                content = f.read_text(encoding="utf-8")
+                fm = self._parse_frontmatter(content)
+                fm_name = fm.get("name", "")
+                if f.stem == name or fm_name == name:
+                    return f
+        return None
 
     async def _update_index(self, mem_dir: Path) -> None:
         index_path = mem_dir / "MEMORY.md"
