@@ -12,9 +12,13 @@ Design doc reference: §五 权限/沙箱系统
 from __future__ import annotations
 
 import fnmatch
+import logging
+import sys
 from dataclasses import dataclass
 from enum import Enum
 from typing import Literal
+
+logger = logging.getLogger("myagent.permissions")
 
 
 class PermissionResult(Enum):
@@ -132,12 +136,71 @@ class PermissionController:
     async def confirm(self, tool_name: str, params: dict | None = None) -> bool:
         """Interactive confirmation dialog. Returns True if user approves.
 
-        Note: This is a stub that returns True by default for testing.
-        In production, this uses Rich/Prompt for interactive UI.
+        Non-TTY fallback returns True. No timeout — wait forever.
         """
-        # In production, this would display a Rich dialog and wait for user input.
-        # No timeout — wait forever for user response (per design doc §五).
-        return True
+        params = params or {}
+        level = self._get_level(tool_name)
+        level_names = {0: "read", 1: "write", 2: "exec", 3: "network_write"}
+        level_name = level_names.get(level, f"L{level}")
+
+        # Non-interactive environment (tests, CI, piped stdin)
+        if not sys.stdin.isatty():
+            logger.warning(
+                "Non-interactive environment — auto-allowing %s (level=%s)",
+                tool_name,
+                level_name,
+            )
+            return True
+
+        # Rich may not be installed — graceful fallback
+        try:
+            from rich.console import Console
+            from rich.panel import Panel
+            from rich.prompt import Prompt
+        except ImportError:
+            logger.warning("Rich not available — auto-allowing %s", tool_name)
+            return True
+
+        console = Console()
+
+        # Build params summary — truncate long values to 80 chars
+        params_lines: list[str] = []
+        for k, v in params.items():
+            v_str = str(v)
+            if len(v_str) > 80:
+                v_str = v_str[:77] + "..."
+            params_lines.append(f"  [bold]{k}[/bold]: {v_str}")
+        params_text = "\n".join(params_lines) if params_lines else "  (none)"
+
+        content = (
+            f"[bold]Tool:[/bold] {tool_name}\n"
+            f"[bold]Level:[/bold] {level_name} (L{level})\n"
+            f"[bold]Params:[/bold]\n{params_text}\n\n"
+            "[dim][A] Allow once  |  [D] Deny  |  [Y] Yes to all[/dim]"
+        )
+
+        panel = Panel(
+            content,
+            title="[bold]Permission Required[/bold]",
+            border_style="yellow",
+        )
+        console.print(panel)
+
+        choice = Prompt.ask(
+            "Choose",
+            choices=["A", "a", "D", "d", "Y", "y"],
+            default="A",
+            show_choices=False,
+        )
+
+        choice = choice.upper()
+        if choice == "D":
+            return False
+        elif choice == "Y":
+            self.set_mode("allow_all")
+            return True
+        else:  # "A"
+            return True
 
     # ── internal ────────────────────────────────────────────────
 
