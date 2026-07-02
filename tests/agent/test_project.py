@@ -162,3 +162,39 @@ class TestProjectDetector:
 
         assert ctx.is_git_repo is False
         assert ctx.git_branch is None
+
+    def test_find_git_root_current_dir(self, tmp_project_dir):
+        """_find_git_root finds .git in the current directory."""
+        (tmp_project_dir / ".git").mkdir()
+        result = ProjectDetector._find_git_root(tmp_project_dir)
+        assert result is not None
+        assert result.resolve() == tmp_project_dir.resolve()
+
+    def test_find_git_root_parent_dir(self, tmp_project_dir):
+        """_find_git_root walks up to find .git in a parent directory."""
+        git_root = tmp_project_dir / "repo"
+        git_root.mkdir()
+        (git_root / ".git").mkdir()
+        sub_dir = git_root / "src" / "deep" / "nested"
+        sub_dir.mkdir(parents=True)
+
+        result = ProjectDetector._find_git_root(sub_dir)
+        assert result is not None
+        assert result.resolve() == git_root.resolve()
+
+    def test_find_git_root_not_found(self, tmp_project_dir):
+        """_find_git_root returns None when no .git is found up the tree."""
+        result = ProjectDetector._find_git_root(tmp_project_dir)
+        assert result is None
+
+    def test_find_git_root_max_depth(self, tmp_project_dir):
+        """_find_git_root stops after 10 levels."""
+        deep = tmp_project_dir
+        for i in range(12):
+            deep = deep / f"level_{i}"
+            deep.mkdir(exist_ok=True)
+        # .git is at tmp_project_dir level, but we start 12 levels deep
+        (tmp_project_dir / ".git").mkdir()
+        result = ProjectDetector._find_git_root(deep)
+        # It should fail because we're more than 10 levels deep
+        assert result is None

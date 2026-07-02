@@ -87,6 +87,23 @@ class ProjectDetector:
         "CLAUDE.md",
     ]
 
+    @staticmethod
+    def _find_git_root(start_dir: Path) -> Path | None:
+        """Walk up directory tree from start_dir looking for .git.
+
+        Stops after 10 levels or at the filesystem root.
+        Returns the directory containing .git, or None if not found.
+        """
+        current = start_dir.resolve()
+        for _ in range(10):
+            if (current / ".git").is_dir():
+                return current
+            parent = current.parent
+            if parent == current:  # filesystem root
+                break
+            current = parent
+        return None
+
     async def detect(self, project_dir: Path) -> ProjectContext:
         """Detect project environment.
 
@@ -94,6 +111,11 @@ class ProjectDetector:
         results in the corresponding field being set to its default
         (False/None/"unknown"), never an exception.
         """
+        # Auto-detect git root: walk up from project_dir to find .git
+        git_root = self._find_git_root(project_dir)
+        if git_root is not None:
+            project_dir = git_root
+
         ctx = ProjectContext()
         ctx.project_hash = hashlib.sha256(
             str(project_dir.resolve()).encode()

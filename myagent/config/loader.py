@@ -14,6 +14,8 @@ Design doc reference: §九 — Config merge strategy
 
 from __future__ import annotations
 
+import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -180,30 +182,92 @@ class ConfigLoader:
 
     # ── internal helpers ───────────────────────────────────────
 
+    @staticmethod
+    def _expand_env_vars(content: str) -> str:
+        """Expand ${VAR} patterns and ~ in config content.
+
+        1. ${VAR} → os.environ value (unmatched left as-is)
+        2. ~ followed by / → os.path.expanduser (path expansion)
+        """
+        # Expand ${VAR} patterns
+        content = re.sub(
+            r"\$\{(\w+)\}",
+            lambda m: os.environ.get(m.group(1), m.group(0)),
+            content,
+        )
+        # Expand ~ when followed by / (path context, not YAML null)
+        content = re.sub(
+            r"~(?=/)",
+            lambda m: os.path.expanduser(m.group(0)),
+            content,
+        )
+        return content
+
     def _load_yaml(self, path: Path) -> dict:
-        """Parse YAML file; return {} if missing or empty."""
+        """Parse YAML file; return {} if missing or empty.
+
+        Expands ${VAR} environment variables and ~ paths before parsing.
+        """
         if not path.exists():
             return {}
         content = path.read_text(encoding="utf-8").strip()
         if not content:
             return {}
+        content = self._expand_env_vars(content)
         data = yaml.safe_load(content)
         return data if isinstance(data, dict) else {}
 
     def _load_agent_md(self, path: Path) -> dict:
-        """Extract config-relevant directives from AGENT.md.
+        """Extract YAML frontmatter from AGENT.md for config merge.
 
-        AGENT.md is natural-language guidance, not structured config.
-        This method looks for YAML frontmatter or explicit config blocks.
-        If none found, returns empty dict — AGENT.md guidance is loaded
-        into context, not merged into config.
+        Parses YAML frontmatter between --- delimiters.
+        Recognised section keys: model, context, permissions, tools, ui,
+        subagents, dream, session, logging.
+        Unknown keys are silently ignored.
         """
         if not path.exists():
             return {}
-        # AGENT.md directives are loaded as project context (L3),
-        # not as structured config. Return empty dict.
-        # Future: could extract YAML frontmatter blocks.
-        return {}
+
+        content = path.read_text(encoding="utf-8")
+        if not content.startswith("---"):
+            return {}
+
+        lines = content.split("\n")
+        # Find closing --- after the opening line
+        end_idx = None
+        for i in range(1, len(lines)):
+            if lines[i].strip() == "---":
+                end_idx = i
+                break
+
+        if end_idx is None:
+            return {}
+
+        frontmatter_text = "\n".join(lines[1:end_idx])
+        if not frontmatter_text.strip():
+            return {}
+
+        frontmatter_text = self._expand_env_vars(frontmatter_text)
+
+        try:
+            frontmatter = yaml.safe_load(frontmatter_text)
+        except yaml.YAMLError:
+            return {}
+
+        if not isinstance(frontmatter, dict):
+            return {}
+
+        # Only allow recognised config section keys
+        allowed_keys = {
+            "model", "context", "permissions", "tools", "ui",
+            "subagents", "dream", "session", "logging",
+        }
+        result = {}
+        for key in frontmatter:
+            if key in allowed_keys:
+                result[key] = frontmatter[key]
+
+        return result
 
     def _apply_cli_args(self, merged: dict, cli_args: dict) -> dict:
         """Apply CLI argument overrides (highest priority)."""
