@@ -290,6 +290,11 @@ class AgentEngine:
                         )
                     # Re-estimate usage after compact for hard-limit check below
                     usage_pct = compact_result.usage_after
+                    # Reset 50% notification flag if compaction dropped usage
+                    # well below the warning threshold, so the user gets
+                    # re-warned if context climbs back above 50% (gap-16-03).
+                    if usage_pct < 0.30:
+                        context_notified_50 = False
 
                 # G9: Independent 90% hard truncation trigger (separate from 75% compaction guard)
                 # Per spec flowchart §三: 90% hard limit is a separate trigger path (HARSH).
