@@ -64,13 +64,26 @@ class TaskList:
         self._persist_path = persist_path
         self._load_from_disk()
 
-    def create(self, subject: str, description: str, active_form: str | None = None) -> TaskItem:
+    def create(
+        self,
+        subject: str,
+        description: str,
+        active_form: str | None = None,
+        blocks: list[str] | None = None,
+        blocked_by: list[str] | None = None,
+        owner: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> TaskItem:
         tid = str(next(self._counter))
         task = TaskItem(
             id=tid,
             subject=subject,
             description=description,
             active_form=active_form,
+            blocks=blocks or [],
+            blocked_by=blocked_by or [],
+            owner=owner,
+            metadata=metadata or {},
         )
         self.tasks[tid] = task
         self._save_to_disk()
@@ -146,7 +159,7 @@ def reset_task_list(persist_path: Path | None = None) -> None:
 
 class TaskCreateTool:
     name = "task_create"
-    description = "Create a structured task for tracking progress."
+    description = "Create a structured task for tracking progress. Supports dependency tracking."
     parameters = {
         "type": "object",
         "properties": {
@@ -162,6 +175,24 @@ class TaskCreateTool:
                 "type": "string",
                 "description": "Present continuous form for status display",
             },
+            "blocks": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Task IDs that this task blocks (dependent tasks)",
+            },
+            "blockedBy": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Task IDs that must complete before this task can start",
+            },
+            "owner": {
+                "type": "string",
+                "description": "Agent or user name assigned to this task",
+            },
+            "metadata": {
+                "type": "object",
+                "description": "Arbitrary metadata key-value pairs",
+            },
         },
         "required": ["subject", "description"],
     }
@@ -171,6 +202,10 @@ class TaskCreateTool:
             subject=params["subject"],
             description=params["description"],
             active_form=params.get("activeForm"),
+            blocks=params.get("blocks"),
+            blocked_by=params.get("blockedBy"),
+            owner=params.get("owner"),
+            metadata=params.get("metadata"),
         )
         return ToolResult(
             output=f"Task #{task.id} created: {task.subject}",
@@ -180,7 +215,7 @@ class TaskCreateTool:
 
 class TaskUpdateTool:
     name = "task_update"
-    description = "Update a task's status, subject, or other fields."
+    description = "Update a task's status, subject, dependencies, owner, or metadata."
     parameters = {
         "type": "object",
         "properties": {
@@ -195,6 +230,24 @@ class TaskUpdateTool:
             "subject": {"type": "string"},
             "description": {"type": "string"},
             "activeForm": {"type": "string"},
+            "blocks": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Task IDs that this task blocks (dependent tasks)",
+            },
+            "blockedBy": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Task IDs that must complete before this task can start",
+            },
+            "owner": {
+                "type": "string",
+                "description": "Agent or user name assigned to this task",
+            },
+            "metadata": {
+                "type": "object",
+                "description": "Arbitrary metadata key-value pairs to merge into existing metadata",
+            },
         },
         "required": ["taskId"],
     }
@@ -205,11 +258,27 @@ class TaskUpdateTool:
         if task_id not in tl.tasks:
             return ToolResult(error=f"Task {task_id} not found")
 
+        # Map camelCase parameter names to snake_case internal field names
+        field_mapping = {
+            "status": "status",
+            "subject": "subject",
+            "description": "description",
+            "activeForm": "active_form",
+            "blocks": "blocks",
+            "blockedBy": "blocked_by",
+            "owner": "owner",
+            "metadata": "metadata",
+        }
         update_kwargs = {}
-        for field in ("status", "subject", "description", "activeForm"):
-            if field in params:
-                key = "active_form" if field == "activeForm" else field
-                update_kwargs[key] = params[field]
+        for param_key, field_key in field_mapping.items():
+            if param_key in params:
+                update_kwargs[field_key] = params[param_key]
+
+        # For metadata, merge into existing metadata rather than replace
+        if "metadata" in params:
+            existing = tl.tasks[task_id].metadata or {}
+            merged = {**existing, **params["metadata"]}
+            update_kwargs["metadata"] = merged
 
         task = tl.update(task_id, **update_kwargs)
         return ToolResult(
