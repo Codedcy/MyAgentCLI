@@ -265,6 +265,17 @@ class REPLEngine:
                 # so the main loop can show "Exit? (y/n)" confirmation
                 event.app.exit(result=self._SENTINEL_CTRL_C)
 
+            @kb.add("enter")
+            def _(event):
+                """Submit on Enter. Use Alt+Enter or Esc+Enter for newlines."""
+                buffer = event.current_buffer
+                buffer.validate_and_handle()
+
+            @kb.add("escape", "enter")
+            def _(event):
+                """Alt+Enter / Esc+Enter inserts a newline."""
+                event.current_buffer.insert_text("\n")
+
             # Build completer (gap-2-05)
             skill_registry = (
                 self._engine.skill_registry if self._engine else None
