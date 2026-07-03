@@ -236,7 +236,8 @@ class AgentEngine:
                     yield TextChunk(
                         content=(
                             f"\n[Note: Context usage at {int(usage_pct * 100)}%. "
-                            f"Consider running /clear to free space.]\n"
+                            f"Consider running /compact to compress context "
+                            f"or /clear to wipe in-memory messages.]\n"
                         )
                     )
                 if usage_pct >= 0.75:

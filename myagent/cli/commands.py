@@ -38,6 +38,7 @@ class CommandDispatcher:
         self._commands["skills"] = self._cmd_skills
         self._commands["dream"] = self._cmd_dream
         self._commands["clear"] = self._cmd_clear
+        self._commands["compact"] = self._cmd_compact
         self._commands["history"] = self._cmd_history
         self._commands["help"] = self._cmd_help
         self._commands["exit"] = self._cmd_exit
@@ -117,6 +118,7 @@ class CommandDispatcher:
             "  /goal [text|clear]                    — Set, view, or clear current goal",
             "  /skills                               — List available skills",
             "  /dream                                — Run memory consolidation dream cycle",
+            "  /compact                              — Non-destructively compress conversation context",
             "  /clear                                — Clear in-memory conversation (preserves transcripts)",
             "  /history [N]                          — Show recent conversation history",
             "  /help                                 — Show this help message",
@@ -127,6 +129,66 @@ class CommandDispatcher:
         ]
         return CommandResult(output="\n".join(lines))
 
+    async def _cmd_compact(self, args: str, ctx: CommandContext) -> CommandResult:
+        """Trigger manual context compression (G7).
+
+        Non-destructive alternative to /clear. Compresses conversation
+        history through the 4-layer compression engine (cleanup, summarize
+        tool results, summarize conversation, truncate) instead of wiping
+        all in-memory messages.
+        """
+        compression = getattr(ctx.engine, 'compression', None) if ctx.engine else None
+        if not compression:
+            return CommandResult(
+                output="Compression engine not available.",
+                success=False,
+            )
+
+        if ctx.session is None or not hasattr(ctx.session, "_messages"):
+            return CommandResult(
+                output="No conversation messages to compact.",
+                success=False,
+            )
+
+        messages = list(ctx.session._messages)
+        if not messages:
+            return CommandResult(output="No messages to compact.")
+
+        before_count = len(messages)
+        before_chars = sum(len(m.content) for m in messages)
+
+        try:
+            # Estimate current context usage for the compression engine
+            estimated_usage = 0.55  # Default to above 50% for manual trigger
+            result = await compression.compact(messages, estimated_usage)
+
+            # Replace session messages with compacted ones
+            ctx.session._messages.clear()
+            ctx.session._messages.extend(result.messages)
+
+            after_count = len(result.messages)
+            after_chars = sum(len(m.content) for m in result.messages)
+
+            layers_desc = ", ".join(f"L{layer}" for layer in result.layers_applied) if result.layers_applied else "none"
+            reduction_pct = (
+                ((before_chars - after_chars) / before_chars * 100)
+                if before_chars > 0 else 0
+            )
+
+            return CommandResult(
+                output=(
+                    f"Context compacted: {before_count} → {after_count} messages "
+                    f"({reduction_pct:.0f}% size reduction).\n"
+                    f"Layers applied: {layers_desc}.\n"
+                    f"Tip: Use /clear to fully wipe in-memory messages."
+                )
+            )
+        except Exception as e:
+            return CommandResult(
+                output=f"Compaction failed: {e}",
+                success=False,
+            )
+
     async def _cmd_clear(self, args: str, ctx: CommandContext) -> CommandResult:
         """Clear in-memory conversation messages while preserving disk transcripts."""
         cleared = 0
@@ -134,7 +196,11 @@ class CommandDispatcher:
             cleared = len(ctx.session._messages)
             ctx.session._messages.clear()
         return CommandResult(
-            output=f"Conversation cleared: {cleared} messages removed (transcripts preserved on disk)."
+            output=(
+                f"Conversation cleared: {cleared} messages removed "
+                f"(transcripts preserved on disk).\n"
+                f"Tip: Use /compact for non-destructive compression instead."
+            )
         )
 
     async def _cmd_history(self, args: str, ctx: CommandContext) -> CommandResult:
