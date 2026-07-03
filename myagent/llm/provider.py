@@ -1,21 +1,21 @@
 """LiteLLM async provider wrapper.
 
 Wraps litellm.acompletion with streaming, thinking mode mapping,
-error handling, retry logic, request/response logging, and fallback model support.
+error handling, retry logic (delegated to LiteLLM built-in retry mechanism),
+request/response logging, and fallback model support.
 
 Design doc reference: §二 核心 Agent 循环 — LLM Error Handling
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import time
 from datetime import datetime
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import AsyncIterator, Literal
+from typing import AsyncIterator, Any
 
 import litellm
 
@@ -77,8 +77,6 @@ class LLMError(Exception):
 # ── Retry configuration ─────────────────────────────────────────
 
 MAX_RETRIES = 3
-BASE_DELAY = 2.0  # seconds
-MAX_DELAY = 30.0  # seconds
 
 RETRYABLE_HTTP_CODES = {429, 500, 502, 503, 504}
 
@@ -107,7 +105,9 @@ class LLMProvider:
                           If None, uses deepseek-v4-pro defaults.
             logging_config: LoggingConfig for prompt logging (gap-10).
             retry_callback: Optional callable(attempt, max_retries, delay) for UI
-                            retry progress updates (gap-33).
+                            retry progress updates (gap-33). When using LiteLLM's
+                            built-in retry, this is called via litellm's failure
+                            hook on each retry attempt.
             streaming: Whether to stream responses (default True). When False,
                        the full response is collected and emitted as a single
                        TextDelta (G5).
@@ -127,6 +127,17 @@ class LLMProvider:
         self._session_id: str | None = None
         self._prompt_counter: int = 0
         self._streaming = streaming
+
+        # Configure LiteLLM's built-in retry mechanism (spec §二: 使用 LiteLLM 内置 retry 机制).
+        # num_retries controls the number of retries litellm performs internally
+        # on retryable errors (429, 5xx, connection errors, timeouts).
+        litellm.num_retries = MAX_RETRIES
+
+        # Set up a failure hook that relays retry progress to our callback for UI.
+        # litellm calls success_callback / failure_callback from its internal retry loop,
+        # so we get notified on each individual attempt (gap-33).
+        if self._retry_callback:
+            self._register_litellm_failure_hook()
 
     def set_session_id(self, session_id: str) -> None:
         """Set session ID for prompt log file naming."""
@@ -218,6 +229,37 @@ class LLMProvider:
             retryable=False,
         )
 
+    def _register_litellm_failure_hook(self) -> None:
+        """Register a litellm failure hook for UI retry progress (gap-33).
+
+        litellm calls failure hooks on each individual failure during its
+        internal retry loop. We relay that information to our retry_callback
+        so the status bar can show retry progress.
+        """
+        callback = self._retry_callback
+
+        async def _failure_hook(kwargs, completion_response, start_time, end_time):
+            """Called by litellm on each failed attempt during retry."""
+            if callback is None:
+                return
+            if not hasattr(self, '_failure_count'):
+                self._failure_count = 0
+            self._failure_count += 1
+            attempt = self._failure_count
+            try:
+                callback(attempt, MAX_RETRIES, 0)
+            except Exception:
+                pass
+
+        # Register the failure hook with litellm.
+        if not hasattr(litellm, 'failure_callback') or litellm.failure_callback is None:
+            litellm.failure_callback = []
+        litellm.failure_callback.append(_failure_hook)
+
+    def _reset_failure_count(self) -> None:
+        """Reset the per-call failure counter for retry progress tracking."""
+        self._failure_count: int = 0
+
     async def _complete_with_model(
         self,
         model_name: str,
@@ -226,209 +268,199 @@ class LLMProvider:
         thinking: str,
         estimated_tokens: int,
     ) -> AsyncIterator[LLMEvent]:
-        """Internal: try completion with a specific model, with retries."""
-        last_error = None
-        for attempt in range(MAX_RETRIES + 1):
-            try:
-                thinking_param = self._build_thinking_param(thinking)
+        """Internal: try completion with a specific model.
 
-                kwargs = {
+        Retries are delegated to LiteLLM's built-in retry mechanism
+        (configured via litellm.num_retries in __init__). On retryable
+        errors, litellm automatically retries with exponential backoff.
+        Only non-retryable errors or errors that exhaust all retries
+        are raised to the caller.
+
+        Design doc reference: §二 — "使用 LiteLLM 内置 retry 机制"
+        """
+        self._reset_failure_count()
+
+        try:
+            thinking_param = self._build_thinking_param(thinking)
+
+            kwargs: dict[str, Any] = {
+                "model": model_name,
+                "messages": messages,
+                "stream": self._streaming,
+            }
+            if self._streaming:
+                kwargs["stream_options"] = {"include_usage": True}
+
+            if tools:
+                kwargs["tools"] = tools
+
+            # Pass thinking parameter via litellm's extra_body for DeepSeek
+            if "deepseek" in model_name.lower():
+                kwargs["extra_body"] = {"thinking": thinking_param}
+
+            # Log request + write prompt files (gap-10)
+            t0 = time.monotonic()
+            logger.info(
+                "LLM request: model=%s messages=%d tokens_est=%d tools=%d stream=%s",
+                model_name, len(messages), estimated_tokens,
+                len(tools) if tools else 0, self._streaming,
+                extra={
+                    "category": "llm",
+                    "event": "request",
                     "model": model_name,
-                    "messages": messages,
+                    "thinking_mode": thinking,
+                    "messages_count": len(messages),
+                    "estimated_tokens": estimated_tokens,
+                    "tools_count": len(tools) if tools else 0,
                     "stream": self._streaming,
-                }
-                if self._streaming:
-                    kwargs["stream_options"] = {"include_usage": True}
+                },
+            )
+            # Write full prompts to .prompts/ if enabled
+            self._write_prompt_logs(model_name, messages, tools, 0)
 
-                if tools:
-                    kwargs["tools"] = tools
+            response = await litellm.acompletion(**kwargs)
 
-                # Pass thinking parameter via litellm's extra_body for DeepSeek
-                if "deepseek" in model_name.lower():
-                    kwargs["extra_body"] = {"thinking": thinking_param}
+            total_tokens = 0
+            prompt_tokens = 0
+            completion_tokens = 0
+            tool_calls_count = 0
+            response_text_chunks: list[str] = []
+            response_tool_calls: list[dict] = []
 
-                # Log request + write prompt files (gap-10)
-                t0 = time.monotonic()
-                logger.info(
-                    "LLM request: model=%s attempt=%d messages=%d tokens_est=%d tools=%d stream=%s",
-                    model_name, attempt + 1, len(messages), estimated_tokens,
-                    len(tools) if tools else 0, self._streaming,
-                    extra={
-                        "category": "llm",
-                        "event": "request",
-                        "model": model_name,
-                        "thinking_mode": thinking,
-                        "messages_count": len(messages),
-                        "estimated_tokens": estimated_tokens,
-                        "tools_count": len(tools) if tools else 0,
-                        "stream": self._streaming,
-                        "retry_count": attempt,
-                    },
-                )
-                # Write full prompts to .prompts/ if enabled
-                self._write_prompt_logs(model_name, messages, tools, attempt)
-
-                response = await litellm.acompletion(**kwargs)
-
-                total_tokens = 0
-                prompt_tokens = 0
-                completion_tokens = 0
-                tool_calls_count = 0
-                response_text_chunks: list[str] = []
-                response_tool_calls: list[dict] = []
-
-                if self._streaming:
-                    async for event in self._stream_response(response):
-                        if isinstance(event, ToolCall):
-                            tool_calls_count += 1
-                            response_tool_calls.append({
-                                "id": event.id,
-                                "name": event.name,
-                                "params": event.params,
-                            })
-                        if isinstance(event, TextDelta):
-                            response_text_chunks.append(event.content)
-                        yield event
-                        # Track token usage from Done events for logging
-                        if isinstance(event, Done) and event.usage:
-                            total_tokens = event.usage.total_tokens
-                            prompt_tokens = event.usage.prompt_tokens
-                            completion_tokens = event.usage.completion_tokens
-                else:
-                    # G5: Non-streaming path — collect full response then emit
-                    await self._process_non_streaming(
-                        response, response_text_chunks, response_tool_calls,
-                    )
-                    # Emit collected text as single TextDelta
-                    full_text = "".join(response_text_chunks)
-                    if full_text:
-                        yield TextDelta(content=full_text)
-                    # Emit collected tool calls
-                    for tc in response_tool_calls:
+            if self._streaming:
+                async for event in self._stream_response(response):
+                    if isinstance(event, ToolCall):
                         tool_calls_count += 1
-                        yield ToolCall(
-                            id=tc.get("id", ""),
-                            name=tc.get("name", ""),
-                            params=tc.get("params", {}),
-                        )
-                    # Extract usage
-                    if hasattr(response, 'usage') and response.usage:
-                        usage = response.usage
-                        prompt_tokens = getattr(usage, 'prompt_tokens', 0) or 0
-                        completion_tokens = getattr(usage, 'completion_tokens', 0) or 0
-                        total_tokens = getattr(usage, 'total_tokens', 0) or 0
-                        yield Done(
-                            stop_reason="end_turn",
-                            usage=Usage(
-                                prompt_tokens=prompt_tokens,
-                                completion_tokens=completion_tokens,
-                                total_tokens=total_tokens,
-                            ),
-                        )
-                    else:
-                        yield Done(stop_reason="end_turn")
-
-                # Log successful response with individual token breakdown (gap-2-10)
-                latency_ms = (time.monotonic() - t0) * 1000
-                logger.info(
-                    "LLM response: model=%s latency_ms=%.1f tokens=%d attempt=%d tool_calls=%d",
-                    model_name, latency_ms, total_tokens, attempt + 1, tool_calls_count,
-                    extra={
-                        "category": "llm",
-                        "event": "response",
-                        "model": model_name,
-                        "latency_ms": round(latency_ms, 1),
-                        "prompt_tokens": prompt_tokens,
-                        "completion_tokens": completion_tokens,
-                        "total_tokens": total_tokens,
-                        "token_consumption": total_tokens,
-                        "tool_calls_count": tool_calls_count,
-                        "retry_count": attempt,
-                    },
+                        response_tool_calls.append({
+                            "id": event.id,
+                            "name": event.name,
+                            "params": event.params,
+                        })
+                    if isinstance(event, TextDelta):
+                        response_text_chunks.append(event.content)
+                    yield event
+                    # Track token usage from Done events for logging
+                    if isinstance(event, Done) and event.usage:
+                        total_tokens = event.usage.total_tokens
+                        prompt_tokens = event.usage.prompt_tokens
+                        completion_tokens = event.usage.completion_tokens
+            else:
+                # G5: Non-streaming path — collect full response then emit
+                await self._process_non_streaming(
+                    response, response_text_chunks, response_tool_calls,
                 )
-                # Write response prompt file (gap-2-06)
-                self._write_response_log(
-                    model_name, response_text_chunks, response_tool_calls,
-                    prompt_tokens, completion_tokens, total_tokens, latency_ms, attempt,
-                )
-                return
-
-            except litellm.exceptions.RateLimitError as e:
-                last_error = LLMError(
-                    code="rate_limit",
-                    message=str(e),
-                    retryable=True,
-                )
-            except litellm.exceptions.APIConnectionError as e:
-                last_error = LLMError(
-                    code="connection_error",
-                    message=str(e),
-                    retryable=True,
-                )
-            except litellm.exceptions.InternalServerError as e:
-                last_error = LLMError(
-                    code="server_error",
-                    message=str(e),
-                    retryable=True,
-                )
-            except litellm.exceptions.AuthenticationError as e:
-                raise LLMError(
-                    code="auth_error",
-                    message=str(e),
-                    retryable=False,
-                )
-            except litellm.exceptions.BadRequestError as e:
-                raise LLMError(
-                    code="bad_request",
-                    message=str(e),
-                    retryable=False,
-                )
-            except litellm.exceptions.APIError as e:
-                # Check HTTP status code for retryability
-                status = getattr(e, "status_code", None)
-                if status in RETRYABLE_HTTP_CODES:
-                    last_error = LLMError(
-                        code=f"api_error_{status}",
-                        message=str(e),
-                        retryable=True,
+                # Emit collected text as single TextDelta
+                full_text = "".join(response_text_chunks)
+                if full_text:
+                    yield TextDelta(content=full_text)
+                # Emit collected tool calls
+                for tc in response_tool_calls:
+                    tool_calls_count += 1
+                    yield ToolCall(
+                        id=tc.get("id", ""),
+                        name=tc.get("name", ""),
+                        params=tc.get("params", {}),
+                    )
+                # Extract usage
+                if hasattr(response, 'usage') and response.usage:
+                    usage = response.usage
+                    prompt_tokens = getattr(usage, 'prompt_tokens', 0) or 0
+                    completion_tokens = getattr(usage, 'completion_tokens', 0) or 0
+                    total_tokens = getattr(usage, 'total_tokens', 0) or 0
+                    yield Done(
+                        stop_reason="end_turn",
+                        usage=Usage(
+                            prompt_tokens=prompt_tokens,
+                            completion_tokens=completion_tokens,
+                            total_tokens=total_tokens,
+                        ),
                     )
                 else:
-                    raise LLMError(
-                        code=f"api_error_{status}",
-                        message=str(e),
-                        retryable=getattr(e, "status_code", 0) >= 500,
-                    )
-            except (asyncio.TimeoutError, TimeoutError) as e:
-                last_error = LLMError(
-                    code="timeout",
+                    yield Done(stop_reason="end_turn")
+
+            # Log successful response with individual token breakdown (gap-2-10)
+            latency_ms = (time.monotonic() - t0) * 1000
+            logger.info(
+                "LLM response: model=%s latency_ms=%.1f tokens=%d tool_calls=%d",
+                model_name, latency_ms, total_tokens, tool_calls_count,
+                extra={
+                    "category": "llm",
+                    "event": "response",
+                    "model": model_name,
+                    "latency_ms": round(latency_ms, 1),
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "total_tokens": total_tokens,
+                    "token_consumption": total_tokens,
+                    "tool_calls_count": tool_calls_count,
+                    "retry_count": 0,
+                },
+            )
+            # Write response prompt file (gap-2-06)
+            self._write_response_log(
+                model_name, response_text_chunks, response_tool_calls,
+                prompt_tokens, completion_tokens, total_tokens, latency_ms, 0,
+            )
+            return
+
+        except litellm.exceptions.RateLimitError as e:
+            raise LLMError(
+                code="rate_limit",
+                message=str(e),
+                retryable=True,
+            )
+        except litellm.exceptions.APIConnectionError as e:
+            raise LLMError(
+                code="connection_error",
+                message=str(e),
+                retryable=True,
+            )
+        except litellm.exceptions.InternalServerError as e:
+            raise LLMError(
+                code="server_error",
+                message=str(e),
+                retryable=True,
+            )
+        except litellm.exceptions.AuthenticationError as e:
+            raise LLMError(
+                code="auth_error",
+                message=str(e),
+                retryable=False,
+            )
+        except litellm.exceptions.BadRequestError as e:
+            raise LLMError(
+                code="bad_request",
+                message=str(e),
+                retryable=False,
+            )
+        except litellm.exceptions.APIError as e:
+            # Check HTTP status code for retryability
+            status = getattr(e, "status_code", None)
+            if status is not None and (status in RETRYABLE_HTTP_CODES or status >= 500):
+                raise LLMError(
+                    code=f"api_error_{status}",
                     message=str(e),
                     retryable=True,
                 )
-
-            except Exception as e:
+            else:
                 raise LLMError(
-                    code="unknown",
+                    code=f"api_error_{status}",
                     message=str(e),
                     retryable=False,
                 )
+        except TimeoutError as e:
+            raise LLMError(
+                code="timeout",
+                message=str(e),
+                retryable=True,
+            )
 
-            # Exponential backoff before retry
-            if attempt < MAX_RETRIES:
-                delay = min(BASE_DELAY * (2**attempt), MAX_DELAY)
-                # Notify retry callback for UI (gap-33)
-                if self._retry_callback:
-                    try:
-                        self._retry_callback(attempt + 1, MAX_RETRIES, delay)
-                    except Exception:
-                        pass
-                await asyncio.sleep(delay)
-
-        # All retries exhausted for this model
-        raise last_error or LLMError(
-            code="max_retries",
-            message="Max retries exhausted for this model",
-            retryable=False,
-        )
+        except Exception as e:
+            raise LLMError(
+                code="unknown",
+                message=str(e),
+                retryable=False,
+            )
 
     def token_count(self, messages: list[dict]) -> int:
         """Estimate token count for a list of messages.
