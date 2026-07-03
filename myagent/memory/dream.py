@@ -635,33 +635,133 @@ Do NOT interact with project code files — only memory files."""
 
         return findings
 
-    def _detect_contradictions(self, all_memories: list) -> list[str]:
-        """Detect potentially contradictory memories by comparing content (gap-18).
+    # ── Contradiction detection constants ─────────────────────────
 
-        Uses simple keyword-based contradiction detection as a heuristic.
-        Full semantic contradiction detection would require LLM analysis.
+    # Pairs of opposing keywords used for sentence-level contradiction detection.
+    # Format: (positive/assertive word, negative/denying counterpart)
+    _CONTRADICTION_PAIRS: set[tuple[str, str]] = {
+        ("use", "avoid"),
+        ("use", "don't use"),
+        ("use", "do not use"),
+        ("always", "never"),
+        ("prefer", "avoid"),
+        ("prefer", "don't"),
+        ("recommend", "avoid"),
+        ("recommend", "don't"),
+        ("required", "optional"),
+        ("must", "must not"),
+        ("must", "should not"),
+        ("should", "should not"),
+        ("should", "shouldn't"),
+        ("enabled", "disabled"),
+        ("enable", "disable"),
+        ("allow", "deny"),
+        ("allow", "block"),
+        ("include", "exclude"),
+        ("支持", "不支持"),
+        ("推荐", "避免"),
+        ("推荐", "不推荐"),
+        ("必须", "不能"),
+        ("必须", "禁止"),
+        ("允许", "禁止"),
+        ("开启", "关闭"),
+        ("启用", "禁用"),
+    }
+
+    # Negation prefixes/suffixes that indicate contradictory assertions
+    _NEGATION_PATTERNS: list[str] = [
+        "no ", "not ", "never ", "don't ", "doesn't ", "shouldn't ",
+        "mustn't ", "cannot ", "can't ", "won't ",
+    ]
+
+    # Chinese negation markers
+    _CN_NEGATION_PATTERNS: list[str] = [
+        "不", "非", "无", "未", "没", "别", "勿", "莫", "否",
+    ]
+
+    @staticmethod
+    def _tokenize_name(name: str) -> set[str]:
+        """Extract significant tokens from a memory name for fuzzy matching."""
+        import re
+        tokens = set()
+        # Split on common separators: dash, underscore, dot, space
+        for token in re.split(r'[-_\.\s]+', name.lower()):
+            token = token.strip()
+            if len(token) >= 2:
+                tokens.add(token)
+        return tokens
+
+    @staticmethod
+    def _name_similarity(name1: str, name2: str) -> float:
+        """Compute Jaccard similarity between token sets of two memory names."""
+        tokens1 = DreamEngine._tokenize_name(name1)
+        tokens2 = DreamEngine._tokenize_name(name2)
+        if not tokens1 or not tokens2:
+            return 0.0
+        intersection = len(tokens1 & tokens2)
+        union = len(tokens1 | tokens2)
+        return intersection / union if union > 0 else 0.0
+
+    @staticmethod
+    def _extract_significant_words(text: str, min_len: int = 4) -> set[str]:
+        """Extract significant lowercase words from memory content for pre-filtering."""
+        import re
+        words = set()
+        for word in re.split(r'[\s,;:.!?()\[\]{}"\']+', text.lower()):
+            word = word.strip().strip('`*_~')
+            if len(word) >= min_len:
+                words.add(word)
+        # Remove very common stop words
+        stop_words = {
+            'this', 'that', 'with', 'from', 'have', 'been', 'were',
+            'they', 'will', 'would', 'could', 'should', 'about',
+            'their', 'there', 'which', 'when', 'where', 'what',
+        }
+        return words - stop_words
+
+    @staticmethod
+    def _content_overlap_ratio(text1: str, text2: str) -> float:
+        """Compute overlap ratio of significant words between two texts."""
+        words1 = DreamEngine._extract_significant_words(text1)
+        words2 = DreamEngine._extract_significant_words(text2)
+        if not words1 or not words2:
+            return 0.0
+        intersection = len(words1 & words2)
+        smaller = min(len(words1), len(words2))
+        return intersection / smaller if smaller > 0 else 0.0
+
+    def _detect_contradictions(self, all_memories: list) -> list[str]:
+        """Detect potentially contradictory memories using multi-layer analysis.
+
+        This is the inline fallback path. The primary sub-agent path uses full
+        LLM semantic reasoning (see _run_as_subagent). This method provides a
+        more sophisticated heuristic than simple keyword matching:
+
+        1. Name similarity pre-filter: only compare memories whose names share
+           tokens (e.g., "coding-style" and "python-conventions" are compared;
+           "coding-style" and "user-preferences" are not).
+
+        2. Content overlap pre-filter: only compare memories with significant
+           word overlap (Jaccard >= 0.15), indicating related topics.
+
+        3. Sentence-level contradiction: split each memory into sentences and
+           check for negation patterns in one against positive assertions in
+           the other, using an expanded set of opposition pairs.
+
+        4. Opposite keyword pair matching: the original keyword-pair heuristic
+           is retained but with a much larger, comprehensive pair set.
         """
         contradictions: list[str] = []
         if len(all_memories) < 2:
             return contradictions
 
-        # Heuristic: check for memories with similar names but contradictory keywords
-        contradiction_pairs = {
-            ("use", "avoid"),
-            ("always", "never"),
-            ("prefer", "avoid"),
-            ("支持", "不支持"),
-            ("推荐", "避免"),
-        }
+        import re
 
-        names_seen: dict[str, str] = {}  # name_lower → full_name
+        # ── Pre-compute tokenized names for similarity filtering ──
+        name_tokens_cache: dict[str, set[str]] = {}
         for mf, _ in all_memories:
-            name_lower = mf.name.lower()
-            if name_lower in names_seen:
-                continue
-            names_seen[name_lower] = mf.name
+            name_tokens_cache[mf.name] = self._tokenize_name(mf.name)
 
-        # Compare pairs
         checked: set = set()
         for i, (mf1, _) in enumerate(all_memories):
             for mf2, _ in all_memories[i + 1:]:
@@ -670,19 +770,76 @@ Do NOT interact with project code files — only memory files."""
                     continue
                 checked.add(pair_key)
 
-                text1 = mf1.content.lower()
-                text2 = mf2.content.lower()
-                for pos_word, neg_word in contradiction_pairs:
-                    if pos_word in text1 and neg_word in text2:
+                # ── Pre-filter 1: Name similarity ──
+                name_sim = self._name_similarity(mf1.name, mf2.name)
+                if name_sim < 0.2:
+                    # Try fuzzy matching: check if any token from one name
+                    # is a substring of any token from the other name.
+                    tokens1 = name_tokens_cache[mf1.name]
+                    tokens2 = name_tokens_cache[mf2.name]
+                    fuzzy_match = any(
+                        t1 in t2 or t2 in t1
+                        for t1 in tokens1 for t2 in tokens2
+                    )
+                    if not fuzzy_match:
+                        continue
+
+                # ── Pre-filter 2: Content overlap ──
+                overlap = self._content_overlap_ratio(mf1.content, mf2.content)
+                if overlap < 0.10 and name_sim < 0.4:
+                    continue
+
+                text1_lower = mf1.content.lower()
+                text2_lower = mf2.content.lower()
+
+                # ── Layer 1: Extended keyword-pair matching ──
+                for pos_word, neg_word in self._CONTRADICTION_PAIRS:
+                    if pos_word in text1_lower and neg_word in text2_lower:
                         contradictions.append(
                             f"Potential contradiction: `{mf1.name}` uses `{pos_word}` "
                             f"while `{mf2.name}` uses `{neg_word}`"
                         )
-                    elif neg_word in text1 and pos_word in text2:
+                    elif neg_word in text1_lower and pos_word in text2_lower:
                         contradictions.append(
                             f"Potential contradiction: `{mf1.name}` uses `{neg_word}` "
                             f"while `{mf2.name}` uses `{pos_word}`"
                         )
+
+                # ── Layer 2: Sentence-level negation analysis ──
+                # Split each memory into sentences
+                sentences1 = [s.strip() for s in re.split(r'[.!?\n。！？\n]+', mf1.content) if len(s.strip()) > 10]
+                sentences2 = [s.strip() for s in re.split(r'[.!?\n。！？\n]+', mf2.content) if len(s.strip()) > 10]
+
+                # Check for negation patterns in one memory's sentences against
+                # key assertions in the other memory's sentences.
+                for s1 in sentences1:
+                    s1_lower = s1.lower()
+                    # Determine if s1 is a negated statement
+                    is_negated_s1 = any(
+                        s1_lower.startswith(p) or f" {p}" in s1_lower
+                        for p in self._NEGATION_PATTERNS
+                    ) or any(p in s1 for p in self._CN_NEGATION_PATTERNS)
+
+                    for s2 in sentences2:
+                        s2_lower = s2.lower()
+                        is_negated_s2 = any(
+                            s2_lower.startswith(p) or f" {p}" in s2_lower
+                            for p in self._NEGATION_PATTERNS
+                        ) or any(p in s2 for p in self._CN_NEGATION_PATTERNS)
+
+                        # If one sentence is negated and the other is not, they might
+                        # be asserting opposite things about the same topic.
+                        if is_negated_s1 != is_negated_s2:
+                            # Check for shared topic words
+                            words1 = self._extract_significant_words(s1, min_len=3)
+                            words2 = self._extract_significant_words(s2, min_len=3)
+                            shared = words1 & words2
+                            if len(shared) >= 2:
+                                contradictions.append(
+                                    f"Potential contradiction: `{mf1.name}` states "
+                                    f"\"{s1[:80]}...\" while `{mf2.name}` states "
+                                    f"\"{s2[:80]}...\""
+                                )
 
         return contradictions[:5]  # Limit to top 5
 
