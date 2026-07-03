@@ -55,7 +55,6 @@ def _transform_mode(value: str) -> str:
 _CLI_MAPPING: dict[str, tuple[str, callable | None]] = {
     "mode": ("model.thinking", _transform_mode),
     "dangerously_skip_permissions": ("permissions._skip_all", None),
-    "goal": ("session._goal", None),
 }
 
 DEFAULT_USER_HOME = Path.home() / ".myagent"
