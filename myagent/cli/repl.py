@@ -17,8 +17,8 @@ class SlashCompleter:
 
     # Built-in slash commands
     BUILTIN_COMMANDS = [
-        "mode", "goal", "skills", "dream", "clear", "history", "exit", "quit",
-        "help",
+        "mode", "goal", "skills", "dream", "clear", "compact", "history",
+        "export", "help", "exit", "quit",
     ]
 
     # Mode values for /mode completion

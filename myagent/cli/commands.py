@@ -40,6 +40,7 @@ class CommandDispatcher:
         self._commands["clear"] = self._cmd_clear
         self._commands["compact"] = self._cmd_compact
         self._commands["history"] = self._cmd_history
+        self._commands["export"] = self._cmd_export
         self._commands["help"] = self._cmd_help
         self._commands["exit"] = self._cmd_exit
         self._commands["quit"] = self._cmd_exit
@@ -109,6 +110,57 @@ class CommandDispatcher:
             return CommandResult(output=f"Dream cycle completed. Log: {result.log_path}")
         return CommandResult(output="Dream engine not available.")
 
+    async def _cmd_export(self, args: str, ctx: CommandContext) -> CommandResult:
+        """Export the current session transcript to a file (gap-18-02).
+
+        Usage: /export [markdown|json]
+
+        Exports the current session transcript to the session's export/
+        subdirectory. Matches the behavior of the --export CLI flag but
+        is available mid-session from the REPL.
+        """
+        fmt = args.strip().lower() or "markdown"
+        if fmt not in ("markdown", "json"):
+            return CommandResult(
+                output="Usage: /export [markdown|json]\nExport session transcript to a file.",
+                success=False,
+            )
+
+        session = ctx.session
+        if not session:
+            return CommandResult(
+                output="No active session to export.",
+                success=False,
+            )
+
+        session_mgr = ctx.session_manager
+        if not session_mgr:
+            return CommandResult(
+                output="Session manager not available — cannot export.",
+                success=False,
+            )
+
+        try:
+            # Resolve project_dir from session or config
+            from pathlib import Path
+            project_dir = Path.cwd()
+
+            path = await session_mgr.export_session(session.id, fmt, project_dir)
+            if path:
+                return CommandResult(
+                    output=f"Session exported to: {path}",
+                    success=True,
+                )
+            return CommandResult(
+                output="Export failed — no output path returned.",
+                success=False,
+            )
+        except Exception as e:
+            return CommandResult(
+                output=f"Export failed: {e}",
+                success=False,
+            )
+
     async def _cmd_help(self, args: str, ctx: CommandContext) -> CommandResult:
         """List all available slash commands with brief descriptions."""
         lines = [
@@ -120,6 +172,7 @@ class CommandDispatcher:
             "  /dream                                — Run memory consolidation dream cycle",
             "  /compact                              — Non-destructively compress conversation context",
             "  /clear                                — Clear in-memory conversation (preserves transcripts)",
+            "  /export [markdown|json]               — Export current session transcript",
             "  /history [N]                          — Show recent conversation history",
             "  /help                                 — Show this help message",
             "  /exit, /quit                          — Exit MyAgentCLI",
