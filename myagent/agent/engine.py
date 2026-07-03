@@ -438,6 +438,7 @@ class AgentEngine:
                             messages.append({
                                 "role": "tool",
                                 "tool_call_id": tc.id,
+                                "name": "skill_invoke",
                                 "content": skill_result.output,
                             })
                             continue
@@ -450,6 +451,7 @@ class AgentEngine:
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tc.id,
+                        "name": tc.name,
                         "content": result_text,
                     })
 
@@ -1079,6 +1081,7 @@ class AgentEngine:
             return
         try:
             from myagent.context.builder import Message as CtxMessage
+            from myagent.context.builder import ToolCallRecord
             from datetime import datetime as _dt
             # Persist only the new messages since last save: track a _persist_idx
             persist_idx = getattr(session, '_persist_idx', 0)
@@ -1086,9 +1089,27 @@ class AgentEngine:
             if not new_msgs:
                 return
             for m in new_msgs:
+                # Extract tool_call_id, name, and tool_calls from dict messages
+                # so that /history can display tool call details (gap-16-06).
+                tc_id = m.get("tool_call_id")
+                tc_name = m.get("name")
+                tc_list = None
+                raw_tool_calls = m.get("tool_calls")
+                if raw_tool_calls:
+                    tc_list = []
+                    for tc in raw_tool_calls:
+                        func_info = tc.get("function", {})
+                        tc_list.append(ToolCallRecord(
+                            call_id=tc.get("id", ""),
+                            tool_name=func_info.get("name", "?"),
+                            params=func_info.get("arguments", {}),
+                        ))
                 msg_obj = CtxMessage(
                     role=m.get("role", "user"),
                     content=m.get("content", ""),
+                    tool_call_id=tc_id,
+                    name=tc_name,
+                    tool_calls=tc_list,
                     timestamp=_dt.now(),
                 )
                 session.add_message(msg_obj)

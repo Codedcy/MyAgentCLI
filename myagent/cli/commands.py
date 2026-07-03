@@ -204,7 +204,7 @@ class CommandDispatcher:
         )
 
     async def _cmd_history(self, args: str, ctx: CommandContext) -> CommandResult:
-        """Show real conversation history from session."""
+        """Show real conversation history from session, including tool calls."""
         if ctx.session is None or not hasattr(ctx.session, "_messages"):
             return CommandResult(output="No conversation history available.")
 
@@ -220,6 +220,37 @@ class CommandDispatcher:
         lines = [f"Recent conversation history (last {len(recent)} of {len(messages)} turns):", ""]
         for i, m in enumerate(recent, 1):
             role = m.role.upper() if hasattr(m, "role") else "?"
+
+            # Tool result message: show tool name and result preview
+            if role == "TOOL":
+                tool_name = getattr(m, "name", None) or "unknown"
+                content = getattr(m, "content", "") or ""
+                result_preview = content[:80].replace("\n", " ")
+                ellipsis = "..." if len(content) > 80 else ""
+                lines.append(f"  {i}. [TOOL: {tool_name}] {result_preview}{ellipsis}")
+                continue
+
+            # Assistant message with tool calls: show call names and params
+            tool_calls = getattr(m, "tool_calls", None)
+            if tool_calls:
+                content = getattr(m, "content", "") or ""
+                text_preview = content[:60].replace("\n", " ") if content else ""
+                tc_summaries = []
+                for tc in tool_calls:
+                    tc_name = getattr(tc, "tool_name", None) or getattr(tc, "name", "?")
+                    tc_params = getattr(tc, "params", {}) or {}
+                    if isinstance(tc_params, dict):
+                        param_keys = list(tc_params.keys())[:3]
+                        tc_summaries.append(f"{tc_name}({', '.join(param_keys)})")
+                    else:
+                        tc_summaries.append(str(tc_name))
+                tc_str = "; ".join(tc_summaries)
+                if text_preview:
+                    lines.append(f"  {i}. [ASSISTANT] {text_preview}... → tool_calls: {tc_str}")
+                else:
+                    lines.append(f"  {i}. [ASSISTANT] → tool_calls: {tc_str}")
+                continue
+
             content = m.content if hasattr(m, "content") else str(m)
             preview = content[:120] + "..." if len(content) > 120 else content
             lines.append(f"  {i}. [{role}] {preview}")
