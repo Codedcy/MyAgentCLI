@@ -188,7 +188,7 @@ class SubAgentWorker:
             if tool_calls_in_turn:
                 assistant_content = "".join(text_buffer) or None
                 assistant_msg: dict = {"role": "assistant", "content": assistant_content}
-                assistant_msg["tool_calls"] = [
+                built_tool_calls = [
                     {
                         "id": tc.id,
                         "type": "function",
@@ -199,7 +199,15 @@ class SubAgentWorker:
                     }
                     for tc in tool_calls_in_turn
                 ]
+                assistant_msg["tool_calls"] = built_tool_calls
                 messages.append(assistant_msg)
+
+                # G3: record assistant message in transcript
+                self._transcript_messages.append({
+                    "role": "assistant",
+                    "content": assistant_content,
+                    "tool_calls": built_tool_calls,
+                })
 
                 for tc in tool_calls_in_turn:
                     tool = (
@@ -244,6 +252,14 @@ class SubAgentWorker:
                         "role": "tool",
                         "tool_call_id": tc.id,
                         "content": result_text,
+                    })
+
+                    # G3: record tool call in transcript
+                    self._transcript_tool_calls.append({
+                        "tool_name": tc.name,
+                        "params": tc.params,
+                        "result": result_text[:5000],
+                        "call_id": tc.id,
                     })
 
                 # Loop again — LLM sees tool results in next iteration
