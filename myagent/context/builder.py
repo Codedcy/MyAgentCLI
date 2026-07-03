@@ -263,14 +263,29 @@ tool usage limit."""
 
     def _format_project_context(self, ctx: ProjectContext) -> str:
         parts = []
+        # Core project identity
         if ctx.project_type != "unknown":
             parts.append(f"Project type: {ctx.project_type}")
+        # Detected environment (spec §十 环境感知, gap-15-01)
+        if ctx.package_manager:
+            parts.append(f"Package manager: {ctx.package_manager}")
+        if ctx.python_version:
+            parts.append(f"Python version: {ctx.python_version}")
+        if ctx.build_system:
+            parts.append(f"Build system: {ctx.build_system}")
+        if ctx.test_framework:
+            parts.append(f"Test framework: {ctx.test_framework}")
+        if ctx.linter:
+            parts.append(f"Linter: {ctx.linter}")
+        # Git info
         if ctx.is_git_repo:
             parts.append(f"Git branch: {ctx.git_branch or 'unknown'}")
             if ctx.git_status:
                 parts.append(f"Git status: {ctx.git_status}")
+        # Directory structure
         if ctx.structure_summary:
             parts.append(f"Structure: {ctx.structure_summary}")
+        # Project guidance files
         if ctx.agent_md_content:
             parts.append(f"Project guidance:\n{ctx.agent_md_content[:2000]}")
         return "\n".join(parts)
