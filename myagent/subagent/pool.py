@@ -244,6 +244,7 @@ class SubAgentPool:
                 tool_context=tool_context,
                 project_context=project_context,
                 message_store=message_store,
+                project_dir=getattr(tool_context, 'project_dir', None) if tool_context else None,
             )
             try:
                 # Format prompt_summary: first ~100 chars of the spawn prompt

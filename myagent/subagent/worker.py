@@ -12,7 +12,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import secrets
 import time
+from pathlib import Path
 
 from myagent.llm.provider import Done as LLMDone
 from myagent.llm.provider import TextDelta as LLMTextDelta
@@ -42,6 +44,7 @@ class SubAgentWorker:
         tool_context: ToolContext | None = None,
         project_context=None,
         message_store: list | None = None,
+        project_dir: Path | None = None,
     ):
         self.prompt = prompt
         self.tools = tools
@@ -57,6 +60,8 @@ class SubAgentWorker:
         self._message_store = message_store
         self._transcript_messages: list[dict] = []
         self._transcript_tool_calls: list[dict] = []
+        self._project_dir = project_dir
+        self._worktree_path: Path | None = None
 
     async def run(self) -> str:
         """Execute the sub-agent task and return a result string.
@@ -68,6 +73,20 @@ class SubAgentWorker:
         - Tool subset from spawn params
         - Independent context (no history from parent)
         """
+        # Worktree isolation (gap-14): create isolated workspace
+        self._worktree_path = None
+        if self.isolation == "worktree" and self._project_dir:
+            self._worktree_path = await self._create_worktree()
+
+        try:
+            return await self._run_impl()
+        finally:
+            # Cleanup worktree if created
+            if self._worktree_path:
+                await self._cleanup_worktree()
+
+    async def _run_impl(self) -> str:
+        """Inner run implementation after worktree setup."""
         if not self.llm:
             logger.warning("Sub-agent spawned without LLM provider")
             return "Error: No LLM provider configured for sub-agent"
@@ -281,6 +300,70 @@ class SubAgentWorker:
             return _json.dumps(data, ensure_ascii=False, indent=2)
         except jsonschema.ValidationError as e:
             return f"{_json.dumps(data)}\n\n[Schema validation failed: {e.message}]"
+
+    async def _create_worktree(self) -> Path | None:
+        """Create a git worktree for isolated sub-agent execution (gap-14).
+
+        Creates under .claude/worktrees/ with a unique name.
+        Returns the worktree path or None on failure.
+        """
+        if not self._project_dir:
+            return None
+        try:
+            worktrees_dir = self._project_dir / ".claude" / "worktrees"
+            worktrees_dir.mkdir(parents=True, exist_ok=True)
+            suffix = secrets.token_hex(4)
+            worktree_name = f"subagent-{suffix}"
+            worktree_path = worktrees_dir / worktree_name
+
+            # Check if this is a git repo
+            git_dir = self._project_dir / ".git"
+            if not git_dir.exists():
+                logger.debug("Worktree isolation skipped: not a git repo")
+                return None
+
+            # Create the worktree using git
+            proc = await asyncio.create_subprocess_exec(
+                "git", "worktree", "add", str(worktree_path),
+                "--detach",
+                cwd=str(self._project_dir),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await proc.communicate()
+            if proc.returncode != 0:
+                logger.warning(
+                    "Failed to create worktree: %s",
+                    stderr.decode("utf-8", errors="replace")[:200],
+                )
+                return None
+
+            logger.info(
+                "Created worktree for sub-agent at %s",
+                worktree_path,
+                extra={"category": "subagent", "event": "worktree_created"},
+            )
+            return worktree_path
+        except Exception as e:
+            logger.warning("Failed to create worktree: %s", e)
+            return None
+
+    async def _cleanup_worktree(self) -> None:
+        """Remove the git worktree created for this sub-agent (gap-14)."""
+        if not self._worktree_path or not self._project_dir:
+            return
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "git", "worktree", "remove", str(self._worktree_path),
+                "--force",
+                cwd=str(self._project_dir),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            await proc.communicate()
+            logger.debug("Cleaned up worktree: %s", self._worktree_path)
+        except Exception as e:
+            logger.warning("Failed to cleanup worktree %s: %s", self._worktree_path, e)
 
     def _classify_event(self, event) -> str:
         """Classify an LLM stream event by type.
