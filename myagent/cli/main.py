@@ -174,19 +174,64 @@ async def async_main(argv: list[str] | None = None) -> int:
     from myagent.cli.status import StatusBar
     status_bar = StatusBar(config.ui) if config.ui.show_status_bar else None
 
-    # Wire status bar to sub-agent pool state (gap-08)
+    # Wire status bar to sub-agent pool state (gap-2-08)
     if status_bar:
+        from myagent.cli.status import SubAgentInfo
         original_spawn = subagent_pool.spawn
 
+        def _extract_task_name(prompt: str, max_len: int = 20) -> str:
+            """Extract a short task name from the spawn prompt."""
+            if not prompt:
+                return ""
+            # Take first sentence or first line, truncate
+            first_line = prompt.split("\n")[0].strip()
+            if len(first_line) > max_len:
+                first_line = first_line[:max_len - 2] + ".."
+            return first_line or prompt[:max_len]
+
         async def _spawn_with_status(*spawn_args, **spawn_kw):
+            prompt = spawn_kw.get("prompt", spawn_args[0] if spawn_args else "")
             handle = await original_spawn(*spawn_args, **spawn_kw)
+            # Build rich SubAgentInfo list
+            details = []
+            for hid, h in subagent_pool._agents.items():
+                if h.status.value in ("running", "created"):
+                    task_name = _extract_task_name(spawn_kw.get("prompt", "")) if hid == handle.id else ""
+                    # Try to get task name from the stored prompt
+                    for ahid, ah in subagent_pool._agents.items():
+                        if ahid == hid:
+                            break
+                    details.append(SubAgentInfo(
+                        agent_id=hid,
+                        task_name=task_name if task_name else hid,
+                        status="running",
+                        progress_pct=0.0,
+                    ))
+                elif h.status.value == "completed":
+                    result = h._result_data
+                    summary = ""
+                    if result and result.output:
+                        # Extract brief summary from result
+                        output = result.output
+                        if len(output) > 30:
+                            summary = output[:28] + ".."
+                        else:
+                            summary = output
+                    details.append(SubAgentInfo(
+                        agent_id=hid,
+                        task_name=hid,
+                        status="completed",
+                        result_summary=summary,
+                    ))
+                elif h.status.value == "failed":
+                    details.append(SubAgentInfo(
+                        agent_id=hid,
+                        task_name=hid,
+                        status="failed",
+                    ))
             status_bar.update(
                 subagents_active=subagent_pool.active_count,
-                subagents_details=[
-                    f"{hid}: {h.status.value}"
-                    for hid, h in subagent_pool._agents.items()
-                    if h.status.value == "running"
-                ],
+                subagents_details=details,
             )
             return handle
 

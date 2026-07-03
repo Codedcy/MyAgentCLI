@@ -91,6 +91,8 @@ class SlashCompleter:
         self._running = False
         self._current_session = None
         self._console = None
+        self._live = None
+        self._output_lines: list[str] = []
         self._active_skill: str | None = None  # skill name to inject into next engine run (gap-2-01)
 
     async def run(self) -> None:
@@ -105,12 +107,35 @@ class SlashCompleter:
         if self._session_mgr and self._current_session is None:
             self._current_session = await self._session_mgr.start_new(self._project_dir)
 
-        # Start status bar
+        # Shared Rich Live layout for status bar + output (gap-2-07)
+        self._live = None
         if self._status_bar:
-            await self._status_bar.start()
+            try:
+                from rich.live import Live
+                from rich.layout import Layout
+                from rich.panel import Panel
 
-        self._console.print("MyAgentCLI — Type /help for commands, Ctrl+D to exit.")
-        self._console.print(f"Project: [bold]{self._project_dir.name}[/bold]")
+                layout = Layout()
+                layout.split(
+                    Layout(name="status", size=3),
+                    Layout(name="output"),
+                )
+                # Initialize with status bar panel
+                status_renderable = self._status_bar.get_renderable()
+                layout["status"].update(status_renderable or Panel(""))
+                layout["output"].update(Panel("MyAgentCLI — Type /help for commands, Ctrl+D to exit.\n"
+                                               f"Project: {self._project_dir.name}",
+                                               title="Output"))
+
+                self._live = Live(layout, refresh_per_second=4, console=self._console, vertical_overflow="visible")
+                self._live.start()
+                self._output_lines: list[str] = []
+            except ImportError:
+                self._live = None
+
+        if self._live is None:
+            self._console.print("MyAgentCLI — Type /help for commands, Ctrl+D to exit.")
+            self._console.print(f"Project: [bold]{self._project_dir.name}[/bold]")
 
         try:
             from prompt_toolkit import PromptSession
@@ -208,10 +233,7 @@ class SlashCompleter:
                     dream_engine=self._dream_engine,
                 )
                 result = await self._commands.dispatch(text, ctx)
-                if self._console:
-                    self._console.print(result.output)
-                else:
-                    print(result.output)
+                self._output_to_console(result.output)
 
                 if result.skill_invoked:
                     # Store active skill for the next natural-language input (gap-2-01)
@@ -221,10 +243,7 @@ class SlashCompleter:
                     return
                 return
 
-            if self._console:
-                self._console.print(f"Unknown command: {text}")
-            else:
-                print(f"Unknown command: {text}")
+            self._output_to_console(f"Unknown command: {text}")
             return
 
         # Natural language → AgentEngine
@@ -239,23 +258,22 @@ class SlashCompleter:
             ):
                 if self._renderer:
                     rendered = self._renderer.render_event(event)
-                    if rendered and self._console:
+                    if rendered:
                         event_type = type(event).__name__
                         if event_type == "TextChunk":
-                            self._console.print(rendered, end="")
+                            self._output_to_console(rendered, end="")
                         elif event_type == "ThinkingChunk":
                             pass  # Thinking content is usually hidden
                         elif event_type == "AskUserQuestion":
                             has_pending_question = True
-                            self._console.print(rendered)
+                            self._output_to_console(rendered)
                         else:
-                            self._console.print(rendered)
+                            self._output_to_console(rendered)
                 else:
                     # Fallback: simple print-based rendering
                     self._render_event_fallback(event)
 
-            if self._console:
-                self._console.print()  # trailing newline after streaming
+            self._output_to_console("")  # trailing newline after streaming
 
             # gap-13: 120s timeout for AskUserQuestion — agent auto-decides
             if has_pending_question:
@@ -311,6 +329,36 @@ class SlashCompleter:
             except (EOFError, KeyboardInterrupt):
                 return None
 
+    def _output_to_console(self, text: str, end: str = "\n") -> None:
+        """Route output through the shared Live layout or plain console (gap-2-07)."""
+        if self._live:
+            from rich.layout import Layout
+            from rich.panel import Panel
+            from rich.live import Live
+            try:
+                if text:
+                    self._output_lines.append(text)
+                # Trim output lines to prevent memory growth
+                if len(self._output_lines) > 500:
+                    self._output_lines = self._output_lines[-300:]
+                # Update status bar in the layout
+                if self._status_bar:
+                    status_panel = self._status_bar.get_renderable()
+                    if status_panel:
+                        self._live._layout["status"].update(status_panel)
+                output_text = "\n".join(self._output_lines)
+                self._live._layout["output"].update(Panel(output_text, title="Output"))
+            except Exception:
+                if self._console:
+                    self._console.print(text, end=end)
+        elif self._console:
+            if end == "":
+                self._console.print(text, end="")
+            else:
+                self._console.print(text)
+        else:
+            print(text, end=end)
+
     def _render_event_fallback(self, event) -> None:
         """Fallback renderer when no Rich Renderer is wired."""
         match type(event).__name__:
@@ -336,12 +384,17 @@ class SlashCompleter:
         """Graceful shutdown: stop status bar, end session, clean up."""
         self._running = False
 
-        # Stop status bar
-        if self._status_bar:
-            self._status_bar.stop()
+        # Stop shared Live layout (gap-2-07)
+        if self._live:
+            self._live.stop()
+            self._live = None
 
         # End session
         if self._session_mgr and self._current_session:
             await self._session_mgr.end_session(self._current_session)
 
-        self._console.print("\nGoodbye!") if self._console else print("\nGoodbye!")
+        # Final goodbye on fresh console
+        if self._console:
+            self._console.print("\nGoodbye!")
+        else:
+            print("\nGoodbye!")
