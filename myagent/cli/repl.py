@@ -7,12 +7,13 @@ from pathlib import Path
 
 
 class SlashCompleter:
-    """Auto-completion for slash commands, skills, mode values, and file paths (gap-2-05).
+    """Auto-completion for slash commands, skills, mode values, and file paths.
 
     Provides context-aware completions for the REPL input:
     - Slash commands (e.g. /mode, /goal, /skills, /exit)
     - Skill names after / (e.g. /code-review, /brainstorming)
     - Mode values after /mode (think-high, think-max, non-think)
+    - File paths for path-like input (gap-19-04)
     """
 
     # Built-in slash commands
@@ -28,16 +29,39 @@ class SlashCompleter:
         self._skill_registry = skill_registry
 
     def get_completions(self, document, complete_event):
-        """Yield Completion objects for the current input."""
+        """Yield Completion objects for the current input.
+
+        Provides slash-command completions when input starts with /,
+        and file-path completions for path-like natural language input.
+        """
         from prompt_toolkit.completion import Completion
 
         text = document.text_before_cursor
 
-        # Only complete after /
-        if not text.startswith("/"):
+        # ── Slash command completions ─────────────────────────────
+        if text.startswith("/"):
+            yield from self._get_slash_completions(text)
+            # Also provide file-path completions for slash command args
+            # that look like paths (e.g. /export path/to/file)
+            parts = text[1:].split()
+            if len(parts) >= 2:
+                yield from self._get_path_completions(document, text)
             return
 
-        # Split into parts: /<cmd> <args>
+        # ── File-path completions for natural language input ──────
+        # Complete when the last word looks like a file path
+        words = text.split()
+        if words:
+            last_word = words[-1]
+            # Trigger path completion if the last word contains a path separator
+            # or starts with common path indicators
+            if "/" in last_word or last_word.startswith(("./", "../", "~/")):
+                yield from self._get_path_completions(document, text)
+
+    def _get_slash_completions(self, text: str):
+        """Yield completions for slash commands."""
+        from prompt_toolkit.completion import Completion
+
         parts = text[1:].split()
         if not parts:
             return
@@ -48,12 +72,10 @@ class SlashCompleter:
         if is_first_word:
             # Completing the command name itself
             word_before = cmd
-            # Complete built-in commands
             for name in self.BUILTIN_COMMANDS:
                 if name.startswith(word_before):
                     yield Completion(name, start_position=-len(word_before))
 
-            # Complete skill names from registry
             if self._skill_registry:
                 for entry in self._skill_registry.list_all():
                     if entry.name.startswith(word_before):
@@ -68,6 +90,59 @@ class SlashCompleter:
             for mode_val in self.MODE_VALUES:
                 if mode_val.startswith(arg):
                     yield Completion(mode_val, start_position=-len(arg))
+
+    def _get_path_completions(self, document, text: str):
+        """Yield file-path completions using prompt_toolkit's PathCompleter.
+
+        Provides completions for relative paths and handles common path
+        patterns including ./, ../, and ~/ expansions.
+        """
+        import os
+        from pathlib import Path
+        from prompt_toolkit.completion import Completion, PathCompleter
+
+        try:
+            # Extract the last "word" that looks like a path
+            words = text.split()
+            if not words:
+                return
+
+            last = words[-1]
+
+            # Expand ~ to user home directory
+            expanded = last
+            if last.startswith("~"):
+                expanded = os.path.expanduser(last)
+
+            # Determine the directory to search and the prefix to match
+            base_dir = Path(expanded)
+            if base_dir.is_dir() and last.endswith("/"):
+                # User typed a directory followed by / — list its contents
+                search_dir = base_dir
+                prefix = ""
+                start_pos = 0
+            else:
+                # User typed a partial path — complete the last component
+                search_dir = base_dir.parent if base_dir.parent != base_dir else Path(".")
+                prefix = base_dir.name
+                start_pos = -len(prefix)
+
+            # Gather matching files/dirs
+            if search_dir.exists() and search_dir.is_dir():
+                try:
+                    for entry in sorted(search_dir.iterdir()):
+                        if entry.name.startswith(prefix):
+                            display = entry.name + ("/" if entry.is_dir() else "")
+                            # Build the completion text relative to the original input
+                            yield Completion(
+                                display,
+                                start_position=start_pos,
+                                display_meta="dir" if entry.is_dir() else "file",
+                            )
+                except (PermissionError, OSError):
+                    pass
+        except Exception:
+            pass  # Best-effort path completion
 
 
 class REPLEngine:
@@ -330,9 +405,10 @@ class REPLEngine:
             # Run engine in a background task to allow interrupt (gap-10)
             import asyncio as _asyncio
             has_pending_question = False
+            stream_interrupted = False  # gap-19-02: track stream interruption
 
             async def _run_engine():
-                nonlocal has_pending_question
+                nonlocal has_pending_question, stream_interrupted
                 async for event in self._engine.run(
                     text, self._current_session, active_skill=active_skill
                 ):
@@ -355,6 +431,11 @@ class REPLEngine:
                                 self._output_to_console(rendered)
                             elif event_type == "Interrupted":
                                 self._output_to_console("\n[Interrupted]")
+                            elif event_type == "IntentSignal":
+                                intent = getattr(event, 'intent', '')
+                                if intent == 'continue':
+                                    stream_interrupted = True
+                                self._output_to_console(rendered)
                             else:
                                 self._output_to_console(rendered)
                     else:
@@ -371,6 +452,18 @@ class REPLEngine:
                 self._active_engine_task = None
 
             self._output_to_console("")  # trailing newline after streaming
+
+            # gap-19-02: After stream interruption, prompt user to decide
+            if stream_interrupted:
+                try:
+                    confirm = await self._prompt_with_timeout(
+                        "Stream interrupted. Continue? [Y/n] ",
+                        timeout=120.0,
+                    )
+                    if confirm and confirm.strip().lower() in ("y", "yes", ""):
+                        await self.process_input("continue")
+                except Exception:
+                    pass
 
             # gap-13: 120s timeout for AskUserQuestion — agent auto-decides
             if has_pending_question:
