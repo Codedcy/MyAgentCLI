@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import ast
+import logging
 from pathlib import Path
+
+from myagent.config.loader import ConfigLoader
 
 
 SOURCE_ROOT = Path(__file__).resolve().parents[2] / "myagent"
@@ -31,10 +34,6 @@ def _exception_names(node: ast.AST | None) -> set[str]:
             names.update(_exception_names(element))
         return names
     return set()
-
-
-def _is_broad_exception(handler: ast.ExceptHandler) -> bool:
-    return bool(_exception_names(handler.type) & {"<bare>", "Exception", "BaseException"})
 
 
 def _keyword(call: ast.Call, name: str) -> ast.AST | None:
@@ -81,7 +80,11 @@ def _call_name(call: ast.Call) -> str:
     return ""
 
 
-def _call_has_exc_info(call: ast.Call) -> bool:
+def _is_logger_style_call(call: ast.Call) -> bool:
+    return isinstance(call.func, ast.Attribute)
+
+
+def _call_produces_traceback(call: ast.Call) -> bool:
     name = _call_name(call)
     if name == "exception":
         return True
@@ -99,18 +102,19 @@ def _structured_exception_log_calls(node: ast.AST) -> list[ast.Call]:
         call
         for call in ast.walk(node)
         if isinstance(call, ast.Call)
-        and _call_has_exc_info(call)
+        and _is_logger_style_call(call)
+        and _call_produces_traceback(call)
         and _call_has_error_metadata(call)
     ]
 
 
-def test_broad_exception_handlers_emit_structured_error_log() -> None:
+def test_every_exception_handler_emits_structured_error_log() -> None:
     missing: list[str] = []
 
     for path in _python_files():
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for handler in [node for node in ast.walk(tree) if isinstance(node, ast.ExceptHandler)]:
-            if _is_broad_exception(handler) and not _structured_exception_log_calls(handler):
+            if not _structured_exception_log_calls(handler):
                 missing.append(_location(path, handler))
 
     assert missing == []
@@ -122,7 +126,40 @@ def test_traceback_logging_uses_error_metadata() -> None:
     for path in _python_files():
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for call in [node for node in ast.walk(tree) if isinstance(node, ast.Call)]:
-            if _call_has_exc_info(call) and not _call_has_error_metadata(call):
+            if (
+                _is_logger_style_call(call)
+                and _call_produces_traceback(call)
+                and not _call_has_error_metadata(call)
+            ):
                 missing.append(_location(path, call))
 
     assert missing == []
+
+
+def test_malformed_agent_frontmatter_logs_structured_error(
+    tmp_path: Path,
+    caplog,
+) -> None:
+    user_home = tmp_path / ".myagent"
+    user_home.mkdir()
+    (user_home / "AGENT.md").write_text(
+        "---\nmodel:\n  provider: [unterminated\n---\n",
+        encoding="utf-8",
+    )
+
+    loader = ConfigLoader(project_dir=tmp_path / "project", user_home=user_home)
+
+    with caplog.at_level(logging.ERROR, logger="myagent.config"):
+        config = loader.load()
+
+    assert config.model.provider == "deepseek"
+
+    records = [
+        record
+        for record in caplog.records
+        if getattr(record, "category", None) == "error"
+        and getattr(record, "component", None) == "system"
+        and getattr(record, "context", None) == "parse AGENT.md YAML frontmatter"
+    ]
+    assert records
+    assert records[0].exc_info is not None

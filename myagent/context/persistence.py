@@ -153,6 +153,14 @@ class SessionStore:
                             )
                             duration = (datetime.now() - created_at).total_seconds()
                         except (TypeError, ValueError):
+                            logger.exception(
+                                "Failed to calculate session summary duration",
+                                extra={
+                                    "category": "error",
+                                    "component": "agent",
+                                    "context": "calculate session summary duration",
+                                },
+                            )
                             duration = 0
                     summaries.append(
                         SessionSummary(
@@ -389,6 +397,14 @@ class SessionStore:
                             dt.fromisoformat(closed_at) - created
                         ).total_seconds()
                     except (KeyError, TypeError, ValueError):
+                        logger.exception(
+                            "Failed to calculate closed session duration",
+                            extra={
+                                "category": "error",
+                                "component": "agent",
+                                "context": "calculate closed session duration",
+                            },
+                        )
                         updated["duration"] = existing.get("duration", 0)
 
             ts.write_text(

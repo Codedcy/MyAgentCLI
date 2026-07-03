@@ -437,6 +437,14 @@ class SubAgentWorker:
         try:
             data = _json.loads(stripped)
         except _json.JSONDecodeError:
+            logger.exception(
+                "Sub-agent output was not a standalone JSON document",
+                extra={
+                    "category": "error",
+                    "component": "subagent",
+                    "context": "parse subagent schema output",
+                },
+            )
             # Try to find JSON object in the text
             brace_start = stripped.find("{")
             brace_end = stripped.rfind("}")
@@ -444,6 +452,14 @@ class SubAgentWorker:
                 try:
                     data = _json.loads(stripped[brace_start:brace_end + 1])
                 except _json.JSONDecodeError:
+                    logger.exception(
+                        "Sub-agent output did not contain parseable JSON",
+                        extra={
+                            "category": "error",
+                            "component": "subagent",
+                            "context": "parse embedded subagent schema output",
+                        },
+                    )
                     return f"{output}\n\n[Schema validation: output is not valid JSON]"
             else:
                 return f"{output}\n\n[Schema validation: output is not valid JSON]"
@@ -455,6 +471,14 @@ class SubAgentWorker:
             # Valid — return the extracted JSON
             return _json.dumps(data, ensure_ascii=False, indent=2)
         except ImportError:
+            logger.exception(
+                "jsonschema unavailable for sub-agent output validation",
+                extra={
+                    "category": "error",
+                    "component": "subagent",
+                    "context": "import jsonschema for subagent validation",
+                },
+            )
             # jsonschema not available — do basic structural check
             schema_type = self.schema.get("type", "object")
             if schema_type == "object" and not isinstance(data, dict):
@@ -469,6 +493,14 @@ class SubAgentWorker:
                 )
             return _json.dumps(data, ensure_ascii=False, indent=2)
         except jsonschema.ValidationError as e:
+            logger.exception(
+                "Sub-agent output failed schema validation",
+                extra={
+                    "category": "error",
+                    "component": "subagent",
+                    "context": "validate subagent schema output",
+                },
+            )
             return f"{_json.dumps(data)}\n\n[Schema validation failed: {e.message}]"
 
     async def _create_worktree(self) -> Path | None:

@@ -109,6 +109,14 @@ class DreamEngine:
         try:
             return str(path.resolve())
         except OSError:
+            logger.exception(
+                "Failed to resolve transcript path",
+                extra={
+                    "category": "error",
+                    "component": "memory",
+                    "context": "resolve dream transcript path",
+                },
+            )
             return str(path)
 
     def _processed_transcript_ids(self) -> set[str]:
@@ -1760,6 +1768,14 @@ Do NOT interact with project code files — only memory files."""
                         "deleted": int(data.get("deleted", 0)),
                     }
             except (json.JSONDecodeError, ValueError, TypeError):
+                logger.exception(
+                    "Failed to parse dream result JSON block",
+                    extra={
+                        "category": "error",
+                        "component": "memory",
+                        "context": "parse dream result counts",
+                    },
+                )
                 continue
         return None
 
@@ -1795,5 +1811,13 @@ Do NOT interact with project code files — only memory files."""
             try:
                 return json.loads(self._state_file.read_text())
             except (json.JSONDecodeError, FileNotFoundError):
+                logger.exception(
+                    "Failed to load dream state file",
+                    extra={
+                        "category": "error",
+                        "component": "memory",
+                        "context": "load dream state",
+                    },
+                )
                 pass
         return {}

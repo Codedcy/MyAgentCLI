@@ -203,9 +203,11 @@ class GoalTracker:
         except json.JSONDecodeError:
             logger.warning(
                 "Failed to parse goal evaluation JSON",
+                exc_info=True,
                 extra={
                     "category": "error",
                     "component": "agent",
+                    "context": "parse goal evaluation JSON",
                     "raw_text": text[:500],
                 },
             )

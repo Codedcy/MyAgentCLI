@@ -259,6 +259,14 @@ class PermissionController:
             from rich.panel import Panel
             from rich.prompt import Prompt
         except ImportError:
+            logger.exception(
+                "Rich unavailable for permission prompt",
+                extra={
+                    "category": "error",
+                    "component": "system",
+                    "context": "import rich for permission prompt",
+                },
+            )
             logger.warning("Rich not available — auto-allowing %s", tool_name,
                            extra={"category": "system"})
             return True

@@ -8,11 +8,14 @@ Design doc reference: §一 CLI Layer (Status Bar), §八 Context 状态栏展�
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from rich.panel import Panel
+
+logger = logging.getLogger("myagent.cli.status")
 
 
 @dataclass
@@ -51,6 +54,14 @@ class StatusBar:
         try:
             from rich.panel import Panel
         except ImportError:
+            logger.exception(
+                "Rich Panel unavailable for status bar render",
+                extra={
+                    "category": "error",
+                    "component": "system",
+                    "context": "import rich panel for status bar",
+                },
+            )
             return None
 
         # Build the top bar line

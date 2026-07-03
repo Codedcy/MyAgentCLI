@@ -146,6 +146,14 @@ class SlashCompleter(Completer):
                                 display_meta="dir" if entry.is_dir() else "file",
                             )
                 except (PermissionError, OSError):
+                    logger.exception(
+                        "Path completion could not inspect directory",
+                        extra={
+                            "category": "error",
+                            "component": "agent",
+                            "context": "complete filesystem path",
+                        },
+                    )
                     pass
         except Exception:
             logger.exception(
@@ -309,6 +317,14 @@ class REPLEngine:
                     from pygments.lexers.python import PythonLexer
                     lexer = PygmentsLexer(PythonLexer)
                 except ImportError:
+                    logger.exception(
+                        "Pygments unavailable for REPL syntax highlighting",
+                        extra={
+                            "category": "error",
+                            "component": "agent",
+                            "context": "import pygments lexer",
+                        },
+                    )
                     pass  # Pygments not available; skip syntax highlighting
 
             session = PromptSession(
@@ -323,6 +339,14 @@ class REPLEngine:
                 try:
                     user_input = await session.prompt_async("myagent> ")
                 except KeyboardInterrupt:
+                    logger.exception(
+                        "Prompt loop interrupted by keyboard",
+                        extra={
+                            "category": "error",
+                            "component": "agent",
+                            "context": "prompt toolkit keyboard interrupt",
+                        },
+                    )
                     # This is a fallback — the key binding handles most Ctrl+C cases.
                     # If KeyboardInterrupt still fires (e.g. during prompt_toolkit init),
                     # show the exit confirmation.
@@ -336,9 +360,25 @@ class REPLEngine:
                             break
                         continue
                     except (EOFError, KeyboardInterrupt):
+                        logger.exception(
+                            "Exit confirmation prompt interrupted",
+                            extra={
+                                "category": "error",
+                                "component": "agent",
+                                "context": "prompt exit confirmation",
+                            },
+                        )
                         self._console.print()
                         break
                 except EOFError:
+                    logger.exception(
+                        "Prompt loop received EOF",
+                        extra={
+                            "category": "error",
+                            "component": "agent",
+                            "context": "prompt toolkit EOF",
+                        },
+                    )
                     self._console.print()
                     break
 
@@ -354,6 +394,14 @@ class REPLEngine:
                             break
                         continue
                     except (EOFError, KeyboardInterrupt):
+                        logger.exception(
+                            "Idle interrupt confirmation prompt interrupted",
+                            extra={
+                                "category": "error",
+                                "component": "agent",
+                                "context": "idle interrupt confirmation",
+                            },
+                        )
                         self._console.print()
                         break
 
@@ -364,11 +412,27 @@ class REPLEngine:
                 await self.process_input(user_input)
 
         except ImportError:
+            logger.exception(
+                "prompt_toolkit unavailable; using simple input fallback",
+                extra={
+                    "category": "error",
+                    "component": "agent",
+                    "context": "import prompt_toolkit repl",
+                },
+            )
             # Fallback: simple input without prompt_toolkit
             while self._running:
                 try:
                     user_input = input("myagent> ").strip()
                 except (EOFError, KeyboardInterrupt):
+                    logger.exception(
+                        "Fallback input prompt interrupted",
+                        extra={
+                            "category": "error",
+                            "component": "agent",
+                            "context": "fallback input prompt",
+                        },
+                    )
                     self._console.print() if self._console else print()
                     break
 
@@ -470,6 +534,14 @@ class REPLEngine:
             try:
                 await engine_task
             except _asyncio.CancelledError:
+                logger.exception(
+                    "Active engine task cancelled",
+                    extra={
+                        "category": "error",
+                        "component": "agent",
+                        "context": "await active engine task",
+                    },
+                )
                 self._output_to_console("\n[Interrupted by user]")
             finally:
                 self._active_engine_task = None
@@ -552,12 +624,36 @@ class REPLEngine:
                 )
                 return result
             except TimeoutError:
+                logger.exception(
+                    "Prompt timed out waiting for user input",
+                    extra={
+                        "category": "error",
+                        "component": "agent",
+                        "context": "prompt toolkit ask-user timeout",
+                    },
+                )
                 return None
         except ImportError:
+            logger.exception(
+                "prompt_toolkit unavailable for ask-user prompt",
+                extra={
+                    "category": "error",
+                    "component": "agent",
+                    "context": "import prompt_toolkit prompt",
+                },
+            )
             # Fallback: standard input (blocks forever, ignore timeout)
             try:
                 return input(prompt_text).strip()
             except (EOFError, KeyboardInterrupt):
+                logger.exception(
+                    "Fallback ask-user input interrupted",
+                    extra={
+                        "category": "error",
+                        "component": "agent",
+                        "context": "fallback ask-user input",
+                    },
+                )
                 return None
 
     def _output_to_console(self, text: str, end: str = "\n") -> None:

@@ -367,8 +367,24 @@ class LLMProvider:
                 response = await litellm.acompletion(**kwargs)
                 break  # Success — exit retry loop
             except litellm.exceptions.AuthenticationError as e:
+                logger.exception(
+                    "LiteLLM authentication failed",
+                    extra={
+                        "category": "error",
+                        "component": "llm",
+                        "context": "litellm completion authentication",
+                    },
+                )
                 raise LLMError(code="auth_error", message=str(e), retryable=False) from e
             except litellm.exceptions.BadRequestError as e:
+                logger.exception(
+                    "LiteLLM rejected completion request",
+                    extra={
+                        "category": "error",
+                        "component": "llm",
+                        "context": "litellm completion bad request",
+                    },
+                )
                 raise LLMError(code="bad_request", message=str(e), retryable=False) from e
             except (
                 litellm.exceptions.RateLimitError,
@@ -649,6 +665,14 @@ class LLMProvider:
                         try:
                             params = json.loads(buf["args_str"])
                         except json.JSONDecodeError:
+                            logger.exception(
+                                "Streamed tool-call arguments are not parseable yet",
+                                extra={
+                                    "category": "error",
+                                    "component": "llm",
+                                    "context": "parse streamed tool-call arguments",
+                                },
+                            )
                             # Args still incomplete — wait for more chunks
                             continue
                         buf["_yielded"] = True
@@ -705,6 +729,14 @@ class LLMProvider:
                     try:
                         params = json.loads(getattr(fn, "arguments", "{}") or "{}")
                     except json.JSONDecodeError:
+                        logger.exception(
+                            "Non-streaming tool-call arguments were malformed",
+                            extra={
+                                "category": "error",
+                                "component": "llm",
+                                "context": "parse non-streaming tool-call arguments",
+                            },
+                        )
                         params = {}
                     tool_calls.append({
                         "id": getattr(tc, "id", "") or "",

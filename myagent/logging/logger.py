@@ -77,6 +77,7 @@ class TimedSizeRotatingFileHandler(logging.handlers.TimedRotatingFileHandler):
         self.max_bytes = max_bytes
         # Suffix for size-based rotation within a day (e.g. .1, .2, ...)
         self._size_suffix = ".%d"
+        self._logging_size_check_error = False
 
     def emit(self, record: logging.LogRecord) -> None:
         """Check file size before emitting. If max_bytes is exceeded,
@@ -84,13 +85,29 @@ class TimedSizeRotatingFileHandler(logging.handlers.TimedRotatingFileHandler):
         current day. Time-based (midnight) rotation is handled by the
         parent TimedRotatingFileHandler.
         """
-        if self.max_bytes > 0 and self.stream is not None:
+        if (
+            self.max_bytes > 0
+            and self.stream is not None
+            and not self._logging_size_check_error
+        ):
             try:
                 current_size = self.stream.tell()
                 if current_size >= self.max_bytes:
                     self._do_size_rollover()
             except (OSError, ValueError, AttributeError):
                 # If we can't determine the size, just proceed
+                self._logging_size_check_error = True
+                try:
+                    logging.getLogger("myagent.logging").exception(
+                        "Failed to inspect log file size before emit",
+                        extra={
+                            "category": "error",
+                            "component": "system",
+                            "context": "check log file size",
+                        },
+                    )
+                finally:
+                    self._logging_size_check_error = False
                 pass
         super().emit(record)
 
@@ -277,6 +294,14 @@ class LogManager:
                     json.dumps(config_dict, sort_keys=True, default=str).encode()
                 ).hexdigest()[:12]
         except (TypeError, ValueError, AttributeError):
+            root.exception(
+                "Failed to hash logging config",
+                extra={
+                    "category": "error",
+                    "component": "system",
+                    "context": "hash logging config",
+                },
+            )
             config_hash = "unknown"
 
         root.info(
@@ -303,6 +328,14 @@ class LogManager:
                 if f.stat().st_mtime < cutoff:
                     f.unlink()
         except OSError:
+            logging.getLogger("myagent.logging").exception(
+                "Failed to clean up old log files",
+                extra={
+                    "category": "error",
+                    "component": "system",
+                    "context": "cleanup old log files",
+                },
+            )
             pass  # cleanup is best-effort
 
     @staticmethod

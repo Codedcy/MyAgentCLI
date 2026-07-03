@@ -766,6 +766,14 @@ class AgentEngine:
                 if intent_part in valid_intents:
                     return intent_part
             except (ValueError, IndexError):
+                logger.exception(
+                    "Failed to parse leading interrupt intent marker",
+                    extra={
+                        "category": "error",
+                        "component": "agent",
+                        "context": "parse leading interrupt intent marker",
+                    },
+                )
                 pass
 
         # Also scan for marker anywhere in the text (model may not always
@@ -778,6 +786,14 @@ class AgentEngine:
                     if intent_part in valid_intents:
                         return intent_part
                 except (ValueError, IndexError):
+                    logger.exception(
+                        "Failed to parse inline interrupt intent marker",
+                        extra={
+                            "category": "error",
+                            "component": "agent",
+                            "context": "parse inline interrupt intent marker",
+                        },
+                    )
                     pass
 
         # ── Thin fallback: brief continue phrases only ──────────────
@@ -1128,6 +1144,14 @@ class AgentEngine:
                             return int(max_input)
         except ImportError:
             # LiteLLM is optional for this best-effort discovery path.
+            logger.exception(
+                "LiteLLM unavailable during context window discovery",
+                extra={
+                    "category": "error",
+                    "component": "agent",
+                    "context": "discover model context window",
+                },
+            )
             pass
         except (TypeError, ValueError):
             logger.warning(

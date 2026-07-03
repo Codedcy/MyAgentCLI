@@ -297,6 +297,14 @@ class GrepTool:
             try:
                 content = file_path.read_text(encoding="utf-8", errors="replace")
             except (PermissionError, OSError):
+                logger.exception(
+                    "grep skipped unreadable file",
+                    extra={
+                        "category": "error",
+                        "component": "tool",
+                        "context": "read file during grep",
+                    },
+                )
                 # Expected for unreadable files during recursive search; skip them.
                 continue
 
@@ -418,6 +426,14 @@ class GrepTool:
                     if b"\x00" in sample:
                         continue
                 except (PermissionError, OSError):
+                    logger.exception(
+                        "grep skipped file during binary check",
+                        extra={
+                            "category": "error",
+                            "component": "tool",
+                            "context": "sample file during grep",
+                        },
+                    )
                     # Expected for unreadable files during recursive search; skip them.
                     continue
             files.append(f)

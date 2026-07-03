@@ -367,6 +367,14 @@ class ConfigLoader:
         try:
             frontmatter = yaml.safe_load(frontmatter_text)
         except yaml.YAMLError:
+            logger.exception(
+                "Failed to parse AGENT.md YAML frontmatter",
+                extra={
+                    "category": "error",
+                    "component": "system",
+                    "context": "parse AGENT.md YAML frontmatter",
+                },
+            )
             return {}
 
         if not isinstance(frontmatter, dict):

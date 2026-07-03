@@ -42,6 +42,14 @@ def _get_embedding_model():
         return _embedding_model
     except ImportError:
         _EMBEDDING_UNAVAILABLE = True
+        logger.exception(
+            "sentence-transformers not available; using keyword recall",
+            extra={
+                "category": "error",
+                "component": "memory",
+                "context": "import sentence-transformers for recall",
+            },
+        )
         logger.debug("sentence-transformers not available — using keyword recall",
                      extra={"category": "system"})
         return None

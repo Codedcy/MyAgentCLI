@@ -145,6 +145,14 @@ class WebFetchTool:
             logger.debug("web_fetch: used markdownify for HTML→markdown",
                          extra={"category": "tool"})
         except ImportError:
+            logger.exception(
+                "markdownify unavailable for web_fetch",
+                extra={
+                    "category": "error",
+                    "component": "tool",
+                    "context": "import markdownify for web_fetch",
+                },
+            )
             logger.debug("web_fetch: markdownify not available, using regex fallback",
                          extra={"category": "tool"})
             markdown_content = _html_to_text(raw_html)
@@ -222,6 +230,14 @@ class WebFetchTool:
         try:
             import litellm  # noqa: F811
         except ImportError:
+            logger.exception(
+                "litellm unavailable for web_fetch answering",
+                extra={
+                    "category": "error",
+                    "component": "tool",
+                    "context": "import litellm for web_fetch answer",
+                },
+            )
             logger.debug("web_fetch: litellm not available for LLM answering",
                          extra={"category": "tool"})
             return "", False

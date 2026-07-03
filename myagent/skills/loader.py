@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
+
+logger = logging.getLogger("myagent.skills.loader")
 
 
 @dataclass
@@ -60,6 +63,14 @@ class SkillLoader:
         try:
             fm = yaml.safe_load(fm_match.group(1)) or {}
         except yaml.YAMLError:
+            logger.exception(
+                "Failed to parse SKILL.md YAML frontmatter",
+                extra={
+                    "category": "error",
+                    "component": "system",
+                    "context": "parse SKILL.md YAML frontmatter",
+                },
+            )
             return None
 
         name = fm.get("name", path.parent.name)

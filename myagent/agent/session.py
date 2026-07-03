@@ -114,6 +114,14 @@ class SessionManager:
                                                 if created_ts <= since_timestamp:
                                                     continue  # Skip pre-dream sessions
                                             except (ValueError, OSError):
+                                                logger.exception(
+                                                    "Failed to parse session created_at",
+                                                    extra={
+                                                        "category": "error",
+                                                        "component": "agent",
+                                                        "context": "parse session created_at",
+                                                    },
+                                                )
                                                 pass  # Unparseable date — include
                                     total += data.get("turn_count", 0)
                                 except Exception:
@@ -213,6 +221,14 @@ class SessionManager:
                     if answer.lower() in ("y", "yes", ""):
                         self._persist_permission_changes(changes, console)
                 except ImportError:
+                    logger.exception(
+                        "Rich unavailable for permission change summary",
+                        extra={
+                            "category": "error",
+                            "component": "agent",
+                            "context": "import rich for permission summary",
+                        },
+                    )
                     pass  # Rich not available
 
         # Display memory changes (gap-16)
@@ -237,6 +253,14 @@ class SessionManager:
                     for name in session_writes.deleted:
                         console.print(f"  [red]- 删除[/red] {name}")
                 except ImportError:
+                    logger.exception(
+                        "Rich unavailable for memory change summary",
+                        extra={
+                            "category": "error",
+                            "component": "agent",
+                            "context": "import rich for memory summary",
+                        },
+                    )
                     # Fallback plain text
                     print(f"\nMemory changes: {total} total")
                     for name in session_writes.created:

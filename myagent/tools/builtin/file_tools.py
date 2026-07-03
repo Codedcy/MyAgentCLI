@@ -82,6 +82,14 @@ class ReadTool:
                 },
             )
         except UnicodeDecodeError:
+            logger.exception(
+                "Read tool could not decode file as text",
+                extra={
+                    "category": "error",
+                    "component": "tool",
+                    "context": "decode file as text",
+                },
+            )
             return ToolResult(error=f"Cannot read binary file as text: {path}")
         except Exception as e:
             logger.exception(

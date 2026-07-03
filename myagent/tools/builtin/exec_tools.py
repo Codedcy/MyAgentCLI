@@ -77,6 +77,14 @@ class BashTool:
                 metadata={"exit_code": proc.returncode or 0},
             )
         except TimeoutError:
+            logger.exception(
+                "Bash command timed out",
+                extra={
+                    "category": "error",
+                    "component": "tool",
+                    "context": "execute shell command timeout",
+                },
+            )
             return ToolResult(error=f"Command timed out after {timeout_ms}ms")
         except Exception as e:
             logger.exception(

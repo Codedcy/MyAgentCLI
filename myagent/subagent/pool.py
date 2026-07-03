@@ -77,6 +77,14 @@ def _retry_notify(handle, attempt: int, max_retries: int, pool) -> None:
         loop = asyncio.get_running_loop()
         loop.create_task(pool._notify_status_callbacks(handle.id, AgentStatus.RUNNING, handle))
     except RuntimeError:
+        logger.exception(
+            "Failed to schedule sub-agent status callback",
+            extra={
+                "category": "error",
+                "component": "subagent",
+                "context": "schedule subagent status callback",
+            },
+        )
         pass  # No event loop running (test context)
 
 
@@ -229,6 +237,14 @@ class SubAgentPool:
                                 if num > max_id:
                                     max_id = num
                             except (ValueError, IndexError):
+                                logger.exception(
+                                    "Failed to parse sub-agent directory id",
+                                    extra={
+                                        "category": "error",
+                                        "component": "subagent",
+                                        "context": "parse subagent directory id",
+                                    },
+                                )
                                 pass
                     if max_id >= self._counter:
                         self._counter = max_id
@@ -333,6 +349,14 @@ class SubAgentPool:
             try:
                 messages.append(self._outbound_queue.get_nowait())
             except asyncio.QueueEmpty:
+                logger.exception(
+                    "Sub-agent outbound queue drained",
+                    extra={
+                        "category": "error",
+                        "component": "subagent",
+                        "context": "drain subagent outbound queue",
+                    },
+                )
                 break
         return messages
 

@@ -104,9 +104,25 @@ class StdioTransport:
                 self._process.terminate()
                 await asyncio.wait_for(self._process.wait(), timeout=5.0)
             except TimeoutError:
+                logger.exception(
+                    "Timed out while terminating MCP process",
+                    extra={
+                        "category": "error",
+                        "component": "mcp",
+                        "context": "terminate mcp process",
+                    },
+                )
                 self._process.kill()
                 await self._process.wait()
             except ProcessLookupError:
+                logger.exception(
+                    "MCP process disappeared during shutdown",
+                    extra={
+                        "category": "error",
+                        "component": "mcp",
+                        "context": "shutdown mcp process",
+                    },
+                )
                 pass
 
     async def _drain_stderr(self) -> None:
@@ -152,6 +168,14 @@ class StdioTransport:
                         extra={"category": "system"},
                     )
         except asyncio.CancelledError:
+            logger.exception(
+                "MCP stderr drainer cancelled",
+                extra={
+                    "category": "error",
+                    "component": "mcp",
+                    "context": "drain mcp stderr",
+                },
+            )
             pass
         except Exception:
             logger.exception(
@@ -274,6 +298,14 @@ class SSETransport:
         try:
             return await asyncio.wait_for(self._receive_queue.get(), timeout=30.0)
         except TimeoutError:
+            logger.exception(
+                "Timed out waiting for SSE message",
+                extra={
+                    "category": "error",
+                    "component": "mcp",
+                    "context": "receive SSE message",
+                },
+            )
             return None
 
     async def close(self) -> None:
@@ -316,6 +348,14 @@ class SSETransport:
             try:
                 self._receive_queue.get_nowait()
             except asyncio.QueueEmpty:
+                logger.exception(
+                    "SSE receive queue drained",
+                    extra={
+                        "category": "error",
+                        "component": "mcp",
+                        "context": "drain SSE receive queue",
+                    },
+                )
                 break
 
     async def _sse_reader(self) -> None:
@@ -390,8 +430,24 @@ class SSETransport:
                             await self._receive_queue.put(message)
 
                 except TimeoutError:
+                    logger.exception(
+                        "SSE reader timed out waiting for bytes",
+                        extra={
+                            "category": "error",
+                            "component": "mcp",
+                            "context": "read SSE bytes",
+                        },
+                    )
                     continue
                 except StopAsyncIteration:
+                    logger.exception(
+                        "SSE reader stream ended",
+                        extra={
+                            "category": "error",
+                            "component": "mcp",
+                            "context": "read SSE stream",
+                        },
+                    )
                     break
                 except Exception:
                     logger.exception(
@@ -404,6 +460,14 @@ class SSETransport:
                     )
                     break
         except asyncio.CancelledError:
+            logger.exception(
+                "SSE reader task cancelled",
+                extra={
+                    "category": "error",
+                    "component": "mcp",
+                    "context": "run SSE reader",
+                },
+            )
             pass
 
     def _parse_sse_event(self, event_bytes: bytes) -> bytes | None:
@@ -788,6 +852,14 @@ class MCPClient:
                         )
 
         except asyncio.CancelledError:
+            logger.exception(
+                "MCP reader loop cancelled",
+                extra={
+                    "category": "error",
+                    "component": "mcp",
+                    "context": "mcp reader loop cancellation",
+                },
+            )
             pass
         except Exception as e:
             logger.error(

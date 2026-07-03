@@ -158,6 +158,14 @@ class MemoryStore:
             try:
                 return yaml.safe_load(m.group(1)) or {}
             except yaml.YAMLError:
+                logger.exception(
+                    "Failed to parse memory YAML frontmatter",
+                    extra={
+                        "category": "error",
+                        "component": "memory",
+                        "context": "parse memory YAML frontmatter",
+                    },
+                )
                 return {}
         return {}
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 import sys
 from pathlib import Path
 
@@ -575,6 +576,14 @@ def _print_sessions_rich(sessions, project_dir) -> None:
         from rich.text import Text
         console = Console()
     except ImportError:
+        logging.getLogger("myagent.cli").exception(
+            "Rich unavailable while listing sessions",
+            extra={
+                "category": "error",
+                "component": "system",
+                "context": "fallback import rich table",
+            },
+        )
         console = None
 
     print(f"\n{project_dir.name} ({project_dir}):")
@@ -660,5 +669,13 @@ def main() -> None:
         exit_code = asyncio.run(async_main())
         sys.exit(exit_code)
     except KeyboardInterrupt:
+        logging.getLogger("myagent.cli").exception(
+            "CLI interrupted by keyboard",
+            extra={
+                "category": "error",
+                "component": "system",
+                "context": "handle CLI keyboard interrupt",
+            },
+        )
         print("\nGoodbye!")
         sys.exit(0)

@@ -10,8 +10,11 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 from dataclasses import dataclass
 from pathlib import Path
+
+logger = logging.getLogger("myagent.agent.project")
 
 
 @dataclass
@@ -171,6 +174,14 @@ class ProjectDetector:
             branch = stdout.decode().strip()
             ctx.git_branch = branch if branch else None
         except (OSError, FileNotFoundError):
+            logger.exception(
+                "Failed to detect git branch",
+                extra={
+                    "category": "error",
+                    "component": "system",
+                    "context": "detect git branch",
+                },
+            )
             ctx.git_branch = None
 
         try:
@@ -192,6 +203,14 @@ class ProjectDetector:
                     parts.append(f"{untracked} files untracked")
                 ctx.git_status = ", ".join(parts) if parts else None
         except (OSError, FileNotFoundError):
+            logger.exception(
+                "Failed to detect git status",
+                extra={
+                    "category": "error",
+                    "component": "system",
+                    "context": "detect git status",
+                },
+            )
             ctx.git_status = None
 
     def _detect_project_type(self, project_dir: Path) -> str:
@@ -233,6 +252,15 @@ class ProjectDetector:
                         return f"{parts[0]}.{parts[1]}"
                     return version
             except (OSError, FileNotFoundError):
+                logger.exception(
+                    "Failed to detect Python version using %s",
+                    python_cmd,
+                    extra={
+                        "category": "error",
+                        "component": "system",
+                        "context": "detect python version",
+                    },
+                )
                 continue
         # Final fallback: use the running interpreter's version
         import sys
@@ -289,6 +317,14 @@ class ProjectDetector:
             )
             return "/".join(dirs) if dirs else "(empty)"
         except PermissionError:
+            logger.exception(
+                "Failed to summarize project directory structure",
+                extra={
+                    "category": "error",
+                    "component": "system",
+                    "context": "summarize project directory structure",
+                },
+            )
             return "(no access)"
 
     def _read_agent_md(self, project_dir: Path) -> str | None:
