@@ -36,13 +36,25 @@ class DreamEngine:
 
     Triggers when: distance from last dream > trigger_hours AND
     cumulative rounds > trigger_rounds.
+
+    When a sub-agent pool is available (G3), the dream spawns a background
+    sub-agent that uses LLM reasoning to analyze memories and transcripts
+    for contradictions, new conventions, repeated corrections, and stale
+    facts. Falls back to rule-based analysis when no pool is available.
     """
 
-    def __init__(self, config=None, memory_store=None, state_dir: Path | None = None):
+    def __init__(
+        self,
+        config=None,
+        memory_store=None,
+        state_dir: Path | None = None,
+        subagent_pool=None,
+    ):
         self.config = config
         self.memory_store = memory_store
         self.state_dir = state_dir or Path.home() / ".myagent"
         self._state_file = self.state_dir / "last_dream.json"
+        self._subagent_pool = subagent_pool
 
     def should_run(self, session_rounds: int) -> bool:
         if self.config and not self.config.enabled:
@@ -63,11 +75,266 @@ class DreamEngine:
 
         return True
 
+    async def _run_as_subagent(self, session_store=None) -> DreamResult:
+        """G3: Run dream analysis via spawned sub-agent with LLM reasoning.
+
+        The sub-agent receives:
+        - Full memory index (name, description, content summary per file)
+        - Recent session transcript excerpts
+        - Instructions to detect contradictions, new conventions, stale facts,
+          and overlapping memories
+
+        The sub-agent is spawned in background mode and produces a structured
+        analysis, which we parse for concrete memory actions.
+        """
+        result = DreamResult()
+
+        # ── Create dream log directory ──
+        log_dir = self.state_dir / "dreams"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        log_path = log_dir / f"{today}.md"
+
+        # ── Build the sub-agent prompt ──
+        memory_summary = await self._build_memory_summary()
+        transcript_excerpts = await self._build_transcript_excerpts(session_store)
+
+        prompt = self._build_dream_subagent_prompt(memory_summary, transcript_excerpts)
+
+        # ── Spawn the sub-agent ──
+        try:
+            handle = await self._subagent_pool.spawn(
+                prompt=prompt,
+                tools=["memory_write", "read", "glob"],  # Tools needed for memory ops
+                mode="Think High",
+                background=True,
+            )
+            sub_result = await handle.wait()
+        except Exception as e:
+            logger.error("Dream sub-agent spawn/wait failed: %s", e, exc_info=True)
+            raise
+
+        # ── Parse sub-agent result ──
+        analysis_text = sub_result.output or ""
+        if sub_result.error:
+            logger.warning(
+                "Dream sub-agent reported error: %s", sub_result.error
+            )
+            result.memories_created = 0
+            result.memories_updated = 0
+            result.memories_deleted = 0
+        else:
+            # Count memory operations mentioned in the sub-agent output
+            import re
+            created = len(re.findall(r'(?:created?|wrote?|新增|创建)\s+(?:memory|记忆)', analysis_text, re.IGNORECASE))
+            updated = len(re.findall(r'(?:updated?|merged?|合并|更新)\s+(?:memory|记忆)', analysis_text, re.IGNORECASE))
+            deleted = len(re.findall(r'(?:deleted?|removed?|删除|清理)\s+(?:memory|记忆)', analysis_text, re.IGNORECASE))
+            result.memories_created = created
+            result.memories_updated = updated
+            result.memories_deleted = deleted
+
+        # ── Write dream log ──
+        log_lines = [
+            f"# Dream Log - {today} (Sub-Agent)",
+            "",
+            "This dream cycle was executed by a background sub-agent with LLM-driven "
+            "analysis. The sub-agent reviewed all memory files and recent session "
+            "transcripts to identify patterns, contradictions, and stale facts.",
+            "",
+            "## Sub-Agent Analysis",
+            "",
+            analysis_text[:10000] if analysis_text else "(No analysis produced)",
+            "",
+            "## Summary",
+            "",
+            f"- Created: {result.memories_created}",
+            f"- Updated: {result.memories_updated}",
+            f"- Deleted: {result.memories_deleted}",
+            "",
+        ]
+        log_path.write_text("\n".join(log_lines), encoding="utf-8")
+        result.log_path = log_path
+
+        # ── Update state ──
+        self._state_file.parent.mkdir(parents=True, exist_ok=True)
+        self._state_file.write_text(json.dumps({
+            "last_run": time.time(),
+            "round_count": 0,
+        }))
+
+        return result
+
+    async def _build_memory_summary(self) -> str:
+        """Build a summary of all memories for the sub-agent prompt."""
+        if self.memory_store is None:
+            return "(No memory store available)"
+
+        lines = ["## Current Memories", ""]
+        for scope in ("project", "user"):
+            try:
+                entries = await self.memory_store.list_all(scope)
+            except Exception:
+                continue
+
+            if entries:
+                lines.append(f"### {scope.capitalize()} Memories")
+                for entry in entries:
+                    try:
+                        mf = await self.memory_store.read(entry.name)
+                    except Exception:
+                        continue
+                    if mf is None:
+                        continue
+                    content_preview = mf.content[:300].replace("\n", " ")
+                    lines.append(
+                        f"- **{entry.name}** ({entry.type or 'reference'})"
+                    )
+                    lines.append(f"  Description: {entry.description or '(none)'}")
+                    lines.append(f"  Content: {content_preview}...")
+                    lines.append("")
+
+        return "\n".join(lines) if len(lines) > 1 else "(No memories found)"
+
+    async def _build_transcript_excerpts(self, session_store) -> str:
+        """Build excerpts from recent session transcripts for the sub-agent prompt."""
+        import json as _json
+        lines = ["## Recent Session Transcripts", ""]
+
+        if session_store is None:
+            return "\n".join(lines + ["(No session store available)"])
+
+        try:
+            sessions_dir = Path(str(getattr(session_store, 'base_dir', '')))
+            if not sessions_dir or not sessions_dir.exists():
+                return "\n".join(lines + ["(No sessions found)"])
+
+            recent_cutoff = time.time() - 7 * 86400
+            recent_sessions = []
+            for proj_dir in sessions_dir.iterdir():
+                if not proj_dir.is_dir():
+                    continue
+                for hash_dir in proj_dir.iterdir():
+                    if not hash_dir.is_dir():
+                        continue
+                    for sess_dir in hash_dir.iterdir():
+                        if not sess_dir.is_dir():
+                            continue
+                        ts_file = sess_dir / "transcript.json"
+                        if ts_file.exists() and ts_file.stat().st_mtime > recent_cutoff:
+                            recent_sessions.append(ts_file)
+
+            recent_sessions.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+            sampled = recent_sessions[:3]
+
+            for i, ts_file in enumerate(sampled):
+                try:
+                    data = _json.loads(ts_file.read_text(encoding="utf-8"))
+                    session_id = data.get("session_id", ts_file.parent.name)
+                    messages = data.get("messages", [])
+                    # Take first 3 and last 3 messages to capture context
+                    excerpt_messages = messages[:3] + (messages[-3:] if len(messages) > 6 else [])
+                    lines.append(f"### Session {i + 1}: {session_id}")
+                    for m in excerpt_messages:
+                        role = m.get("role", "unknown")
+                        content = m.get("content", "")[:200]
+                        lines.append(f"  [{role}] {content}")
+                    lines.append("")
+                except Exception:
+                    continue
+
+            if not lines[1:]:
+                lines.append("(No recent session transcripts found)")
+
+        except Exception as e:
+            lines.append(f"(Error scanning transcripts: {e})")
+
+        return "\n".join(lines)
+
+    def _build_dream_subagent_prompt(
+        self, memory_summary: str, transcript_excerpts: str
+    ) -> str:
+        """Build the sub-agent prompt for dream analysis (G3, G10)."""
+        return f"""You are a memory consolidation agent running in a background "dream" cycle.
+Your task is to analyze existing memories and recent session transcripts,
+then produce a structured analysis and execute memory maintenance actions.
+
+## Memory Files
+{memory_summary}
+
+## Session Transcripts
+{transcript_excerpts}
+
+## Instructions
+
+Review the memories and transcripts carefully. For each of the following,
+identify specific issues and, where appropriate, use memory_write to fix them:
+
+### 1. Duplicate / Overlapping Memories
+Look for memories that cover the same facts with different names
+(e.g., "coding-style" and "python-conventions" both describing snake_case rules).
+If found, use memory_write to merge them into the best-named file.
+
+### 2. Contradictory Memories (G10)
+Look for memories that make opposing statements (e.g., "Use type hints" vs
+"Type hints are optional"). Use semantic reasoning — not just keyword matching.
+If found, use memory_write to resolve the contradiction (keep the newer or
+more authoritative finding, and note the resolution).
+
+### 3. New Conventions or Patterns
+Look for repeated corrections, new conventions, or patterns in the transcripts
+that are not yet captured as memories. If found, use memory_write to create a
+new memory file for each convention.
+
+### 4. Repeated Corrections
+If the same correction appears 2+ times across sessions, create a
+"common-corrections" memory documenting what the user consistently corrects.
+
+### 5. Stale Memories
+Identify memories that reference outdated practices or haven't been relevant
+for the recent sessions. Flag them — but DO NOT delete them (the dream runner
+handles deletions).
+
+### 6. Frequent Topics
+Note the most frequently discussed topics in recent sessions.
+
+## Output Format
+
+First, write a clear analysis section covering each of the 6 areas above.
+Then execute memory_write for any concrete actions needed.
+
+Do NOT ask questions or wait for confirmation. This runs silently in background.
+Do NOT interact with project code files — only memory files."""
+
     async def run(self, session_store=None) -> DreamResult:
         """Consolidate memories: deduplicate, scan transcripts, find patterns.
 
-        Enhanced with transcript scanning (gap-18) and narrative analysis (gap-35).
+        G3: When sub-agent pool is available, spawns a background sub-agent
+        with LLM-driven analysis instead of rule-based heuristics. The sub-agent
+        receives full memory index and recent transcript excerpts, then produces
+        memory actions (create, update, delete, merge) using reasoning.
+
+        Falls back to inline rule-based analysis when no sub-agent pool exists.
+
         Principles: never modify project code, never ask user, always background.
+        """
+        # G3: Delegate to sub-agent when available
+        if self._subagent_pool is not None:
+            try:
+                return await self._run_as_subagent(session_store)
+            except Exception as e:
+                logger.warning(
+                    "Dream sub-agent failed: %s — falling back to inline analysis", e,
+                    exc_info=True,
+                )
+
+        return await self._run_inline(session_store)
+
+    async def _run_inline(self, session_store=None) -> DreamResult:
+        """Inline rule-based dream analysis (fallback path).
+
+        Used when no sub-agent pool is available. Performs deterministic
+        checks: empty memory cleanup, description-based dedup, keyword-based
+        contradiction detection, and transcript pattern scanning.
         """
         result = DreamResult()
 

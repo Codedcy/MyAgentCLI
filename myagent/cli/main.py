@@ -133,6 +133,7 @@ async def async_main(argv: list[str] | None = None) -> int:
         config=config.dream,
         memory_store=memory_store,
         state_dir=Path.home() / ".myagent",
+        subagent_pool=subagent_pool,
     )
     # Check if dream should run
     if dream_engine.should_run(session_mgr.estimate_total_rounds() if hasattr(session_mgr, 'estimate_total_rounds') else 0):
