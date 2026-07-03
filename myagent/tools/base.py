@@ -60,6 +60,7 @@ class ToolContext:
     project_context: Any = None  # ProjectContext
     config_loader: Any = None  # ConfigLoader (for runtime config changes)
     memory_store: Any = None  # MemoryStore (for memory_write tool)
+    goal_tracker: Any = None  # GoalTracker (for spawn_subagent goal-mode detection)
 
 
 @runtime_checkable

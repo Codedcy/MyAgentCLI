@@ -34,13 +34,12 @@ class SpawnSubagentTool:
             )
 
         try:
-            # gap-21: check speculative_exploration config for non-goal mode
+            # gap-21 (G1 fixed): check speculative_exploration config for non-goal mode
+            # Use goal_tracker from ToolContext to detect if session is in goal mode.
             background = params.get("background", True)
             if context.config:
-                goal = getattr(context.config, '_goal', None) or (
-                    hasattr(context.config, 'session') and
-                    getattr(context.config.session, '_goal', None)
-                )
+                goal_tracker = getattr(context, 'goal_tracker', None)
+                goal = goal_tracker.get_goal() if goal_tracker and hasattr(goal_tracker, 'get_goal') else None
                 # Non-goal mode: force background=False unless explicitly allowed
                 if not goal:
                     speculative_allowed = (

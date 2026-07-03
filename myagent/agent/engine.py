@@ -721,6 +721,7 @@ class AgentEngine:
                 project_context=self.project_context,
                 config_loader=getattr(self, '_config_loader', None),
                 memory_store=getattr(self, '_memory_store', None),
+                goal_tracker=self.goal_tracker,
             )
 
             t0 = time.monotonic()
