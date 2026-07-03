@@ -177,6 +177,21 @@ tool usage limit."""
             tokens.add(word)
         return tokens
 
+    @staticmethod
+    def _compute_cache_key(query: str) -> str:
+        """Compute a stable cache key from significant keywords in the query.
+
+        gap-20-09: Uses a content hash instead of raw query[:100] prefix.
+        Extracts significant keywords, sorts them for determinism, then
+        computes a SHA256 hash prefix. This avoids false cache hits when
+        two different inputs share the same first 100 characters.
+        """
+        import hashlib
+        tokens = sorted(ContextBuilder._tokenize_for_cache(query))
+        # Use the sorted, de-duplicated keyword set as input to hash
+        key_material = "|".join(tokens) if tokens else query[:100]
+        return hashlib.sha256(key_material.encode("utf-8")).hexdigest()[:16]
+
     def _detect_topic_drift(self, current_input: str) -> bool:
         """Check if the current input represents a topic change from the cache key.
 
@@ -236,8 +251,13 @@ tool usage limit."""
                     query = current_input[:200]
                     from myagent.memory.recall import recall
                     memories = await recall(query, self.memory_store, limit=10)
-                    self._memory_cache[query[:100]] = memories
-                    self._cache_key = query[:100]
+                    # gap-20-09: Use a hash-based cache key instead of raw
+                    # query[:100] prefix. This prevents false cache hits when
+                    # two different inputs share the same first 100 characters
+                    # but diverge in topic thereafter.
+                    cache_key = self._compute_cache_key(current_input)
+                    self._memory_cache[cache_key] = memories
+                    self._cache_key = cache_key
                     self._turn_count_since_refresh = 0
                 else:
                     memories = self._memory_cache.get(self._cache_key, [])
