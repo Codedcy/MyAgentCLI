@@ -5,7 +5,68 @@ from __future__ import annotations
 from pathlib import Path
 
 
-class REPLEngine:
+class SlashCompleter:
+    """Auto-completion for slash commands, skills, mode values, and file paths (gap-2-05).
+
+    Provides context-aware completions for the REPL input:
+    - Slash commands (e.g. /mode, /goal, /skills, /exit)
+    - Skill names after / (e.g. /code-review, /brainstorming)
+    - Mode values after /mode (think-high, think-max, non-think)
+    """
+
+    # Built-in slash commands
+    BUILTIN_COMMANDS = [
+        "mode", "goal", "skills", "dream", "clear", "history", "exit", "quit",
+        "help",
+    ]
+
+    # Mode values for /mode completion
+    MODE_VALUES = ["think-high", "think-max", "non-think"]
+
+    def __init__(self, skill_registry=None):
+        self._skill_registry = skill_registry
+
+    def get_completions(self, document, complete_event):
+        """Yield Completion objects for the current input."""
+        from prompt_toolkit.completion import Completion
+
+        text = document.text_before_cursor
+
+        # Only complete after /
+        if not text.startswith("/"):
+            return
+
+        # Split into parts: /<cmd> <args>
+        parts = text[1:].split()
+        if not parts:
+            return
+
+        cmd = parts[0]
+        is_first_word = len(parts) == 1 and not text.endswith(" ")
+
+        if is_first_word:
+            # Completing the command name itself
+            word_before = cmd
+            # Complete built-in commands
+            for name in self.BUILTIN_COMMANDS:
+                if name.startswith(word_before):
+                    yield Completion(name, start_position=-len(word_before))
+
+            # Complete skill names from registry
+            if self._skill_registry:
+                for entry in self._skill_registry.list_all():
+                    if entry.name.startswith(word_before):
+                        yield Completion(
+                            entry.name,
+                            start_position=-len(word_before),
+                            display_meta=entry.description,
+                        )
+        elif cmd == "mode" and len(parts) == 1:
+            # Completing mode value
+            arg = parts[1] if len(parts) > 1 else ""
+            for mode_val in self.MODE_VALUES:
+                if mode_val.startswith(arg):
+                    yield Completion(mode_val, start_position=-len(arg))
     """Interactive REPL using prompt_toolkit."""
 
     def __init__(
@@ -67,10 +128,17 @@ class REPLEngine:
                 buffer = event.app.current_buffer
                 buffer.reset()
 
+            # Build completer (gap-2-05)
+            skill_registry = (
+                self._engine.skill_registry if self._engine else None
+            )
+            completer = SlashCompleter(skill_registry=skill_registry)
+
             session = PromptSession(
                 history=FileHistory(str(history_file)),
                 multiline=True,
                 key_bindings=kb,
+                completer=completer,
             )
 
             while self._running:
