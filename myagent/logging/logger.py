@@ -44,13 +44,15 @@ def get_logger(name: str) -> logging.Logger:
     return logging.getLogger(f"myagent.{name}")
 
 
-class TimedSizeRotatingFileHandler(logging.handlers.RotatingFileHandler):
+class TimedSizeRotatingFileHandler(logging.handlers.TimedRotatingFileHandler):
     """Combined time-based (midnight) + size-based file rotation handler.
 
-    Design doc §十一 specifies TimedRotatingFileHandler (daily) +
-    RotatingFileHandler (size). This class subclasses RotatingFileHandler
-    and adds midnight rollover by checking the date on each emit and
-    recomputing the filename pattern when the day changes (gap-09).
+    Design doc §十一 specifies: "日志文件通过 TimedRotatingFileHandler 按天轮转
+    + RotatingFileHandler 按大小轮转组合". This class subclasses
+    TimedRotatingFileHandler (the primary rotation axis is time — daily at
+    midnight) and adds size-based rotation within each day by checking
+    file size on each emit and performing a numbered rollover when the
+    size exceeds max_bytes (gap-15-03).
     """
 
     def __init__(
@@ -61,61 +63,65 @@ class TimedSizeRotatingFileHandler(logging.handlers.RotatingFileHandler):
         encoding: str = "utf-8",
         delay: bool = True,
     ):
-        self._base_pattern = filename
-        self._max_bytes = max_bytes
-        self._backup_count = backup_count
-        self._encoding = encoding
-        self._delay = delay
-        self._current_date = datetime.now().strftime("%Y-%m-%d")
-        # Compute the actual filename with today's date
-        self._last_base = ""
-        actual_filename = self._compute_filename()
+        # TimedRotatingFileHandler init: daily rotation at midnight,
+        # keep backup_count days of old log files.
         super().__init__(
-            filename=actual_filename,
-            maxBytes=max_bytes,
+            filename=filename,
+            when="midnight",
+            interval=1,
             backupCount=backup_count,
             encoding=encoding,
             delay=delay,
+            utc=False,
         )
+        self.max_bytes = max_bytes
+        # Suffix for size-based rotation within a day (e.g. .1, .2, ...)
+        self._size_suffix = ".%d"
 
     def emit(self, record: logging.LogRecord) -> None:
-        """Check for date change before emitting. If midnight has passed,
-        close the current file and open a new one with the new date.
+        """Check file size before emitting. If max_bytes is exceeded,
+        perform a size-based rollover (numbered backup) within the
+        current day. Time-based (midnight) rotation is handled by the
+        parent TimedRotatingFileHandler.
         """
-        today = datetime.now().strftime("%Y-%m-%d")
-        if today != self._current_date:
-            self._current_date = today
-            new_filename = self._compute_filename()
-            self._do_date_rollover(new_filename)
+        if self.max_bytes > 0 and self.stream is not None:
+            try:
+                current_size = self.stream.tell()
+                if current_size >= self.max_bytes:
+                    self._do_size_rollover()
+            except (OSError, ValueError, AttributeError):
+                # If we can't determine the size, just proceed
+                pass
         super().emit(record)
 
-    def _compute_filename(self) -> str:
-        """Substitute the date placeholder in the base pattern."""
-        from datetime import datetime as _dt
-        today = _dt.now().strftime("%Y-%m-%d")
-        # Replace date in the filename if it follows the pattern myagent-YYYY-MM-DD
-        import re
-        pattern = r"myagent-\d{4}-\d{2}-\d{2}"
-        if re.search(pattern, self._base_pattern):
-            self._last_base = re.sub(pattern, f"myagent-{today}", self._base_pattern)
-            return self._last_base
-        # Fallback: insert date before extension
-        if "." in self._base_pattern:
-            base, ext = self._base_pattern.rsplit(".", 1)
-            self._last_base = f"{base}-{today}.{ext}"
-        else:
-            self._last_base = f"{self._base_pattern}-{today}"
-        return self._last_base
+    def _do_size_rollover(self) -> None:
+        """Perform a size-based rollover: rename files with .1, .2, ...
+        suffixes (matching RotatingFileHandler behavior), then open a new
+        file. The parent's midnight rotation handles the daily boundary.
+        """
+        if self.stream:
+            self.stream.close()
+            self.stream = None
 
-    def _do_date_rollover(self, new_filename: str) -> None:
-        """Close current file stream and reopen with the new date-based name."""
-        try:
-            if self.stream:
-                self.stream.close()
-        except Exception:
-            pass
-        self.baseFilename = new_filename
-        self.stream = self._open()
+        # Rotate existing numbered backup files: .2 → .3, .1 → .2
+        for i in range(self.backupCount - 1, 0, -1):
+            sfn = self.rotation_filename(f"{self.baseFilename}{self._size_suffix % i}")
+            dfn = self.rotation_filename(f"{self.baseFilename}{self._size_suffix % (i + 1)}")
+            if os.path.exists(sfn):
+                if os.path.exists(dfn):
+                    os.remove(dfn)
+                os.rename(sfn, dfn)
+
+        # Rename current file to .1
+        dfn = self.rotation_filename(f"{self.baseFilename}{self._size_suffix % 1}")
+        if os.path.exists(self.baseFilename):
+            if os.path.exists(dfn):
+                os.remove(dfn)
+            os.rename(self.baseFilename, dfn)
+
+        # Open a new empty file
+        if not self.delay:
+            self.stream = self._open()
 
 
 class LogManager:
@@ -279,11 +285,12 @@ class LogManager:
     def _make_rotating_handler(
         filename: str, max_bytes: int, backup_count: int
     ) -> "TimedSizeRotatingFileHandler":
-        """Create a TimedSizeRotatingFileHandler with time + size-based rotation.
+        """Create a TimedSizeRotatingFileHandler with time + size rotation.
 
-        Combines TimedRotatingFileHandler (midnight rollover) with
-        RotatingFileHandler (size-based rollover) as specified in the
-        design doc §十一 日志系统 (gap-09).
+        Subclasses TimedRotatingFileHandler (daily midnight rotation) and
+        adds size-based rotation within each day. This matches the design
+        doc §十一: "TimedRotatingFileHandler 按天轮转 + RotatingFileHandler
+        按大小轮转组合" (gap-15-03).
         """
         return TimedSizeRotatingFileHandler(
             filename=filename,
