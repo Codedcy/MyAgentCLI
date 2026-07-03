@@ -135,7 +135,7 @@ class AgentEngine:
 
         # ReAct loop (simplified — in production, full loop with LLM streaming)
         if self.llm:
-            async for event in self._react_loop(request, session):
+            async for event in self._react_loop(request, session, user_input):
                 yield event
         else:
             # No LLM available — echo back for testing
@@ -146,7 +146,7 @@ class AgentEngine:
 
     MAX_ITERATIONS = 50
 
-    async def _react_loop(self, request, session) -> AsyncIterator[AgentEvent]:
+    async def _react_loop(self, request, session, user_input: str = "") -> AsyncIterator[AgentEvent]:
         """Core ReAct loop with true iterative execution and tool result feedback.
 
         Each iteration:
@@ -166,6 +166,7 @@ class AgentEngine:
         thinking_mode = self._get_thinking_mode()
         iteration = 0
         context_notified_50 = False  # gap-25: only notify once
+        active_skill: str | None = None  # gap-32: track active skill for context rebuild
 
         while iteration < self.MAX_ITERATIONS:
             iteration += 1
@@ -281,13 +282,39 @@ class AgentEngine:
 
                 # Execute each tool and append result messages
                 for tc in tool_calls_in_turn:
-                    # Skill invocation shortcut
+                    # Skill invocation shortcut (gap-32: rebuild context with skill)
                     if tc.name == "skill_invoke" and self.skill_registry:
                         skill = self.skill_registry.get(tc.params.get("skill", ""))
                         if skill:
-                            skill_result = ToolResult(
-                                output=f"Skill '{skill.name}' loaded."
-                            )
+                            active_skill = skill.name
+                            # Rebuild context with skill content injected (gap-32)
+                            if self.context_builder and user_input:
+                                history = session.get_recent_messages() if hasattr(session, 'get_recent_messages') else []
+                                new_request = await self.context_builder.build(
+                                    current_input=user_input,
+                                    history=history,
+                                    project_context=self.project_context,
+                                    active_skill=active_skill,
+                                )
+                                new_api = new_request.to_api_format()
+                                # Rebuild messages: keep existing tool results, update system
+                                new_messages = new_api["messages"]
+                                # Preserve existing assistant + tool result messages
+                                existing_count = len(messages)
+                                # Replace system message
+                                if new_api.get("system"):
+                                    for i, m in enumerate(messages):
+                                        if m.get("role") == "system":
+                                            messages[i] = {"role": "system", "content": new_api["system"]}
+                                            break
+                                # Add skill tool result
+                                skill_result = ToolResult(
+                                    output=f"Skill '{skill.name}' loaded and context updated."
+                                )
+                            else:
+                                skill_result = ToolResult(
+                                    output=f"Skill '{skill.name}' loaded."
+                                )
                             yield ToolCallEnd(call_id=tc.id, result=skill_result)
                             messages.append({
                                 "role": "tool",
@@ -547,6 +574,7 @@ class AgentEngine:
                 config=self.config,
                 subagent_pool=self.subagent_pool,
                 working_dir=self.project_dir,
+                project_context=self.project_context,
             )
 
             t0 = time.monotonic()
