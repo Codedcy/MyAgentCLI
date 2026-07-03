@@ -108,6 +108,8 @@ class AgentEngine:
         project_context=None,
         config=None,
         project_dir: Path | None = None,
+        config_loader=None,
+        memory_store=None,
     ):
         self.llm = llm
         self.tool_registry = tool_registry
@@ -121,6 +123,8 @@ class AgentEngine:
         self.project_context = project_context
         self.config = config
         self.project_dir = project_dir or Path.cwd()
+        self._config_loader = config_loader
+        self._memory_store = memory_store
 
     async def run(
         self, user_input: str, session, active_skill: str | None = None
@@ -644,6 +648,8 @@ class AgentEngine:
                 subagent_pool=self.subagent_pool,
                 working_dir=self.project_dir,
                 project_context=self.project_context,
+                config_loader=getattr(self, '_config_loader', None),
+                memory_store=getattr(self, '_memory_store', None),
             )
 
             t0 = time.monotonic()

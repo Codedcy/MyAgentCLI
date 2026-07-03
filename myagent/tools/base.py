@@ -58,6 +58,8 @@ class ToolContext:
     subagent_pool: Any | None = None
     working_dir: Path | None = None
     project_context: Any = None  # ProjectContext
+    config_loader: Any = None  # ConfigLoader (for runtime config changes)
+    memory_store: Any = None  # MemoryStore (for memory_write tool)
 
 
 @runtime_checkable
