@@ -180,7 +180,7 @@ class SubAgentWorker:
                     "LLM error in sub-agent iteration %d: %s",
                     iteration,
                     str(e),
-                    extra={"category": "error", "component": "llm"},
+                    extra={"category": "error", "component": "llm", "context": "subagent_llm_call"},
                 )
                 return f"Error: {e}"
 
@@ -234,7 +234,7 @@ class SubAgentWorker:
                                 "Tool '%s' failed: %s",
                                 tc.name,
                                 str(e),
-                                extra={"category": "error", "component": "tool"},
+                                extra={"category": "error", "component": "tool", "context": f"subagent_tool:{tc.name}"},
                             )
                             result_text = f"Error executing {tc.name}: {e}"
                     else:

@@ -95,12 +95,33 @@ class SessionManager:
     async def end_session(self, session) -> None:
         """Finalize session: mark closed, prompt for permission persistence, summarize memories."""
         import logging
+        import time
         _log = logging.getLogger("myagent.session")
 
         # Mark session as closed in transcript
+        # Only default to False if goal was set but never explicitly resolved.
+        # G2: If the engine set goal_achieved = True, preserve it.
         if hasattr(session, 'goal_achieved'):
             if session.goal and session.goal_achieved is None:
                 session.goal_achieved = False
+
+        # G3: Write final transcript state with closed marker
+        if self.session_store and hasattr(session, 'project_name') and hasattr(session, 'project_hash'):
+            try:
+                sess_dir = self.session_store._session_dir(
+                    session.project_name, session.project_hash, session.id
+                )
+                # Update session timestamp
+                from datetime import datetime
+                session.updated_at = datetime.now()
+                # Write final transcripts with closed marker
+                self.session_store._write_closed_session(sess_dir, session)
+                _log.info(
+                    "Session %s finalized — transcript written with closed marker",
+                    getattr(session, 'id', 'unknown'),
+                )
+            except Exception as e:
+                _log.warning("Failed to write final transcript for session: %s", e)
 
         # Prompt for permission persistence (gap-2-04)
         if self.permissions:

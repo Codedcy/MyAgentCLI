@@ -79,6 +79,11 @@ async def async_main(argv: list[str] | None = None) -> int:
     if args.dangerously_skip_permissions:
         permissions.skip_all(True)
 
+    # Status bar must be created before LLMProvider so retry_callback
+    # can reference it. LLMProvider doesn't depend on status_bar.
+    from myagent.cli.status import StatusBar
+    status_bar = StatusBar(config.ui) if config.ui.show_status_bar else None
+
     from myagent.llm.provider import LLMProvider
     llm = LLMProvider(
         config.model,
@@ -172,9 +177,6 @@ async def async_main(argv: list[str] | None = None) -> int:
 
     from myagent.cli.renderer import Renderer
     renderer = Renderer()
-
-    from myagent.cli.status import StatusBar
-    status_bar = StatusBar(config.ui) if config.ui.show_status_bar else None
 
     # Wire status bar to sub-agent pool state (gap-2-08)
     if status_bar:

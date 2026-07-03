@@ -283,6 +283,73 @@ class SessionStore:
 
         return sess_dir / "transcript.json"
 
+    def _write_closed_session(self, sess_dir: Path, session: Session) -> None:
+        """Write final transcript state with a closed marker (G3).
+
+        Called by SessionManager.end_session() to persist the final session
+        state including the resolved goal_achieved value and a closed_at
+        timestamp so session listings can distinguish active vs closed.
+        """
+        import time
+        closed_at = session.updated_at.isoformat() if hasattr(session, 'updated_at') else datetime.now().isoformat()
+
+        ts = sess_dir / "transcript.json"
+        # Read existing transcript data to update
+        existing = {}
+        if ts.exists():
+            try:
+                existing = json.loads(ts.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                existing = {}
+
+        # Write updated transcript with closed marker
+        updated = {
+            **existing,
+            "session_id": session.id,
+            "project_name": session.project_name,
+            "project_hash": session.project_hash,
+            "updated_at": closed_at,
+            "goal": session.goal,
+            "goal_achieved": session.goal_achieved,
+            "total_tokens": session.total_tokens,
+            "turn_count": session.turn_count,
+            "closed": True,
+            "closed_at": closed_at,
+        }
+        # Update first_message and duration if they existed
+        if session._messages:
+            updated["first_message"] = session._messages[0].content[:100]
+            if "created_at" in existing:
+                try:
+                    from datetime import datetime as dt
+                    created = dt.fromisoformat(existing["created_at"])
+                    updated["duration"] = (
+                        dt.fromisoformat(closed_at) - created
+                    ).total_seconds()
+                except Exception:
+                    updated["duration"] = existing.get("duration", 0)
+
+        ts.write_text(
+            json.dumps(updated, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        # Update Markdown transcript with closed marker
+        md = sess_dir / "transcript.md"
+        lines = [
+            f"# Session: {session.id} [CLOSED]",
+            f"Project: {session.project_name}",
+            f"Closed at: {closed_at}",
+            f"Goal: {session.goal or 'None'}",
+            f"Goal Achieved: {session.goal_achieved}",
+            "",
+        ]
+        for m in session._messages:
+            lines.append(f"### {m.role}")
+            lines.append(m.content[:2000])
+            lines.append("")
+        md.write_text("\n".join(lines), encoding="utf-8")
+
     def _write_transcripts(self, sess_dir: Path, session: Session) -> None:
         # JSON — save ALL messages (not just last 50)
         ts = sess_dir / "transcript.json"

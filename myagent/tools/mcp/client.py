@@ -339,7 +339,7 @@ class MCPClient:
         except asyncio.CancelledError:
             pass
         except Exception as e:
-            logger.error("MCP reader loop error: %s", e)
+            logger.error("MCP reader loop error: %s", e, extra={"category": "error", "component": "mcp", "context": "mcp_reader_loop"})
 
     async def _handle_message(self, message: dict) -> None:
         """Route incoming JSON-RPC message to pending request or ignore."""

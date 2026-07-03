@@ -1,8 +1,7 @@
 """Built-in agent tools: spawn_subagent, send_message.
 
-Uses stubs for SubAgentPool and MemoryStore when real implementations
-are not yet available (Task 9 + Task 10). The stub contract matches the
-final public interface so no code changes are needed when replacing.
+SubAgentPool and MemoryStore are fully implemented and wired through
+ToolContext. Both tools delegate to real implementations at runtime.
 """
 
 from __future__ import annotations
@@ -101,10 +100,21 @@ class SendMessageTool:
                 metadata={"deferred": True},
             )
 
+        target = params["to"]
+
+        # G10: Support sub-agent-to-main-agent messaging
+        if target == "main":
+            if hasattr(pool, 'send_to_main'):
+                # Called from a sub-agent context — use its own ID
+                subagent_id = params.get("from", "subagent")
+                pool.send_to_main(subagent_id, params["message"])
+                return ToolResult(output=f"Message sent to main agent")
+            return ToolResult(error="Cannot send to main: pool not available")
+
         try:
-            await pool.send_message(params["to"], params["message"])
+            await pool.send_message(target, params["message"])
             return ToolResult(
-                output=f"Message sent to {params['to']}",
+                output=f"Message sent to {target}",
             )
         except Exception as e:
             return ToolResult(error=str(e))

@@ -134,11 +134,15 @@ class AgentEngine:
 
         # Build context
         history = session.get_recent_messages() if hasattr(session, 'get_recent_messages') else []
+        # G11: Proactively pass current goal to context builder so it appears
+        # in the system prompt on every turn (not just reactively after failed checks).
+        goal = self.goal_tracker.get_goal() if self.goal_tracker else None
         request = await self.context_builder.build(
             current_input=user_input,
             history=history,
             project_context=self.project_context,
             active_skill=active_skill,
+            goal=goal,
         )
 
         # ReAct loop (simplified — in production, full loop with LLM streaming)
@@ -186,6 +190,22 @@ class AgentEngine:
 
         while iteration < self.MAX_ITERATIONS:
             iteration += 1
+
+            # G10: Drain sub-agent-to-main-agent outbound messages
+            if self.subagent_pool:
+                outbound_msgs = self.subagent_pool.drain_outbound_messages()
+                for out in outbound_msgs:
+                    sub_id = out.get("from", "unknown")
+                    msg_text = out.get("message", "")
+                    if msg_text:
+                        messages.append({
+                            "role": "user",
+                            "content": f"[Sub-agent {sub_id}]: {msg_text}",
+                        })
+                        logger.info(
+                            "Sub-agent %s sent message to main", sub_id,
+                            extra={"category": "agent", "event": "subagent_message"},
+                        )
 
             # Check for external interrupt signal (gap-10, gap-18)
             if self.interrupt_event and self.interrupt_event.is_set():
@@ -249,6 +269,42 @@ class AgentEngine:
                                 f"(layers: {compact_result.layers_applied})]\n"
                             )
                         )
+                    # Re-estimate usage after compact for hard-limit check below
+                    usage_pct = compact_result.usage_after
+
+                # G9: Independent 90% hard truncation trigger (separate from 75% compaction guard)
+                # Per spec flowchart §三: 90% hard limit is a separate trigger path (HARSH).
+                # It must fire even when the 75% compaction path was skipped (e.g. minimum_messages guard).
+                HARD_LIMIT = self.config.context.compression.hard_limit if self.config and getattr(self.config, 'context', None) and getattr(self.config.context, 'compression', None) else 0.90
+                if usage_pct >= HARD_LIMIT:
+                    logger.warning(
+                        "Context at %.0f%% — triggering hard truncation (Layer 4)",
+                        usage_pct * 100,
+                        extra={"category": "agent", "event": "hard_truncation"},
+                    )
+                    from myagent.context.builder import Message as CtxMessage2
+                    ctx_messages_hard = [
+                        CtxMessage2(
+                            role=m.get("role", "user"),
+                            content=m.get("content", ""),
+                        )
+                        for m in messages
+                    ]
+                    truncated = self.compression._layer4_truncate(ctx_messages_hard)
+                    messages = [
+                        {"role": m.role, "content": m.content}
+                        for m in truncated
+                    ]
+                    # Re-insert system message if it got removed
+                    if api_format.get("system") and messages[0].get("role") != "system":
+                        messages.insert(0, {"role": "system", "content": api_format["system"]})
+                    yield TextChunk(
+                        content=(
+                            f"\n[Hard truncation applied: context exceeded {int(HARD_LIMIT * 100)}%. "
+                            f"Messages reduced from {len(ctx_messages_hard)} to {len(messages)}. "
+                            f"Consider running /clear to free more space.]\n"
+                        )
+                    )
 
             text_buffer: list[str] = []
             tool_calls_in_turn: list = []
@@ -281,7 +337,7 @@ class AgentEngine:
                     "LLM error in iteration %d: %s",
                     iteration,
                     str(e),
-                    extra={"category": "error", "component": "llm"},
+                    extra={"category": "error", "component": "llm", "context": "llm_stream_complete"},
                 )
                 if partial_text:
                     yield TextChunk(
@@ -451,7 +507,7 @@ class AgentEngine:
                 except Exception as e:
                     logger.error(
                         "Goal check failed: %s", str(e),
-                        extra={"category": "error", "component": "agent"},
+                        extra={"category": "error", "component": "agent", "context": "goal_check"},
                     )
                     yield Done()
                     return
@@ -471,6 +527,9 @@ class AgentEngine:
                     continue
 
             # Goal achieved (or no goal set) — we are done
+            # Persist goal achievement to session (G2)
+            if goal and hasattr(session, 'goal_achieved'):
+                session.goal_achieved = True
             self._persist_turn(session, messages)
             logger.info(
                 "ReAct iteration %d complete (done)", iteration,
@@ -706,7 +765,7 @@ class AgentEngine:
         except Exception as e:
             logger.error(
                 "Tool '%s' failed: %s", tc.name, str(e),
-                extra={"category": "error", "component": "tool"},
+                extra={"category": "error", "component": "tool", "context": f"execute_tool:{tc.name}"},
             )
             return ToolResult(error=str(e))
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 
@@ -124,6 +125,11 @@ class REPLEngine:
                     self._current_session.id,
                 )
                 reset_task_list(persist_path=sess_dir / "tasks.json")
+
+        # G4: Start periodic dream trigger checker for long-running sessions
+        self._dream_checker_task = None
+        if self._dream_engine:
+            self._dream_checker_task = asyncio.create_task(self._periodic_dream_check())
 
         # Shared Rich Live layout for status bar + output (gap-2-07)
         self._live = None
@@ -291,6 +297,12 @@ class REPLEngine:
                 async for event in self._engine.run(
                     text, self._current_session, active_skill=active_skill
                 ):
+                    # G5: Update status bar with live token count from Done events
+                    if type(event).__name__ == "Done":
+                        usage = getattr(event, 'usage', None)
+                        if usage and hasattr(usage, 'total_tokens'):
+                            if self._status_bar:
+                                self._status_bar.update(tokens=usage.total_tokens)
                     if self._renderer:
                         rendered = self._renderer.render_event(event)
                         if rendered:
@@ -426,9 +438,56 @@ class REPLEngine:
             case _:
                 pass
 
+    async def _periodic_dream_check(self) -> None:
+        """G4: Periodically re-check dream trigger condition in long-running sessions.
+
+        Checked every 30 minutes by default. If the dream trigger
+        conditions become true mid-session, spawn a dream cycle in
+        the background without blocking the REPL.
+        """
+        import logging as _logging
+        _log = _logging.getLogger("myagent.cli")
+
+        DREAM_CHECK_INTERVAL = 1800  # 30 minutes in seconds
+
+        while self._running:
+            await asyncio.sleep(DREAM_CHECK_INTERVAL)
+            if not self._running:
+                break
+            try:
+                # Re-estimate total rounds (includes current session)
+                total_rounds = 0
+                if self._session_mgr and hasattr(self._session_mgr, 'estimate_total_rounds'):
+                    total_rounds = self._session_mgr.estimate_total_rounds()
+                if self._dream_engine and self._dream_engine.should_run(total_rounds):
+                    _log.info("Mid-session dream trigger fired (interval check)")
+                    session_store = getattr(self._engine, 'session_store', None) if self._engine else None
+
+                    async def _run_dream_bg():
+                        try:
+                            result = await self._dream_engine.run(session_store=session_store)
+                            _log.info(
+                                "Dream completed: created=%d updated=%d deleted=%d log=%s",
+                                result.memories_created, result.memories_updated,
+                                result.memories_deleted, result.log_path,
+                            )
+                        except Exception as exc:
+                            _log.error("Background dream failed: %s", exc)
+                    asyncio.create_task(_run_dream_bg())
+            except Exception as e:
+                _log.warning("Periodic dream check failed: %s", e)
+
     async def _shutdown(self) -> None:
         """Graceful shutdown: stop status bar, end session, clean up."""
         self._running = False
+
+        # G4: Cancel periodic dream checker
+        if self._dream_checker_task and not self._dream_checker_task.done():
+            self._dream_checker_task.cancel()
+            try:
+                await self._dream_checker_task
+            except asyncio.CancelledError:
+                pass
 
         # Stop shared Live layout (gap-2-07)
         if self._live:

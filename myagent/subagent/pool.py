@@ -52,6 +52,11 @@ class SubAgentHandle:
         if msg.lower() == "stop":
             self._interrupt_event.set()
 
+    def send_to_main(self, pool, message: str) -> None:
+        """G10: Send a message from this sub-agent to the main agent."""
+        if pool and hasattr(pool, 'send_to_main'):
+            pool.send_to_main(self.id, message)
+
 
 async def _persist_subagent_transcript(session_store, session, handle, worker, duration_ms, output):
     """Persist sub-agent transcript to session's subagents/ directory (gap-07)."""
@@ -117,6 +122,10 @@ class SubAgentPool:
 
     Accepts optional llm, tool_registry, and tool_context at pool level;
     spawn() allows per-invocation overrides.
+
+    G10: Outbound message queue for sub-agent-to-main-agent communication.
+    Sub-agents write messages via SubAgentHandle.send_to_main(); the main
+    agent drains this queue between ReAct iterations.
     """
 
     MAX_TOTAL = 1000
@@ -142,6 +151,8 @@ class SubAgentPool:
         self._tool_context = tool_context
         self._session_store = session_store
         self._session = session
+        # G10: Outbound message queue for sub→main communication
+        self._outbound_queue: asyncio.Queue[dict] = asyncio.Queue()
 
     @property
     def active_count(self) -> int:
@@ -200,6 +211,32 @@ class SubAgentPool:
         """Send a message to a running sub-agent."""
         if agent_id in self._agents:
             await self._agents[agent_id].send_message(message)
+
+    def send_to_main(self, subagent_id: str, message: str) -> None:
+        """G10: Enqueue a message from a sub-agent to the main agent.
+
+        Called by sub-agent workers when they want to report progress or
+        ask for guidance. The main agent drains these between iterations.
+        """
+        self._outbound_queue.put_nowait({
+            "from": subagent_id,
+            "message": message,
+            "timestamp": time.time(),
+        })
+
+    def drain_outbound_messages(self) -> list[dict]:
+        """G10: Drain all pending outbound messages from sub-agents.
+
+        Returns a list of {from, message, timestamp} dicts.
+        Called by the main agent between ReAct iterations.
+        """
+        messages = []
+        while not self._outbound_queue.empty():
+            try:
+                messages.append(self._outbound_queue.get_nowait())
+            except asyncio.QueueEmpty:
+                break
+        return messages
 
     async def shutdown(self) -> None:
         """Interrupt all running sub-agents. Let _run_background finish naturally."""
@@ -296,6 +333,7 @@ class SubAgentPool:
                         "component": "subagent",
                         "subagent_id": handle.id,
                         "event": "failed",
+                        "context": "subagent_run",
                     },
                 )
                 handle.status = AgentStatus.FAILED

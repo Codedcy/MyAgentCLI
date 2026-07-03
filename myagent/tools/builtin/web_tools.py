@@ -97,7 +97,7 @@ class WebFetchTool:
         try:
             import httpx
         except ImportError:
-            logger.error("web_fetch failed: httpx not available", extra={"category": "error"})
+            logger.error("web_fetch failed: httpx not available", extra={"category": "error", "component": "tool", "context": "web_fetch"})
             return ToolResult(error="httpx not available")
 
         try:
@@ -108,7 +108,7 @@ class WebFetchTool:
         except Exception as e:
             logger.error(
                 "web_fetch HTTP error: url=%s error=%s", url, e,
-                extra={"category": "error", "component": "tool"},
+                extra={"category": "error", "component": "tool", "context": "web_fetch"},
             )
             return ToolResult(error=f"Failed to fetch {url}: {e}")
 
@@ -205,7 +205,7 @@ class WebSearchTool:
         try:
             import httpx
         except ImportError:
-            logger.error("web_search failed: httpx not available", extra={"category": "error"})
+            logger.error("web_search failed: httpx not available", extra={"category": "error", "component": "tool", "context": "web_search"})
             return ToolResult(
                 output=f"Web search for: {query}\n\n(httpx not available — cannot perform search)",
                 metadata={"query": query},
