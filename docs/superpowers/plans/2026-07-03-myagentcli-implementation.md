@@ -10,7 +10,7 @@
 
 ## Current Status
 
-This plan is now a historical implementation plan, not the live task tracker. Tasks 1-24 have been implemented across the initial build and subsequent gap-fix rounds; unchecked boxes below are preserved as the original execution checklist. As of round 24, pytest collects 237 tests, `ruff check myagent/` passes, built-in skills package all resources under `myagent/skills/builtin/`, and MCP is implemented as a hand-written JSON-RPC client over stdio/SSE transport abstractions rather than direct `mcp` SDK client API usage.
+This plan is now a historical implementation plan, not the live task tracker. Tasks 1-24 have been implemented across the initial build and subsequent gap-fix rounds; unchecked boxes below are preserved as the original execution checklist. As of round 26, pytest collects 238 tests, `ruff check myagent/` passes, built-in skills package all resources under `myagent/skills/builtin/`, and MCP is implemented as a hand-written JSON-RPC client over stdio/SSE transport abstractions rather than direct `mcp` SDK client API usage.
 
 ## Global Constraints
 
@@ -1980,7 +1980,7 @@ Expected: `myagent --help` works
 - [x] **Step 4: Run full test suite**
 
 Run: `pytest tests/ -v --cov=myagent --cov-report=term-missing`
-Current status: pytest collects 237 tests; latest pass/fail evidence is recorded in gap-fix reports.
+Current status: pytest collects 238 tests; latest pass/fail evidence is recorded in gap-fix reports.
 
 - [x] **Step 5: Run lint**
 
