@@ -62,18 +62,42 @@ class DreamEngine:
 
         state = self._load_state()
         last_run = state.get("last_run")
+        session_started_at = state.get("session_started_at")
         trigger_hours = self.config.trigger_hours if self.config else 6
         trigger_rounds = self.config.trigger_rounds if self.config else 50
 
         if session_rounds < trigger_rounds:
             return False
 
-        if last_run:
-            elapsed = time.time() - last_run
+        # Use the minimum of last dream completion time and session start time.
+        # This ensures the hours counter resets on each fresh session — even if
+        # a previous session ended without triggering a dream (gap-r12-06).
+        effective_last = last_run
+        if session_started_at is not None:
+            if effective_last is None or session_started_at > effective_last:
+                effective_last = session_started_at
+
+        if effective_last:
+            elapsed = time.time() - effective_last
             if elapsed < trigger_hours * 3600:
                 return False
 
         return True
+
+    def touch_session_start(self) -> None:
+        """Record session start time in the dream state file (gap-r12-06).
+
+        Called at the beginning of each CLI session so that the hours-based
+        dream trigger resets on every fresh session, not just on dream
+        completion. Without this, a session that starts, runs many rounds
+        without crossing the dream trigger, then exits, would leave a stale
+        timestamp in last_dream.json — causing the next session to potentially
+        trigger a dream too soon.
+        """
+        state = self._load_state()
+        state["session_started_at"] = time.time()
+        self._state_file.parent.mkdir(parents=True, exist_ok=True)
+        self._state_file.write_text(json.dumps(state))
 
     async def _run_as_subagent(self, session_store=None) -> DreamResult:
         """G3: Run dream analysis via spawned sub-agent with LLM reasoning.
