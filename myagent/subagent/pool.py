@@ -126,6 +126,11 @@ class SubAgentPool:
     G10: Outbound message queue for sub-agent-to-main-agent communication.
     Sub-agents write messages via SubAgentHandle.send_to_main(); the main
     agent drains this queue between ReAct iterations.
+
+    gap-r6-08: Status change callbacks. External components (e.g. status bar)
+    can register async callbacks via on_status_change(). The pool invokes
+    these callbacks on every sub-agent lifecycle transition (completed,
+    failed, interrupted).
     """
 
     MAX_TOTAL = 1000
@@ -153,6 +158,8 @@ class SubAgentPool:
         self._session = session
         # G10: Outbound message queue for sub→main communication
         self._outbound_queue: asyncio.Queue[dict] = asyncio.Queue()
+        # gap-r6-08: Status change callbacks for external observers (e.g. status bar)
+        self._status_callbacks: list = []
 
     @property
     def active_count(self) -> int:
@@ -238,12 +245,45 @@ class SubAgentPool:
                 break
         return messages
 
+    def on_status_change(self, callback) -> None:
+        """Register an async callback for sub-agent lifecycle events (gap-r6-08).
+
+        The callback is invoked as: await callback(agent_id, status, handle, pool)
+        on every status transition (completed, failed, interrupted).
+
+        Multiple callbacks can be registered; they are invoked in registration
+        order. Exceptions in callbacks are caught and logged.
+        """
+        self._status_callbacks.append(callback)
+
+    async def _notify_status_callbacks(
+        self, agent_id: str, status: AgentStatus, handle: SubAgentHandle
+    ) -> None:
+        """Fire all registered status change callbacks (gap-r6-08)."""
+        if not self._status_callbacks:
+            return
+        for cb in self._status_callbacks:
+            try:
+                await cb(agent_id, status, handle, self)
+            except Exception:
+                logger.debug(
+                    "Status callback failed for %s → %s", agent_id, status.value,
+                    exc_info=True,
+                )
+
     async def shutdown(self) -> None:
         """Interrupt all running sub-agents. Let _run_background finish naturally."""
-        for handle in self._agents.values():
+        for hid, handle in list(self._agents.items()):
             if handle.status == AgentStatus.RUNNING:
                 handle.status = AgentStatus.INTERRUPTED
                 handle._interrupt_event.set()
+                # Notify status observers (gap-r6-08)
+                try:
+                    await self._notify_status_callbacks(
+                        hid, AgentStatus.INTERRUPTED, handle
+                    )
+                except Exception:
+                    pass
 
     # ── internal ──────────────────────────────────────────────────
 
@@ -304,6 +344,8 @@ class SubAgentPool:
                 duration_ms = (time.monotonic() - t0) * 1000
                 handle.status = AgentStatus.COMPLETED
                 handle._result_data = ToolResult(output=output)
+                # Notify status bar observers (gap-r6-08)
+                await self._notify_status_callbacks(handle.id, AgentStatus.COMPLETED, handle)
                 logger.info(
                     "Sub-agent %s completed in %.1fms",
                     handle.id,
@@ -338,6 +380,8 @@ class SubAgentPool:
                 )
                 handle.status = AgentStatus.FAILED
                 handle._result_data = ToolResult(error=str(e))
+                # Notify status bar observers (gap-r6-08)
+                await self._notify_status_callbacks(handle.id, AgentStatus.FAILED, handle)
             finally:
                 handle._completion_event.set()
 

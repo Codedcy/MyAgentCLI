@@ -183,36 +183,27 @@ async def async_main(argv: list[str] | None = None) -> int:
     from myagent.cli.renderer import Renderer
     renderer = Renderer()
 
-    # Wire status bar to sub-agent pool state (gap-2-08)
+    # Wire status bar to sub-agent pool state via lifecycle callbacks (gap-r6-08)
     if status_bar:
         from myagent.cli.status import SubAgentInfo
-        original_spawn = subagent_pool.spawn
 
-        def _extract_task_name(prompt: str, max_len: int = 20) -> str:
-            """Extract a short task name from the spawn prompt."""
-            if not prompt:
-                return ""
-            # Take first sentence or first line, truncate
-            first_line = prompt.split("\n")[0].strip()
-            if len(first_line) > max_len:
-                first_line = first_line[:max_len - 2] + ".."
-            return first_line or prompt[:max_len]
+        # Store per-agent task names on the pool so callbacks can access them
+        subagent_pool._task_names: dict[str, str] = {}
 
-        async def _spawn_with_status(*spawn_args, **spawn_kw):
-            prompt = spawn_kw.get("prompt", spawn_args[0] if spawn_args else "")
-            handle = await original_spawn(*spawn_args, **spawn_kw)
-            # Build rich SubAgentInfo list
+        async def _on_subagent_status_change(agent_id, status, handle, pool):
+            """Callback invoked on every sub-agent lifecycle transition.
+
+            Rebuilds the SubAgentInfo list from the current pool state and
+            pushes it to the status bar. This covers completions, failures,
+            and interruptions — not just spawn events.
+            """
             details = []
-            for hid, h in subagent_pool._agents.items():
+            for hid, h in pool._agents.items():
+                task_name = pool._task_names.get(hid, hid)
                 if h.status.value in ("running", "created"):
-                    task_name = _extract_task_name(spawn_kw.get("prompt", "")) if hid == handle.id else ""
-                    # Try to get task name from the stored prompt
-                    for ahid, ah in subagent_pool._agents.items():
-                        if ahid == hid:
-                            break
                     details.append(SubAgentInfo(
                         agent_id=hid,
-                        task_name=task_name if task_name else hid,
+                        task_name=task_name,
                         status="running",
                         progress_pct=0.0,
                     ))
@@ -220,7 +211,6 @@ async def async_main(argv: list[str] | None = None) -> int:
                     result = h._result_data
                     summary = ""
                     if result and result.output:
-                        # Extract brief summary from result
                         output = result.output
                         if len(output) > 30:
                             summary = output[:28] + ".."
@@ -228,23 +218,53 @@ async def async_main(argv: list[str] | None = None) -> int:
                             summary = output
                     details.append(SubAgentInfo(
                         agent_id=hid,
-                        task_name=hid,
+                        task_name=task_name,
                         status="completed",
                         result_summary=summary,
                     ))
                 elif h.status.value == "failed":
                     details.append(SubAgentInfo(
                         agent_id=hid,
-                        task_name=hid,
+                        task_name=task_name,
                         status="failed",
                     ))
+                elif h.status.value == "interrupted":
+                    details.append(SubAgentInfo(
+                        agent_id=hid,
+                        task_name=task_name,
+                        status="interrupted",
+                    ))
             status_bar.update(
-                subagents_active=subagent_pool.active_count,
+                subagents_active=pool.active_count,
                 subagents_details=details,
+            )
+
+        subagent_pool.on_status_change(_on_subagent_status_change)
+
+        # Wrap spawn to capture task names and trigger initial status update
+        _original_spawn = subagent_pool.spawn
+
+        def _extract_task_name(prompt: str, max_len: int = 20) -> str:
+            """Extract a short task name from the spawn prompt."""
+            if not prompt:
+                return ""
+            first_line = prompt.split("\n")[0].strip()
+            if len(first_line) > max_len:
+                first_line = first_line[:max_len - 2] + ".."
+            return first_line or prompt[:max_len]
+
+        async def _spawn_with_task_name(*spawn_args, **spawn_kw):
+            prompt = spawn_kw.get("prompt", spawn_args[0] if spawn_args else "")
+            handle = await _original_spawn(*spawn_args, **spawn_kw)
+            # Store task name for use in lifecycle callbacks
+            subagent_pool._task_names[handle.id] = _extract_task_name(prompt)
+            # Fire initial spawn notification via the same callback
+            await _on_subagent_status_change(
+                handle.id, handle.status, handle, subagent_pool
             )
             return handle
 
-        subagent_pool.spawn = _spawn_with_status
+        subagent_pool.spawn = _spawn_with_task_name
 
     # Start REPL
     from myagent.cli.repl import REPLEngine
