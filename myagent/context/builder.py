@@ -213,7 +213,13 @@ tool usage limit."""
     def _format_skills_index(self, skills) -> str:
         if not skills:
             return ""
-        return "\n".join(f"- `{s.name}`: {s.description}" for s in skills)
+        lines = [
+            "To activate a skill, use the virtual tool call: "
+            "`tool_call(name=\"skill_invoke\", params={\"skill\": \"<name>\"})`.",
+            "",
+        ]
+        lines.extend(f"- `{s.name}`: {s.description}" for s in skills)
+        return "\n".join(lines)
 
     def _format_skill_content(self, skill) -> str:
         """Format full skill content for injection as L5 context."""
