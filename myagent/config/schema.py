@@ -61,6 +61,11 @@ class DreamConfig:
 class ToolsConfig:
     tool_result_max_chars: int = 5000
     shell_timeout_seconds: int = 120
+    # Lightweight model for web_fetch prompt-guided Q&A (gap-18-01).
+    # Per spec $四 工具系统, web_fetch should "answer prompt against it
+    # using a small fast model". This defaults to DeepSeek Chat (fast
+    # non-reasoning) rather than the primary model (DeepSeek V4 Pro).
+    web_fetch_answer_model: str = "deepseek/deepseek-chat"
 
 
 @dataclass

@@ -12,10 +12,15 @@ from myagent.tools.base import ToolContext, ToolResult
 logger = logging.getLogger("myagent.tools.web")
 
 # Model to use for prompt-guided answering in web_fetch.
-# Uses the configured primary model with Non-think mode for fast,
-# lightweight Q&A over fetched content. Falls back to regex
-# extraction if the LLM call fails.
+# Per spec §四 工具系统, web_fetch should "answer `prompt` against it
+# using a small fast model". We use the configured web_fetch_answer_model
+# (default: deepseek/deepseek-chat) in Non-think mode, NOT the primary
+# model (DeepSeek V4 Pro). Falls back to regex extraction if the LLM
+# call fails.
 _WEB_FETCH_ANSWER_MODEL_MODE = "Non-think"
+# Default model for web_fetch Q&A — a small, fast model for lightweight
+# content extraction. Overridden by config.tools.web_fetch_answer_model.
+_WEB_FETCH_DEFAULT_ANSWER_MODEL = "deepseek/deepseek-chat"
 # Maximum characters of fetched content to send to the LLM for answering.
 # The model needs enough context to answer the question, but we cap it
 # to keep latency low and avoid token waste.
@@ -211,18 +216,20 @@ class WebFetchTool:
                          extra={"category": "tool"})
             return "", False
 
-        # Determine model name from config or default to deepseek-v4-pro
+        # Determine the answer model from config.  Per spec §四 工具系统,
+        # web_fetch should use a "small fast model", NOT the primary model.
+        # Priority: config.tools.web_fetch_answer_model > constant default.
         model_config = getattr(context, "config", None)
         if model_config is not None:
-            model = getattr(model_config, "model", None)
-            if model is not None:
-                provider = getattr(model, "provider", "deepseek")
-                model_name = getattr(model, "model", "deepseek-v4-pro")
-                full_model = f"{provider}/{model_name}"
+            tools_cfg = getattr(model_config, "tools", None)
+            if tools_cfg is not None:
+                answer_model = getattr(
+                    tools_cfg, "web_fetch_answer_model", _WEB_FETCH_DEFAULT_ANSWER_MODEL
+                )
             else:
-                full_model = "deepseek/deepseek-v4-pro"
+                answer_model = _WEB_FETCH_DEFAULT_ANSWER_MODEL
         else:
-            full_model = "deepseek/deepseek-v4-pro"
+            answer_model = _WEB_FETCH_DEFAULT_ANSWER_MODEL
 
         # Truncate content to keep the prompt within reasonable token limits
         truncated = content[:_WEB_FETCH_MAX_CONTENT_CHARS]
@@ -249,7 +256,7 @@ class WebFetchTool:
 
         try:
             response = await litellm.acompletion(
-                model=full_model,
+                model=answer_model,
                 messages=messages,
                 stream=False,
                 max_tokens=min(_WEB_FETCH_MAX_ANSWER_CHARS // 2, 4096),
@@ -260,7 +267,7 @@ class WebFetchTool:
                 answer = answer[:_WEB_FETCH_MAX_ANSWER_CHARS]
                 logger.info(
                     "web_fetch: LLM answer obtained, length=%d model=%s",
-                    len(answer), full_model,
+                    len(answer), answer_model,
                     extra={"category": "tool", "tool_name": "web_fetch"},
                 )
                 return answer, True
