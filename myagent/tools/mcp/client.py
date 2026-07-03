@@ -108,7 +108,13 @@ class StdioTransport:
                 pass
 
     async def _drain_stderr(self) -> None:
-        """Read stderr line-by-line to prevent pipe buffer deadlock."""
+        """Read stderr line-by-line to prevent pipe buffer deadlock.
+
+        Each line is classified for severity: error/critical lines logged
+        at ERROR, warnings at WARNING, everything else at DEBUG. This
+        ensures MCP server crashes and diagnostics are visible at default
+        INFO log level (gap-10-4).
+        """
         if not self._process or self._process.stderr is None:
             return
         try:
@@ -116,11 +122,22 @@ class StdioTransport:
                 line = await self._process.stderr.readline()
                 if not line:
                     break
-                logger.debug(
-                    "MCP stderr [%s]: %s",
-                    self.command,
-                    line.decode("utf-8", errors="replace").rstrip(),
-                )
+                decoded = line.decode("utf-8", errors="replace").rstrip()
+                # Classify severity
+                line_lower = decoded.lower()
+                if any(marker in line_lower for marker in (
+                    "error", "traceback", "panic", "fatal", "critical",
+                    "exception", "fail",
+                )):
+                    logger.error("MCP stderr [%s]: %s", self.command, decoded)
+                elif any(marker in line_lower for marker in ("warn",)):
+                    logger.warning("MCP stderr [%s]: %s", self.command, decoded)
+                else:
+                    logger.debug(
+                        "MCP stderr [%s]: %s",
+                        self.command,
+                        decoded,
+                    )
         except asyncio.CancelledError:
             pass
         except Exception:
