@@ -245,10 +245,6 @@ class REPLEngine:
         """Handle one input line."""
         # Slash commands
         if text.startswith("/"):
-            if text in ("/exit", "/quit"):
-                self._running = False
-                return
-
             if self._commands:
                 from myagent.cli.commands import CommandContext
                 ctx = CommandContext(
@@ -266,6 +262,10 @@ class REPLEngine:
                 )
                 result = await self._commands.dispatch(text, ctx)
                 self._output_to_console(result.output)
+
+                if result.exit_requested:
+                    self._running = False
+                    return
 
                 if result.skill_invoked:
                     # Store active skill for the next natural-language input (gap-2-01)
