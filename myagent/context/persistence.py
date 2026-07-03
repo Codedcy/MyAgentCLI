@@ -503,7 +503,9 @@ class SessionStore:
                         "total_tokens": session.total_tokens,
                         "turn_count": session.turn_count,
                         "first_message": session._messages[0].content[:100] if session._messages else "",
-                        "duration": 0,
+                        # Compute live duration on every save so crash-recovery
+                        # yields a reasonable estimate (gap-r12-08).
+                        "duration": (datetime.now() - session.created_at).total_seconds(),
                         "messages": messages_data,
                     },
                     ensure_ascii=False,
