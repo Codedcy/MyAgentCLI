@@ -127,6 +127,17 @@ class SessionStore:
                 ts = d / "transcript.json"
                 if ts.exists():
                     data = json.loads(ts.read_text())
+                    duration = data.get("duration", 0)
+                    closed = data.get("closed", False)
+                    # gap-8-10: compute live duration for open sessions
+                    if duration == 0 and not closed:
+                        try:
+                            created_at = datetime.fromisoformat(
+                                data.get("created_at", "2026-01-01T00:00:00")
+                            )
+                            duration = (datetime.now() - created_at).total_seconds()
+                        except Exception:
+                            duration = 0
                     summaries.append(
                         SessionSummary(
                             session_id=data.get("session_id", d.name),
@@ -134,7 +145,7 @@ class SessionStore:
                                 data.get("created_at", "2026-01-01T00:00:00")
                             ),
                             first_message=data.get("first_message", ""),
-                            duration=data.get("duration", 0),
+                            duration=duration,
                             total_tokens=data.get("total_tokens", 0),
                             goal_achieved=data.get("goal_achieved"),
                         )

@@ -166,8 +166,13 @@ class MemoryStore:
         return None
 
     async def _update_index(self, mem_dir: Path) -> None:
+        """Rebuild MEMORY.md index with structured metadata table (gap-8-09).
+
+        Includes memory type, last-updated date, and description in a markdown
+        table format as implied by the spec's frontmatter examples (§六).
+        """
         index_path = mem_dir / "MEMORY.md"
-        entries = []
+        rows: list[dict] = []
         for f in sorted(mem_dir.glob("*.md")):
             if f.name == "MEMORY.md":
                 continue
@@ -175,17 +180,67 @@ class MemoryStore:
             fm = self._parse_frontmatter(content)
             name = fm.get("name", f.stem)
             desc = fm.get("description", "")
-            mtype = fm.get("metadata", {}).get("type", "reference")
-            entries.append(f"- [{name}]({f.name}) — {desc}")
-        index_path.write_text("# Memory Index\n\n" + "\n".join(entries) + "\n", encoding="utf-8")
+            metadata = fm.get("metadata", {}) if isinstance(fm.get("metadata"), dict) else {}
+            mtype = metadata.get("type", "reference")
+            updated = metadata.get("updated", "")
+            # Also check file modification time as fallback
+            if not updated:
+                from datetime import datetime
+                mtime = f.stat().st_mtime
+                updated = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d")
+            rows.append({
+                "name": name,
+                "file": f.name,
+                "type": mtype,
+                "updated": updated,
+                "description": desc,
+            })
+
+        # Build markdown table
+        lines = ["# Memory Index", ""]
+        if rows:
+            lines.append("| Name | Type | Updated | Description |")
+            lines.append("|------|------|---------|-------------|")
+            for r in rows:
+                name_link = f"[{r['name']}]({r['file']})"
+                lines.append(
+                    f"| {name_link} | {r['type']} | {r['updated']} | {r['description']} |"
+                )
+            lines.append("")
+        else:
+            lines.append("No memories indexed yet.")
+        index_path.write_text("\n".join(lines), encoding="utf-8")
 
     def _read_index(self, mem_dir: Path) -> list[MemoryEntry]:
+        """Read MEMORY.md index, supporting both new table format and legacy list format (gap-8-09)."""
         index_path = mem_dir / "MEMORY.md"
         if not index_path.exists():
             return []
-        entries = []
-        for line in index_path.read_text(encoding="utf-8").split("\n"):
+        entries: list[MemoryEntry] = []
+        text = index_path.read_text(encoding="utf-8")
+
+        # Try new table format first: | [Name](file) | type | updated | description |
+        for line in text.split("\n"):
+            # Match table row with link
+            table_match = re.match(
+                r"\|\s*\[(.+?)\]\((.+?)\)\s*\|\s*(\w+)\s*\|\s*([^|]*)\s*\|\s*(.+?)\s*\|",
+                line,
+            )
+            if table_match:
+                entries.append(MemoryEntry(
+                    name=table_match.group(1),
+                    file=table_match.group(2),
+                    type=table_match.group(3).strip(),
+                    description=table_match.group(5).strip(),
+                ))
+                continue
+
+            # Fallback: legacy list format "- [name](file) — description"
             m = re.match(r"- \[(.+?)\]\((.+?)\) — (.+)", line)
             if m:
-                entries.append(MemoryEntry(name=m.group(1), file=m.group(2), description=m.group(3), type="reference"))
+                entries.append(MemoryEntry(
+                    name=m.group(1), file=m.group(2),
+                    description=m.group(3), type="reference",
+                ))
+
         return entries

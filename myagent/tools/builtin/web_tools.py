@@ -221,12 +221,20 @@ class WebSearchTool:
                 data = resp.json()
         except Exception as e:
             logger.warning(
-                "web_search API unavailable (fallback to stub): query=%s error=%s", query, e,
+                "web_search API unavailable: query=%s error=%s", query, e,
                 extra={"category": "tool", "tool_name": "web_search"},
             )
+            # gap-8-11: Return a clear error result instead of a misleading stub.
+            # The error field signals to the LLM that search failed, not that
+            # there are no results. This prevents the model from treating a stub
+            # as a successful search outcome.
             return ToolResult(
-                output=f"Web search for: {query}\n\n(DuckDuckGo API unavailable — {e})",
-                metadata={"query": query, "fallback": True},
+                error=(
+                    f"Web search failed: DuckDuckGo API is currently unavailable. "
+                    f"Query: '{query}'. Error: {str(e)[:200]}. "
+                    f"Try again later or use web_fetch with a specific URL instead."
+                ),
+                metadata={"query": query, "search_error": True, "error_detail": str(e)[:300]},
             )
 
         results = self._parse_results(data, allowed_domains, blocked_domains)

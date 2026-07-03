@@ -357,6 +357,7 @@ class Tool(Protocol):
 | | `memory_write` | 写入/更新记忆文件 |
 | **网络** | `web_fetch` | HTTP 请求，返回 Markdown |
 | | `web_search` | 网页搜索 |
+| **配置** | `config_set` | 运行时配置调整（key-value，不持久化） |
 
 ### spawn_subagent 工具定义
 
