@@ -880,6 +880,12 @@ class AgentEngine:
 
         When call_id is provided, includes a reference to the persisted
         full result file (tools/call-{call_id}.json) in the summary output.
+
+        Truncation note: the full tool result is passed to the summarizer
+        sub-agent without truncation. The sub-agent has a 1M context window
+        and can handle very large inputs. For extremely large results
+        (>100K chars), the prompt also includes a file-reference instruction
+        so the sub-agent knows where to find the persisted copy.
         """
         if not self.subagent_pool:
             return self._truncate_result(result)
@@ -890,10 +896,14 @@ class AgentEngine:
             file_ref = f" Full result: tools/call-{call_id}.json"
 
         try:
+            # Pass the full result to the summarizer sub-agent without truncation.
+            # The sub-agent has a large context window and needs the complete
+            # content for accurate summarization.
+            full_output = result.output
             prompt = (
                 f"Summarize this tool result from '{tool_name}' concisely. "
                 f"Keep all key information but compress redundant parts.\n\n"
-                f"{result.output[:20000]}"
+                f"{full_output}"
             )
             handle = await self.subagent_pool.spawn(
                 prompt=prompt,
