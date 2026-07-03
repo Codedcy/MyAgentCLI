@@ -29,6 +29,7 @@ class Skill:
     description: str
     content: str
     resources: SkillResources
+    base_dir: Path | None = None
 
 
 @dataclass
@@ -66,7 +67,8 @@ class SkillLoader:
         body = content[fm_match.end():]
 
         resources = SkillLoader.enumerate_resources(path.parent)
-        return Skill(name=name, description=description, content=body, resources=resources)
+        return Skill(name=name, description=description, content=body,
+                     resources=resources, base_dir=path.parent)
 
     @staticmethod
     def enumerate_resources(skill_dir: Path) -> SkillResources:

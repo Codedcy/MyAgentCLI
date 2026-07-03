@@ -301,17 +301,35 @@ tool usage limit."""
         SKILL.md content is loaded when a skill is invoked. Context window
         management is handled by the four-layer progressive compression
         system at higher layers (spec §三).
+
+        Per spec §七 "脚本和 references 的处理方式":
+        - References are listed with full paths so the agent can read them on demand.
+        - Scripts are listed with full paths so the agent can execute them via bash.
+        - Templates and assets are also listed.
         """
         lines = [f"### {skill.name}", skill.description, ""]
+        if skill.base_dir:
+            lines.append(f"Skill directory: {skill.base_dir}")
+            lines.append("")
         if skill.content:
             lines.append(skill.content)
         if skill.resources:
             refs = skill.resources.references or []
             scripts = skill.resources.scripts or []
+            templates = skill.resources.templates or []
+            assets = skill.resources.assets or []
             if refs:
-                lines.append("References: " + ", ".join(str(r.name) for r in refs))
+                ref_list = ", ".join(str(r) for r in refs)
+                lines.append(f"\n**Available references** (read on demand): {ref_list}")
             if scripts:
-                lines.append("Scripts: " + ", ".join(str(s.name) for s in scripts))
+                script_list = ", ".join(str(s) for s in scripts)
+                lines.append(f"\n**Available scripts** (execute via bash): {script_list}")
+            if templates:
+                tmpl_list = ", ".join(str(t) for t in templates)
+                lines.append(f"\n**Available templates** (read and fill): {tmpl_list}")
+            if assets:
+                asset_list = ", ".join(str(a) for a in assets)
+                lines.append(f"\n**Available assets** (read on demand): {asset_list}")
         return "\n".join(lines)
 
     def _format_mcp_refs(self) -> str:
