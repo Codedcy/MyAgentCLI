@@ -246,6 +246,9 @@ async def async_main(argv: list[str] | None = None) -> int:
         session_id = None if args.resume == "__latest__" else args.resume
         session = await session_mgr.resume(session_id, project_dir)
         if session:
+            # Set logging context with session_id (gap-16)
+            from myagent.logging.context import set_context
+            set_context(session_id=session.id, project_name=project_dir.name)
             # Reset task list with session persistence path (gap-12)
             if hasattr(session, 'project_name') and session_store:
                 from myagent.tools.builtin.session_tools import reset_task_list
