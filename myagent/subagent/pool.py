@@ -160,6 +160,7 @@ class SubAgentPool:
         llm=None,
         tool_registry=None,
         tool_context=None,
+        config=None,
     ) -> SubAgentHandle:
         if self._total_spawned >= self.MAX_TOTAL:
             raise CapExceededError(f"Global sub-agent cap ({self.MAX_TOTAL}) exceeded")
@@ -183,12 +184,14 @@ class SubAgentPool:
                 self._run_background(
                     handle, prompt, tools, mode, model, _llm, _tool_registry,
                     handle._interrupt_event, _tool_context, project_ctx, handle._pending_messages,
+                    isolation=isolation, schema=schema,
                 )
             )
         else:
             await self._run_foreground(
                 handle, prompt, tools, mode, model, _llm, _tool_registry,
                 handle._interrupt_event, _tool_context, project_ctx, handle._pending_messages,
+                isolation=isolation, schema=schema,
             )
 
         return handle
@@ -220,6 +223,8 @@ class SubAgentPool:
         tool_context: ToolContext | None,
         project_context=None,
         message_store: list | None = None,
+        isolation: str | None = None,
+        schema: dict | None = None,
     ) -> None:
         """Run a sub-agent worker under the concurrency semaphore."""
         async with self._semaphore:
@@ -229,6 +234,8 @@ class SubAgentPool:
                 prompt=prompt,
                 tools=tools,
                 mode=mode,
+                isolation=isolation,
+                schema=schema,
                 model=model,
                 llm=llm,
                 tool_registry=tool_registry,
@@ -285,9 +292,12 @@ class SubAgentPool:
         tool_context: ToolContext | None,
         project_context=None,
         message_store: list | None = None,
+        isolation: str | None = None,
+        schema: dict | None = None,
     ) -> None:
         """Run a sub-agent worker in foreground (caller awaits)."""
         await self._run_background(
             handle, prompt, tools, mode, model, llm, tool_registry,
             interrupt_event, tool_context, project_context, message_store,
+            isolation=isolation, schema=schema,
         )

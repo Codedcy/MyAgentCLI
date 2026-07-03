@@ -34,6 +34,7 @@ class SubAgentWorker:
         tools: list[str] | None = None,
         mode: str = "Think High",
         isolation: str | None = None,
+        schema: dict | None = None,
         model: str | None = None,
         llm=None,
         tool_registry=None,
@@ -46,6 +47,7 @@ class SubAgentWorker:
         self.tools = tools
         self.mode = mode
         self.isolation = isolation
+        self.schema = schema
         self.model = model
         self.llm = llm
         self.tool_registry = tool_registry
@@ -76,6 +78,17 @@ class SubAgentWorker:
             "using available tools. Be concise and direct. Report your "
             "final answer when done."
         )
+        # Schema: enforce structured output format (gap-2-16)
+        if self.schema:
+            import json as _json
+            schema_str = _json.dumps(self.schema, ensure_ascii=False)
+            system_content += (
+                f"\n\n## Output Format Requirement\n"
+                f"Your final response MUST be valid JSON conforming to this schema:\n"
+                f"```json\n{schema_str}\n```\n"
+                f"Do NOT include any text outside the JSON object. "
+                f"Return ONLY the JSON object."
+            )
         if self.project_context:
             pc = self.project_context
             ctx_lines = []
@@ -218,11 +231,56 @@ class SubAgentWorker:
                 continue
 
             # ── No tool calls — text response complete ───────────
-            return "".join(text_buffer)
+            output = "".join(text_buffer)
+            if self.schema:
+                output = self._validate_schema_output(output)
+            return output
 
         return f"Error: Sub-agent reached max iterations ({self.MAX_ITERATIONS})"
 
     # ── helpers ────────────────────────────────────────────────────
+
+    def _validate_schema_output(self, output: str) -> str:
+        """Validate sub-agent output against the expected JSON Schema (gap-2-16).
+
+        Attempts to parse the output as JSON, then validates against self.schema
+        using jsonschema if available. Falls back to basic structural checks.
+        Returns the original output wrapped with validation status if invalid.
+        """
+        import json as _json
+
+        # Try to extract JSON from the output (may have surrounding text)
+        stripped = output.strip()
+        try:
+            data = _json.loads(stripped)
+        except _json.JSONDecodeError:
+            # Try to find JSON object in the text
+            brace_start = stripped.find("{")
+            brace_end = stripped.rfind("}")
+            if brace_start >= 0 and brace_end > brace_start:
+                try:
+                    data = _json.loads(stripped[brace_start:brace_end + 1])
+                except _json.JSONDecodeError:
+                    return f"{output}\n\n[Schema validation: output is not valid JSON]"
+            else:
+                return f"{output}\n\n[Schema validation: output is not valid JSON]"
+
+        # Validate against schema
+        try:
+            import jsonschema
+            jsonschema.validate(instance=data, schema=self.schema)
+            # Valid — return the extracted JSON
+            return _json.dumps(data, ensure_ascii=False, indent=2)
+        except ImportError:
+            # jsonschema not available — do basic structural check
+            schema_type = self.schema.get("type", "object")
+            if schema_type == "object" and not isinstance(data, dict):
+                return f"{_json.dumps(data)}\n\n[Schema validation: expected object, got {type(data).__name__}]"
+            if schema_type == "array" and not isinstance(data, list):
+                return f"{_json.dumps(data)}\n\n[Schema validation: expected array, got {type(data).__name__}]"
+            return _json.dumps(data, ensure_ascii=False, indent=2)
+        except jsonschema.ValidationError as e:
+            return f"{_json.dumps(data)}\n\n[Schema validation failed: {e.message}]"
 
     def _classify_event(self, event) -> str:
         """Classify an LLM stream event by type.
