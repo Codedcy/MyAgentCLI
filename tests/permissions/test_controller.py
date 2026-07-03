@@ -87,8 +87,18 @@ class TestPermissionController:
         result = pc.check("mcp_external_tool")
         assert result == PermissionResult.ASK
 
-    def test_confirm_returns_true(self):
+    def test_confirm_returns_false_non_tty(self):
+        """gap-20-07: Non-TTY environments must deny — no explicit consent possible."""
         pc = PermissionController()
         import asyncio
         result = asyncio.run(pc.confirm("read", {"file_path": "/tmp/test"}))
-        assert result is True
+        assert result is False
+
+    def test_confirm_with_skip_all_bypasses(self):
+        """--dangerously-skip-permissions bypasses confirm entirely."""
+        pc = PermissionController()
+        pc.skip_all(True)
+        # confirm is only called when check returns ASK, which skip_all prevents.
+        # Verify check returns ALLOW when skip_all is set.
+        result = pc.check("bash", level=2, params={"command": "ls"})
+        assert result == PermissionResult.ALLOW
