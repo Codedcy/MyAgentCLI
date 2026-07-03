@@ -254,16 +254,29 @@ class LLMProvider:
                 response = await litellm.acompletion(**kwargs)
 
                 total_tokens = 0
+                prompt_tokens = 0
+                completion_tokens = 0
                 tool_calls_count = 0
+                response_text_chunks: list[str] = []
+                response_tool_calls: list[dict] = []
                 async for event in self._stream_response(response):
                     if isinstance(event, ToolCall):
                         tool_calls_count += 1
+                        response_tool_calls.append({
+                            "id": event.id,
+                            "name": event.name,
+                            "params": event.params,
+                        })
+                    if isinstance(event, TextDelta):
+                        response_text_chunks.append(event.content)
                     yield event
                     # Track token usage from Done events for logging
                     if isinstance(event, Done) and event.usage:
                         total_tokens = event.usage.total_tokens
+                        prompt_tokens = event.usage.prompt_tokens
+                        completion_tokens = event.usage.completion_tokens
 
-                # Log successful response
+                # Log successful response with individual token breakdown (gap-2-10)
                 latency_ms = (time.monotonic() - t0) * 1000
                 logger.info(
                     "LLM response: model=%s latency_ms=%.1f tokens=%d attempt=%d tool_calls=%d",
@@ -273,10 +286,18 @@ class LLMProvider:
                         "event": "response",
                         "model": model_name,
                         "latency_ms": round(latency_ms, 1),
+                        "prompt_tokens": prompt_tokens,
+                        "completion_tokens": completion_tokens,
+                        "total_tokens": total_tokens,
                         "token_consumption": total_tokens,
                         "tool_calls_count": tool_calls_count,
                         "retry_count": attempt,
                     },
+                )
+                # Write response prompt file (gap-2-06)
+                self._write_response_log(
+                    model_name, response_text_chunks, response_tool_calls,
+                    prompt_tokens, completion_tokens, total_tokens, latency_ms, attempt,
                 )
                 return
 
@@ -500,6 +521,56 @@ class LLMProvider:
             }
             request_file.write_text(
                 json.dumps(request_data, ensure_ascii=False, indent=2, default=str),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass  # Prompt logging is best-effort
+
+    def _write_response_log(
+        self, model_name: str, text_chunks: list[str],
+        tool_calls: list[dict],
+        prompt_tokens: int, completion_tokens: int,
+        total_tokens: int, latency_ms: float, attempt: int,
+    ) -> None:
+        """Write LLM response to .prompts/ directory when enabled (gap-2-06).
+
+        Triggered when logging_config.llm_prompts is True and log level is DEBUG.
+        Writes the complete response data as a JSON file.
+        """
+        logging_config = getattr(self, '_logging_config', None)
+        if logging_config is None:
+            return
+        if not getattr(logging_config, "llm_prompts", False):
+            return
+
+        # Only write at DEBUG level
+        import logging
+        if logging.getLogger("myagent.llm").getEffectiveLevel() > logging.DEBUG:
+            return
+
+        try:
+            log_dir = Path(getattr(self._logging_config, "dir", "~/.myagent/logs/")).expanduser().resolve()
+            prompts_dir = log_dir / ".prompts"
+            prompts_dir.mkdir(parents=True, exist_ok=True)
+
+            ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+            session_part = self._session_id or "nosession"
+
+            response_file = prompts_dir / f"{ts}-{session_part}-response-{self._prompt_counter:04d}.json"
+            response_data = {
+                "model": model_name,
+                "attempt": attempt + 1,
+                "latency_ms": round(latency_ms, 1),
+                "usage": {
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "total_tokens": total_tokens,
+                },
+                "text": "".join(text_chunks) if text_chunks else "",
+                "tool_calls": tool_calls if tool_calls else [],
+            }
+            response_file.write_text(
+                json.dumps(response_data, ensure_ascii=False, indent=2, default=str),
                 encoding="utf-8",
             )
         except Exception:
