@@ -203,6 +203,7 @@ class SubAgentPool:
                     handle, prompt, tools, mode, model, _llm, _tool_registry,
                     handle._interrupt_event, _tool_context, project_ctx, handle._pending_messages,
                     isolation=isolation, schema=schema, parent_session=parent_session,
+                    config=config,
                 )
             )
         else:
@@ -210,6 +211,7 @@ class SubAgentPool:
                 handle, prompt, tools, mode, model, _llm, _tool_registry,
                 handle._interrupt_event, _tool_context, project_ctx, handle._pending_messages,
                 isolation=isolation, schema=schema, parent_session=parent_session,
+                config=config,
             )
 
         return handle
@@ -320,6 +322,7 @@ class SubAgentPool:
         isolation: str | None = None,
         schema: dict | None = None,
         parent_session: str | None = None,
+        config=None,
     ) -> None:
         """Run a sub-agent worker under the concurrency semaphore."""
         async with self._semaphore:
@@ -342,6 +345,7 @@ class SubAgentPool:
                 progress_callback=lambda cur, max_i: setattr(
                     handle, '_progress_iter', (cur, max_i)
                 ),
+                config=config,
             )
             try:
                 # Format prompt_summary: first ~100 chars of the spawn prompt
@@ -426,10 +430,12 @@ class SubAgentPool:
         isolation: str | None = None,
         schema: dict | None = None,
         parent_session: str | None = None,
+        config=None,
     ) -> None:
         """Run a sub-agent worker in foreground (caller awaits)."""
         await self._run_background(
             handle, prompt, tools, mode, model, llm, tool_registry,
             interrupt_event, tool_context, project_context, message_store,
             isolation=isolation, schema=schema, parent_session=parent_session,
+            config=config,
         )

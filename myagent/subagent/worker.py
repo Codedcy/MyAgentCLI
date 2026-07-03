@@ -73,6 +73,7 @@ class SubAgentWorker:
         message_store: list | None = None,
         project_dir: Path | None = None,
         progress_callback=None,
+        config=None,
     ):
         self.prompt = prompt
         self.tools = tools
@@ -92,6 +93,7 @@ class SubAgentWorker:
         self._worktree_path: Path | None = None
         self._progress_callback = progress_callback
         self._current_iteration: int = 0
+        self._config = config
 
     async def run(self) -> str:
         """Execute the sub-agent task and return a result string.
@@ -235,7 +237,7 @@ class SubAgentWorker:
                             session_id="subagent",
                             project_dir=None,
                             permissions=None,
-                            config=None,
+                            config=self._config,
                             subagent_pool=(
                                 getattr(self.tool_context, 'subagent_pool', None)
                                 if self.tool_context else None
