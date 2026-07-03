@@ -800,6 +800,8 @@ class AgentEngine:
                 config_loader=getattr(self, '_config_loader', None),
                 memory_store=getattr(self, '_memory_store', None),
                 goal_tracker=self.goal_tracker,
+                tool_registry=self.tool_registry,
+                mcp_clients=getattr(self.tool_registry, 'mcp_clients', []) if self.tool_registry else [],
             )
 
             t0 = time.monotonic()

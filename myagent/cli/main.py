@@ -69,6 +69,8 @@ async def async_main(argv: list[str] | None = None) -> int:
 
     # Start MCP servers and register their tools (gap-03)
     mcp_clients = await _startup_mcp_servers(tool_registry)
+    # G6: Store MCP clients on the registry for mcp_read_resource/mcp_get_prompt tools
+    tool_registry.mcp_clients = mcp_clients
 
     from myagent.permissions.controller import PermissionController
     permissions = PermissionController(
@@ -321,6 +323,7 @@ def _register_builtin_tools(registry) -> None:
     from myagent.tools.builtin.memory_tools import MemoryWriteTool
     from myagent.tools.builtin.web_tools import WebFetchTool, WebSearchTool
     from myagent.tools.builtin.config_tools import ConfigSetTool
+    from myagent.tools.builtin.mcp_tools import MCPGetPromptTool, MCPReadResourceTool
     for tool_cls in [
         ReadTool, WriteTool, EditTool, GlobTool,
         GrepTool, BashTool,
@@ -328,6 +331,7 @@ def _register_builtin_tools(registry) -> None:
         TaskCreateTool, TaskUpdateTool,
         MemoryWriteTool, WebFetchTool, WebSearchTool,
         ConfigSetTool,
+        MCPReadResourceTool, MCPGetPromptTool,
     ]:
         registry.register(tool_cls())
 

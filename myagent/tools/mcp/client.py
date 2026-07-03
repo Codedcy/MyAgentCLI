@@ -232,6 +232,34 @@ class MCPClient:
             logger.debug("MCP server does not support prompts/list: %s", self.command)
             return []
 
+    async def read_resource(self, uri: str) -> dict:
+        """Call resources/read and return the resource content (G6).
+
+        Args:
+            uri: The resource URI to read.
+
+        Returns:
+            Dict with 'contents' list containing resource content items.
+        """
+        result = await self._send_request("resources/read", {"uri": uri})
+        return result
+
+    async def get_prompt(self, name: str, arguments: dict | None = None) -> dict:
+        """Call prompts/get and return the rendered prompt (G6).
+
+        Args:
+            name: The prompt name to invoke.
+            arguments: Optional arguments to pass to the prompt template.
+
+        Returns:
+            Dict with 'messages' list containing the rendered prompt messages.
+        """
+        params: dict = {"name": name}
+        if arguments:
+            params["arguments"] = arguments
+        result = await self._send_request("prompts/get", params)
+        return result
+
     async def shutdown(self) -> None:
         """Close transport and release resources."""
         self._started = False

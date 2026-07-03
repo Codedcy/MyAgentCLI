@@ -35,6 +35,8 @@ class ToolRegistry:
         # G10: MCP resources and prompts discovered at startup
         self.mcp_resources: list[dict] = []
         self.mcp_prompts: list[dict] = []
+        # G6: MCP clients list — used by mcp_read_resource/mcp_get_prompt tools
+        self.mcp_clients: list = []
 
     def register(self, tool: Tool, source: str = "builtin") -> None:
         """Register a tool instance.
