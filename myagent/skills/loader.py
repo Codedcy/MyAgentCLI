@@ -72,10 +72,18 @@ class SkillLoader:
 
     @staticmethod
     def enumerate_resources(skill_dir: Path) -> SkillResources:
+        """Enumerate resource files relative to the skill directory root.
+
+        Per spec §七: "脚本路径相对于技能目录根". Resource paths are stored
+        as relative paths from skill_dir so they appear as e.g. 'scripts/lint.sh'
+        instead of absolute paths in the system prompt (gap-20-03).
+        """
         res = SkillResources()
         for subdir_name in SkillLoader.RESOURCE_DIRS:
             subdir = skill_dir / subdir_name
             if subdir.is_dir():
                 files = sorted(subdir.iterdir())
-                setattr(res, subdir_name, files)
+                # Convert absolute Path objects to paths relative to skill_dir
+                relative_files = [f.relative_to(skill_dir) for f in files]
+                setattr(res, subdir_name, relative_files)
         return res
