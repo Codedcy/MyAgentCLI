@@ -12,6 +12,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="myagent",
         description="MyAgentCLI — 个人 AI Agent 助手",
+        epilog=(
+            "Examples:\n"
+            "  myagent                              Start a new session\n"
+            "  myagent --resume                     Resume the latest session\n"
+            "  myagent --resume <session-id>        Resume a specific session\n"
+            "  myagent --list-sessions              List all sessions\n"
+            "  myagent --session <id> --export markdown   Export session as markdown\n"
+            "  myagent --session <id> --export json       Export session as JSON\n"
+            "  myagent --mode think-max             Start with Think Max mode\n"
+            "  myagent --dangerously-skip-permissions  Start with full trust mode\n"
+        ),
     )
     parser.add_argument(
         "--resume", nargs="?", const="__latest__", default=None,
