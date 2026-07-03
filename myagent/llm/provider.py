@@ -139,6 +139,7 @@ class LLMProvider:
         messages: list[dict],
         tools: list[dict] | None = None,
         thinking: str = "Think High",
+        model_override: str | None = None,
     ) -> AsyncIterator[LLMEvent]:
         """Stream completion from the LLM.
 
@@ -146,6 +147,10 @@ class LLMProvider:
             messages: Conversation history in OpenAI format.
             tools: Tool definitions for function calling.
             thinking: Thinking mode — "Think High", "Think Max", or "Non-think".
+            model_override: If provided, use this model instead of the
+                            configured primary model. No fallbacks are tried
+                            when using an override. Used by sub-agents to
+                            switch models per-invocation.
 
         Yields:
             LLMEvent instances: TextDelta, ThinkingDelta, ToolCall, Done.
@@ -155,9 +160,12 @@ class LLMProvider:
         """
         estimated_tokens = self.token_count(messages)
 
-        # Try primary model, then fallbacks
-        fallback_models = getattr(self, "_fallback_models", None) or []
-        models_to_try = [self.model] + fallback_models
+        # Use model_override if provided (no fallbacks for overrides)
+        if model_override:
+            models_to_try = [model_override]
+        else:
+            fallback_models = getattr(self, "_fallback_models", None) or []
+            models_to_try = [self.model] + fallback_models
         last_error = None
 
         for model_idx, model_name in enumerate(models_to_try):

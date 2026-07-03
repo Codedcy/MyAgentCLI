@@ -320,6 +320,7 @@ class SubAgentWorker:
                     messages=messages,
                     tools=tools_schemas if tools_schemas else None,
                     thinking=self.mode,
+                    model_override=self.model,
                 ):
                     kind = self._classify_event(event)
                     if kind == "text":
