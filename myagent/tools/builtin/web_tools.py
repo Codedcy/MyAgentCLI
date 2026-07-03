@@ -46,9 +46,11 @@ def _html_to_text(html_content: str) -> str:
     """Convert HTML to readable plain text (regex fallback)."""
     text = _RE_SCRIPT_AND_STYLE.sub("", html_content)
 
-    # Replace heading/content elements with newline-wrapped text
+    # Replace heading/content elements with newline-wrapped text.
+    # Group count varies by pattern: h1-h6 and p have 2 groups (tag name + content),
+    # li has 1 group (content only). Use last group for content extraction.
     for pattern in (_RE_HEADINGS, _RE_PARAGRAPH, _RE_LIST_ITEM):
-        text = pattern.sub(lambda m: "\n" + m.group(2).strip() + "\n", text)
+        text = pattern.sub(lambda m: "\n" + m.group(m.re.groups).strip() + "\n", text)
 
     text = _RE_BR.sub("\n", text)
     text = _RE_TAG.sub("", text)
@@ -337,25 +339,53 @@ class WebSearchTool:
                 resp = await client.get(
                     _DDG_API,
                     params={"q": query, "format": "json", "no_html": "1", "skip_disambig": "1"},
+                    headers={"User-Agent": "MyAgentCLI/0.1"},
                 )
                 resp.raise_for_status()
+                content_type = resp.headers.get("content-type", "")
+                if "text/html" in content_type:
+                    logger.warning(
+                        "web_search: DuckDuckGo returned HTML instead of JSON (status=%d)",
+                        resp.status_code,
+                        extra={"category": "tool", "tool_name": "web_search"},
+                    )
+                    return ToolResult(
+                        error=(
+                            f"Web search failed: DuckDuckGo API returned HTML page "
+                            f"(HTTP {resp.status_code}) instead of JSON. "
+                            f"The API may be blocking automated requests. "
+                            f"Try web_fetch with a specific search-engine URL instead."
+                        ),
+                        metadata={"query": query, "search_error": True},
+                    )
                 data = resp.json()
-        except Exception as e:
+        except httpx.HTTPStatusError as e:
             logger.warning(
-                "web_search API unavailable: query=%s error=%s", query, e,
+                "web_search HTTP error: query=%s status=%d error=%s",
+                query, e.response.status_code, e,
                 extra={"category": "tool", "tool_name": "web_search"},
             )
-            # gap-8-11: Return a clear error result instead of a misleading stub.
-            # The error field signals to the LLM that search failed, not that
-            # there are no results. This prevents the model from treating a stub
-            # as a successful search outcome.
+            return ToolResult(
+                error=(
+                    f"Web search failed: DuckDuckGo API returned HTTP "
+                    f"{e.response.status_code}. Query: '{query}'. "
+                    f"Try again later or use web_fetch with a specific URL instead."
+                ),
+                metadata={"query": query, "search_error": True, "http_status": e.response.status_code},
+            )
+        except Exception as e:
+            logger.warning(
+                "web_search API unavailable: query=%s error=%s type=%s",
+                query, e, type(e).__name__,
+                extra={"category": "tool", "tool_name": "web_search"},
+            )
             return ToolResult(
                 error=(
                     f"Web search failed: DuckDuckGo API is currently unavailable. "
-                    f"Query: '{query}'. Error: {str(e)[:200]}. "
+                    f"Query: '{query}'. Reason: {type(e).__name__}: {str(e)[:200]}. "
                     f"Try again later or use web_fetch with a specific URL instead."
                 ),
-                metadata={"query": query, "search_error": True, "error_detail": str(e)[:300]},
+                metadata={"query": query, "search_error": True, "error_detail": f"{type(e).__name__}: {str(e)[:300]}"},
             )
 
         results = self._parse_results(data, allowed_domains, blocked_domains)
