@@ -25,6 +25,26 @@ from myagent.tools.base import ToolContext, ToolResult
 logger = logging.getLogger("myagent.subagent")
 
 
+def _tokenize_for_relevance(text: str) -> set[str]:
+    """Tokenize text into a set of lowercase words for relevance matching.
+
+    Splits on whitespace and punctuation, returns unique lowercase tokens
+    of length >= 2. Used by _filter_project_context for keyword matching.
+    """
+    import re
+    tokens = set()
+    for word in re.split(r'[\s,;:.!?()\[\]{}"\']+', text.lower()):
+        word = word.strip()
+        if len(word) >= 2:
+            tokens.add(word)
+    # Also add bigrams for compound concepts
+    words = [w for w in re.split(r'[\s,;:.!?()\[\]{}"\']+', text.lower())
+             if len(w.strip()) >= 2]
+    for i in range(len(words) - 1):
+        tokens.add(f"{words[i]} {words[i + 1]}")
+    return tokens
+
+
 class SubAgentWorker:
     """Runs a sub-agent's ReAct loop with isolated context."""
 
@@ -109,14 +129,7 @@ class SubAgentWorker:
                 f"Return ONLY the JSON object."
             )
         if self.project_context:
-            pc = self.project_context
-            ctx_lines = []
-            if hasattr(pc, 'project_type') and pc.project_type != "unknown":
-                ctx_lines.append(f"Project type: {pc.project_type}")
-            if hasattr(pc, 'is_git_repo') and pc.is_git_repo:
-                ctx_lines.append(f"Git branch: {getattr(pc, 'git_branch', 'unknown')}")
-            if hasattr(pc, 'structure_summary') and pc.structure_summary:
-                ctx_lines.append(f"Structure: {pc.structure_summary}")
+            ctx_lines = self._filter_project_context(self.prompt, self.project_context)
             if ctx_lines:
                 system_content += "\n\n## Project Context\n" + "\n".join(ctx_lines)
 
@@ -380,6 +393,93 @@ class SubAgentWorker:
             logger.debug("Cleaned up worktree: %s", self._worktree_path)
         except Exception as e:
             logger.warning("Failed to cleanup worktree %s: %s", self._worktree_path, e)
+
+    @staticmethod
+    def _filter_project_context(prompt: str, project_context) -> list[str]:
+        """Filter project context fields by relevance to the sub-task prompt.
+
+        Design spec §三: '按需传递（仅传递与子任务相关的项目上下文）'.
+
+        Each project context field has associated relevance keywords. A field
+        is included only if the prompt contains at least one of its keywords
+        OR is a universally relevant field (project_type is always included).
+        """
+        pc = project_context
+        lines: list[str] = []
+        prompt_lower = prompt.lower()
+
+        # Field definitions: (field_name, getter, relevance_keywords, universal)
+        fields = [
+            # project_type is universally relevant — always include
+            ("project_type",
+             lambda: f"Project type: {pc.project_type}",
+             set(), True),
+            ("git_branch",
+             lambda: f"Git branch: {getattr(pc, 'git_branch', 'unknown')}",
+             {"git", "branch", "commit", "merge", "rebase", "pull",
+              "push", "checkout", "diff", "log", "stash", "tag",
+              "版本", "分支", "提交", "合并", "git"},
+             False),
+            ("git_status",
+             lambda: f"Git status: {getattr(pc, 'git_status', '')}",
+             {"git", "status", "commit", "modified", "staged", "unstaged",
+              "diff", "change", "更改", "修改", "变更"},
+             False),
+            ("structure_summary",
+             lambda: f"Structure: {pc.structure_summary}",
+             {"structure", "directory", "folder", "layout", "tree",
+              "file", "path", "project layout", "目录", "结构", "文件",
+              "src", "tests", "docs", "lib", "package"},
+             False),
+            ("test_framework",
+             lambda: f"Test framework: {getattr(pc, 'test_framework', 'pytest')}",
+             {"test", "pytest", "unittest", "spec", "coverage",
+              "测试", "单元测试", "用例", "mock"},
+             False),
+            ("package_manager",
+             lambda: f"Package manager: {getattr(pc, 'package_manager', 'pip')}",
+             {"pip", "npm", "yarn", "pnpm", "poetry", "uv", "install",
+              "dependency", "package", "依赖", "包"},
+             False),
+            ("linter",
+             lambda: f"Linter: {getattr(pc, 'linter', 'ruff')}",
+             {"lint", "ruff", "flake8", "eslint", "pylint", "style",
+              "format", "代码风格", "代码检查"},
+             False),
+            ("build_system",
+             lambda: f"Build system: {getattr(pc, 'build_system', 'make')}",
+             {"build", "make", "cmake", "compile", "构建", "编译",
+              "setup", "install"},
+             False),
+            ("python_version",
+             lambda: f"Python version: {getattr(pc, 'python_version', '3.12')}",
+             {"python", "py", "version", "3.", "版本"},
+             False),
+        ]
+
+        # Conditional: has is_git_repo + git_branch + git_status
+        is_git = getattr(pc, 'is_git_repo', False) if hasattr(pc, 'is_git_repo') else False
+
+        for field_name, getter, keywords, universal in fields:
+            # Skip fields that require git if not a git repo
+            if field_name in ("git_branch", "git_status") and not is_git:
+                continue
+            # Skip fields with no value
+            if field_name == "project_type":
+                if getattr(pc, 'project_type', 'unknown') == "unknown":
+                    continue
+            if field_name == "structure_summary":
+                if not getattr(pc, 'structure_summary', ''):
+                    continue
+            # Universal fields always included
+            if universal:
+                lines.append(getter())
+                continue
+            # Check keyword relevance
+            if keywords & _tokenize_for_relevance(prompt_lower):
+                lines.append(getter())
+
+        return lines
 
     def _classify_event(self, event) -> str:
         """Classify an LLM stream event by type.
