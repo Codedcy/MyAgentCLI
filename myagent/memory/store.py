@@ -70,6 +70,16 @@ class MemoryStore:
             if existing and existing != path:
                 existed = True
 
+        # G9: Semantic dedup — if no name match, check for content similarity
+        if not existed:
+            body = self._body(content)
+            description = fm.get("description", "")
+            similar = await self._find_by_similarity(description, body)
+            if similar is not None:
+                # Found a semantically similar memory — update it instead
+                path = similar
+                existed = True
+
         path.write_text(content, encoding="utf-8")
 
         # Extract [[wiki-style links]] from the body
@@ -164,6 +174,122 @@ class MemoryStore:
                 if f.stem == name or fm_name == name:
                     return f
         return None
+
+    async def _find_by_similarity(
+        self, description: str, body: str
+    ) -> Path | None:
+        """Find a semantically similar memory file (G9).
+
+        Uses embedding-based recall from myagent.memory.recall to find
+        existing memories with similar content. If the top result's
+        description or content has high overlap with the new memory,
+        return the Path of the existing file so it can be updated.
+
+        Falls back to keyword overlap if the embedding model is unavailable.
+
+        Args:
+            description: The new memory's description (frontmatter).
+            body: The new memory's body content.
+
+        Returns:
+            Path to an existing similar memory, or None.
+        """
+        query = f"{description} {body[:200]}".strip()
+        if not query:
+            return None
+
+        # Try embedding-based similarity via recall module
+        try:
+            from myagent.memory.recall import recall
+            results = await recall(query, self, limit=3)
+            if results:
+                for result in results:
+                    if result.name:
+                        existing_path = await self._find_by_name(result.name)
+                        if existing_path:
+                            # Check keyword overlap as a confidence signal
+                            existing_mf = await self.read(result.name)
+                            if existing_mf:
+                                overlap_ratio = self._compute_overlap_ratio(
+                                    body[:500], existing_mf.content[:500]
+                                )
+                                # Threshold: >60% keyword overlap = likely duplicate
+                                if overlap_ratio > 0.60:
+                                    return existing_path
+        except Exception:
+            pass  # Embedding model unavailable; fall through to keyword fallback
+
+        # Fallback: keyword overlap with all existing memories
+        return await self._find_by_keyword_overlap(body)
+
+    async def _find_by_keyword_overlap(self, body: str) -> Path | None:
+        """Fallback dedup: check keyword overlap against all memory files (G9).
+
+        Extracts significant words from the new body and compares against
+        each existing memory's content. Returns the first match with >70%
+        overlap ratio.
+        """
+        import re
+
+        def extract_keywords(text: str) -> set[str]:
+            words = set()
+            for w in re.split(r'[\s,;:.!?()\[\]{}"\'`\n]+', text.lower()):
+                w = w.strip()
+                if len(w) >= 3 and w not in {
+                    'the', 'and', 'for', 'you', 'can', 'that', 'this',
+                    'with', 'have', 'from', 'are', 'not', 'but', 'all',
+                    'was', 'has', 'had', 'its', 'his', 'her', 'our',
+                    'will', 'would', 'could', 'should', 'been', 'being',
+                }:
+                    words.add(w)
+            return words
+
+        new_keywords = extract_keywords(body[:500])
+        if len(new_keywords) < 5:
+            return None
+
+        best_path = None
+        best_ratio = 0.0
+
+        for d in (self.project_dir, self.user_dir):
+            for f in d.glob("*.md"):
+                if f.name == "MEMORY.md":
+                    continue
+                try:
+                    existing_content = f.read_text(encoding="utf-8")
+                    existing_body = self._body(existing_content)
+                    existing_keywords = extract_keywords(existing_body[:500])
+                    if not existing_keywords:
+                        continue
+                    overlap = len(new_keywords & existing_keywords)
+                    ratio = overlap / max(len(new_keywords), 1)
+                    if ratio > 0.70 and ratio > best_ratio:
+                        best_ratio = ratio
+                        best_path = f
+                except Exception:
+                    continue
+
+        return best_path
+
+    @staticmethod
+    def _compute_overlap_ratio(text1: str, text2: str) -> float:
+        """Compute keyword overlap ratio between two texts (G9)."""
+        import re
+
+        def extract_keywords(text: str) -> set[str]:
+            words = set()
+            for w in re.split(r'[\s,;:.!?()\[\]{}"\'`\n]+', text.lower()):
+                w = w.strip()
+                if len(w) >= 3:
+                    words.add(w)
+            return words
+
+        kw1 = extract_keywords(text1)
+        kw2 = extract_keywords(text2)
+        if not kw1 or not kw2:
+            return 0.0
+        overlap = len(kw1 & kw2)
+        return overlap / max(len(kw1), 1)
 
     async def _update_index(self, mem_dir: Path) -> None:
         """Rebuild MEMORY.md index with structured metadata table (gap-8-09).
