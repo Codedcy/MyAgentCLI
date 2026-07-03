@@ -39,6 +39,7 @@ class CommandDispatcher:
         self._commands["dream"] = self._cmd_dream
         self._commands["clear"] = self._cmd_clear
         self._commands["history"] = self._cmd_history
+        self._commands["help"] = self._cmd_help
         self._commands["exit"] = self._cmd_exit
         self._commands["quit"] = self._cmd_exit
 
@@ -106,6 +107,25 @@ class CommandDispatcher:
             result = await ctx.dream_engine.run()
             return CommandResult(output=f"Dream cycle completed. Log: {result.log_path}")
         return CommandResult(output="Dream engine not available.")
+
+    async def _cmd_help(self, args: str, ctx: CommandContext) -> CommandResult:
+        """List all available slash commands with brief descriptions."""
+        lines = [
+            "Available commands:",
+            "",
+            "  /mode think-high|think-max|non-think — Switch thinking mode",
+            "  /goal [text|clear]                    — Set, view, or clear current goal",
+            "  /skills                               — List available skills",
+            "  /dream                                — Run memory consolidation dream cycle",
+            "  /clear                                — Clear in-memory conversation (preserves transcripts)",
+            "  /history [N]                          — Show recent conversation history",
+            "  /help                                 — Show this help message",
+            "  /exit, /quit                          — Exit MyAgentCLI",
+            "",
+            "You can also type /<skill-name> to invoke a registered skill.",
+            "Use Ctrl+C to interrupt a running agent, Ctrl+D to exit.",
+        ]
+        return CommandResult(output="\n".join(lines))
 
     async def _cmd_clear(self, args: str, ctx: CommandContext) -> CommandResult:
         """Clear in-memory conversation messages while preserving disk transcripts."""
