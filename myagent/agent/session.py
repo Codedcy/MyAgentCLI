@@ -102,7 +102,7 @@ class SessionManager:
             if session.goal and session.goal_achieved is None:
                 session.goal_achieved = False
 
-        # Prompt for permission persistence (gap-16)
+        # Prompt for permission persistence (gap-2-04)
         if self.permissions:
             changes = self.permissions.get_session_changes()
             if changes:
@@ -122,7 +122,7 @@ class SessionManager:
                         default="Y",
                     )
                     if answer.lower() == "y":
-                        console.print("[dim]权限规则已记录（持久化配置文件写入功能在 v1.1+ 支持）[/dim]")
+                        self._persist_permission_changes(changes, console)
                 except ImportError:
                     pass  # Rich not available
 
@@ -155,6 +155,76 @@ class SessionManager:
                         print(f"  - Deleted: {name}")
 
         _log.info("Session ended: %s", getattr(session, 'id', 'unknown'))
+
+    def _persist_permission_changes(self, changes: list[dict], console=None) -> None:
+        """Write permission changes to the appropriate YAML config file (gap-2-04).
+
+        Priority: project-level (.myagent/config.yaml) if it exists,
+        otherwise user-level (~/.myagent/config.yaml).
+        Creates the config file if it doesn't exist.
+        """
+        import yaml
+        from pathlib import Path
+
+        # Determine target config file
+        project_config = Path.cwd() / ".myagent" / "config.yaml"
+        user_config = Path.home() / ".myagent" / "config.yaml"
+
+        if project_config.exists():
+            config_path = project_config
+        else:
+            config_path = user_config
+
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Read existing config
+        existing: dict = {}
+        if config_path.exists():
+            try:
+                existing = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+            except Exception:
+                existing = {}
+
+        # Ensure permissions section exists
+        if "permissions" not in existing:
+            existing["permissions"] = {}
+        perms = existing["permissions"]
+
+        # Apply changes
+        for change in changes:
+            action = change.get("action", "")
+            if action == "set_mode_allow_all":
+                perms["default_mode"] = "allow_all"
+            elif action == "add_allow":
+                allowed = change.get("allowed", "")
+                if allowed:
+                    perms.setdefault("auto_allow", {})
+                    perms["auto_allow"].setdefault("commands", [])
+                    if allowed not in perms["auto_allow"]["commands"]:
+                        perms["auto_allow"]["commands"].append(allowed)
+            elif action == "add_deny":
+                denied = change.get("denied", "")
+                if denied:
+                    perms.setdefault("auto_deny", {})
+                    perms["auto_deny"].setdefault("commands", [])
+                    if denied not in perms["auto_deny"]["commands"]:
+                        perms["auto_deny"]["commands"].append(denied)
+
+        # Write back
+        try:
+            config_path.write_text(
+                yaml.safe_dump(existing, default_flow_style=False, allow_unicode=True),
+                encoding="utf-8",
+            )
+            if console:
+                console.print(f"[green]权限规则已持久化到 {config_path}[/green]")
+            else:
+                print(f"Permission changes saved to {config_path}")
+        except Exception as e:
+            if console:
+                console.print(f"[red]持久化失败: {e}[/red]")
+            else:
+                print(f"Failed to save permission changes: {e}")
 
     async def export_session(self, session_id: str, fmt: str, project_dir: Path) -> Path | None:
         project_name = project_dir.name
