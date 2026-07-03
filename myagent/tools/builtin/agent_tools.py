@@ -40,13 +40,16 @@ class SpawnSubagentTool:
             if context.config:
                 goal_tracker = getattr(context, 'goal_tracker', None)
                 goal = goal_tracker.get_goal() if goal_tracker and hasattr(goal_tracker, 'get_goal') else None
-                # Non-goal mode: force background=False unless explicitly allowed
+                # Non-goal mode: force background=False unless explicitly allowed.
+                # gap-13-03: Always enforce the gate regardless of what the model
+                # passes in params. The model cannot bypass the config gate by
+                # explicitly passing background=True.
                 if not goal:
                     speculative_allowed = (
                         hasattr(context.config, 'subagents') and
                         getattr(context.config.subagents, 'speculative_exploration', False)
                     )
-                    if not speculative_allowed and "background" not in params:
+                    if not speculative_allowed:
                         background = False
 
             handle = await pool.spawn(
@@ -62,7 +65,7 @@ class SpawnSubagentTool:
             )
             return ToolResult(
                 output=f"Sub-agent spawned: {handle.id}",
-                metadata={"subagent_id": handle.id, "background": params.get("background", True)},
+                metadata={"subagent_id": handle.id, "background": background},
             )
         except Exception as e:
             return ToolResult(error=str(e))
