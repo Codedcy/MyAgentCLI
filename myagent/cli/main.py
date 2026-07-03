@@ -382,10 +382,19 @@ async def _start_single_mcp_server(name: str, cfg: dict, tool_registry):
             tool_registry.register(adapter, source="mcp")
             _log.info("Registered MCP tool: %s (from %s)", raw_tool.name, name)
 
-        # Also list and log resources
+        # Also list and log resources and prompts (gap-2-03)
         try:
             resources = await client.list_resources()
             _log.info("MCP server '%s' provides %d resources", name, len(resources))
+        except Exception:
+            pass
+
+        try:
+            prompts = await client.list_prompts()
+            if prompts:
+                _log.info("MCP server '%s' provides %d prompts", name, len(prompts))
+            else:
+                _log.debug("MCP server '%s' provides no prompts", name)
         except Exception:
             pass
 

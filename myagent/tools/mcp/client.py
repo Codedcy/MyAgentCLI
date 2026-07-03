@@ -223,6 +223,15 @@ class MCPClient:
         result = await self._send_request("resources/list", {})
         return result.get("resources", [])
 
+    async def list_prompts(self) -> list[dict]:
+        """Call prompts/list and return prompt definitions (gap-2-03)."""
+        try:
+            result = await self._send_request("prompts/list", {})
+            return result.get("prompts", [])
+        except Exception:
+            logger.debug("MCP server does not support prompts/list: %s", self.command)
+            return []
+
     async def shutdown(self) -> None:
         """Close transport and release resources."""
         self._started = False
