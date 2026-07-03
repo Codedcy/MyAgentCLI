@@ -48,6 +48,7 @@ class ToolContext:
         config: Full AppConfig for tool behavior tuning.
         subagent_pool: SubAgentPool (optional — may be None if pool not started).
         working_dir: Current working directory (defaults to project_dir).
+        project_context: ProjectContext for sub-agent spawning (gap-31).
     """
 
     session_id: str
@@ -56,6 +57,7 @@ class ToolContext:
     config: Any  # AppConfig (avoid circular import)
     subagent_pool: Any | None = None
     working_dir: Path | None = None
+    project_context: Any = None  # ProjectContext
 
 
 @runtime_checkable

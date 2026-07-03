@@ -153,12 +153,32 @@ class CompressionEngine:
                     f"{summary_text}"
                 ),
             )
+            self._persist_summary(summary_text, len(old))
             return [summary_msg] + recent
         except Exception:
             # Fallback to placeholder
             summary_text = f"[Conversation summary: {len(old)} messages covering {old[0].role} → {old[-1].role} exchanges]"
             summary_msg = Message(role="system", content=summary_text)
+            self._persist_summary(summary_text, len(old))
             return [summary_msg] + recent
+
+    def _persist_summary(self, summary_text: str, message_count: int) -> None:
+        """Persist layer-3 summary to summaries/compact-NNN.md (gap-15)."""
+        self._compact_counter += 1
+        if self._session_dir:
+            summaries_dir = self._session_dir / "summaries"
+            summaries_dir.mkdir(parents=True, exist_ok=True)
+            summary_path = summaries_dir / f"compact-{self._compact_counter:03d}.md"
+            try:
+                summary_path.write_text(
+                    f"# Compact #{self._compact_counter}\n\n"
+                    f"Messages compressed: {message_count}\n"
+                    f"Layers applied: Layer 3 (conversation summary)\n\n"
+                    f"{summary_text}\n",
+                    encoding="utf-8",
+                )
+            except Exception:
+                pass  # Best-effort persistence
 
     def _messages_to_text(self, messages: list[Message]) -> str:
         """Convert a list of messages to a compact text representation."""

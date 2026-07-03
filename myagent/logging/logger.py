@@ -84,11 +84,15 @@ class LogManager:
         max_bytes = config.max_size_mb * 1024 * 1024
         size_backup_count = max(config.retention_days, 5)
 
+        # Date stamp for daily rotation (gap-09)
+        from datetime import datetime
+        date_str = datetime.now().strftime("%Y-%m-%d")
+
         # Build handlers
         handlers = []
 
         if config.format in ("jsonl", "both"):
-            jsonl_path = str(log_dir / "myagent.log")
+            jsonl_path = str(log_dir / f"myagent-{date_str}.jsonl")
             jsonl_handler = LogManager._make_rotating_handler(
                 jsonl_path, max_bytes, size_backup_count
             )
@@ -97,7 +101,7 @@ class LogManager:
             handlers.append(jsonl_handler)
 
         if config.format in ("text", "both"):
-            text_path = str(log_dir / "myagent-text.log")
+            text_path = str(log_dir / f"myagent-{date_str}.log")
             text_handler = LogManager._make_rotating_handler(
                 text_path, max_bytes, size_backup_count
             )

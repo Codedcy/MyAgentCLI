@@ -35,15 +35,32 @@ class SpawnSubagentTool:
             )
 
         try:
+            # gap-21: check speculative_exploration config for non-goal mode
+            background = params.get("background", True)
+            if context.config:
+                goal = getattr(context.config, '_goal', None) or (
+                    hasattr(context.config, 'session') and
+                    getattr(context.config.session, '_goal', None)
+                )
+                # Non-goal mode: force background=False unless explicitly allowed
+                if not goal:
+                    speculative_allowed = (
+                        hasattr(context.config, 'subagents') and
+                        getattr(context.config.subagents, 'speculative_exploration', False)
+                    )
+                    if not speculative_allowed and "background" not in params:
+                        background = False
+
             handle = await pool.spawn(
                 prompt=params["prompt"],
                 tools=params.get("tools"),
                 mode=params.get("mode", "Think High"),
                 isolation=params.get("isolation"),
                 schema=params.get("schema"),
-                background=params.get("background", True),
+                background=background,
                 parent_session=context.session_id,
                 config=context.config,
+                tool_context=context,
             )
             return ToolResult(
                 output=f"Sub-agent spawned: {handle.id}",

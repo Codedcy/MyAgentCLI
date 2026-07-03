@@ -17,6 +17,7 @@ class REPLEngine:
         project_dir: Path | None = None,
         renderer=None,
         status_bar=None,
+        dream_engine=None,
     ):
         self._engine = engine
         self._commands = commands
@@ -25,6 +26,7 @@ class REPLEngine:
         self._project_dir = project_dir or Path.cwd()
         self._renderer = renderer
         self._status_bar = status_bar
+        self._dream_engine = dream_engine
         self._running = False
         self._current_session = None
         self._console = None
@@ -134,6 +136,7 @@ class REPLEngine:
                     skill_registry=(
                         self._engine.skill_registry if self._engine else None
                     ),
+                    dream_engine=self._dream_engine,
                 )
                 result = await self._commands.dispatch(text, ctx)
                 if self._console:

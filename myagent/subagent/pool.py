@@ -32,6 +32,7 @@ class SubAgentHandle:
     _interrupt_event: asyncio.Event = field(default_factory=asyncio.Event)
     _result_data: ToolResult | None = None
     _message: str | None = None
+    _pending_messages: list = field(default_factory=list)
 
     async def wait(self) -> ToolResult:
         await self._completion_event.wait()
@@ -41,10 +42,70 @@ class SubAgentHandle:
         return result
 
     async def send_message(self, msg: str) -> None:
-        """Store message; trigger interrupt if 'stop'."""
+        """Store message for worker consumption.
+
+        Non-stop messages are queued for the worker to read at iteration start.
+        'stop' messages set the interrupt event and are also queued.
+        """
         self._message = msg
+        self._pending_messages.append(msg)
         if msg.lower() == "stop":
             self._interrupt_event.set()
+
+
+async def _persist_subagent_transcript(session_store, session, handle, worker, duration_ms, output):
+    """Persist sub-agent transcript to session's subagents/ directory (gap-07)."""
+    import json
+    from pathlib import Path
+
+    try:
+        if hasattr(session, 'project_name') and hasattr(session, 'project_hash'):
+            sess_dir = session_store._session_dir(
+                session.project_name, session.project_hash, session.id
+            )
+        else:
+            return
+
+        sub_dir = sess_dir / "subagents" / handle.id
+        sub_dir.mkdir(parents=True, exist_ok=True)
+
+        # Build transcript messages from worker's collected data
+        transcript_messages = getattr(worker, '_transcript_messages', [])
+        transcript_tool_calls = getattr(worker, '_transcript_tool_calls', [])
+
+        # JSON transcript
+        ts_data = {
+            "subagent_id": handle.id,
+            "parent_session": session.id,
+            "status": handle.status.value,
+            "duration_ms": duration_ms,
+            "prompt": getattr(worker, 'prompt', ''),
+            "output": output,
+            "iterations": getattr(worker, 'MAX_ITERATIONS', 30),
+            "messages": transcript_messages,
+            "tool_calls": transcript_tool_calls,
+        }
+        (sub_dir / "transcript.json").write_text(
+            json.dumps(ts_data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        # Markdown transcript
+        md_lines = [
+            f"# Sub-agent: {handle.id}",
+            f"Status: {handle.status.value}",
+            f"Duration: {duration_ms:.0f}ms",
+            f"Prompt: {getattr(worker, 'prompt', '')}",
+            "",
+            "## Output",
+            output,
+            "",
+        ]
+        (sub_dir / "transcript.md").write_text(
+            "\n".join(md_lines), encoding="utf-8",
+        )
+    except Exception:
+        pass  # Best-effort persistence
 
 
 class CapExceededError(Exception):
@@ -66,6 +127,8 @@ class SubAgentPool:
         llm=None,
         tool_registry=None,
         tool_context: ToolContext | None = None,
+        session_store=None,
+        session=None,
     ):
         if max_concurrent is None:
             max_concurrent = min(16, max(1, (os.cpu_count() or 2) - 2))
@@ -77,6 +140,8 @@ class SubAgentPool:
         self._llm = llm
         self._tool_registry = tool_registry
         self._tool_context = tool_context
+        self._session_store = session_store
+        self._session = session
 
     @property
     def active_count(self) -> int:
@@ -111,17 +176,19 @@ class SubAgentPool:
         _tool_registry = tool_registry or self._tool_registry
         _tool_context = tool_context or self._tool_context
 
+        project_ctx = getattr(_tool_context, 'project_context', None) if _tool_context else None
+
         if background:
             asyncio.create_task(
                 self._run_background(
                     handle, prompt, tools, mode, model, _llm, _tool_registry,
-                    handle._interrupt_event, _tool_context,
+                    handle._interrupt_event, _tool_context, project_ctx, handle._pending_messages,
                 )
             )
         else:
             await self._run_foreground(
                 handle, prompt, tools, mode, model, _llm, _tool_registry,
-                handle._interrupt_event, _tool_context,
+                handle._interrupt_event, _tool_context, project_ctx, handle._pending_messages,
             )
 
         return handle
@@ -151,6 +218,8 @@ class SubAgentPool:
         tool_registry,
         interrupt_event: asyncio.Event,
         tool_context: ToolContext | None,
+        project_context=None,
+        message_store: list | None = None,
     ) -> None:
         """Run a sub-agent worker under the concurrency semaphore."""
         async with self._semaphore:
@@ -165,6 +234,8 @@ class SubAgentPool:
                 tool_registry=tool_registry,
                 interrupt_event=interrupt_event,
                 tool_context=tool_context,
+                project_context=project_context,
+                message_store=message_store,
             )
             try:
                 logger.info(
@@ -183,6 +254,12 @@ class SubAgentPool:
                     duration_ms,
                     extra={"category": "subagent"},
                 )
+                # Persist sub-agent transcript (gap-07)
+                if self._session_store and self._session:
+                    await _persist_subagent_transcript(
+                        self._session_store, self._session, handle, worker,
+                        duration_ms, output,
+                    )
             except Exception as e:
                 logger.error(
                     "Sub-agent %s failed: %s",
@@ -206,9 +283,11 @@ class SubAgentPool:
         tool_registry,
         interrupt_event: asyncio.Event,
         tool_context: ToolContext | None,
+        project_context=None,
+        message_store: list | None = None,
     ) -> None:
         """Run a sub-agent worker in foreground (caller awaits)."""
         await self._run_background(
             handle, prompt, tools, mode, model, llm, tool_registry,
-            interrupt_event, tool_context,
+            interrupt_event, tool_context, project_context, message_store,
         )

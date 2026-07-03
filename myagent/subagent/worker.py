@@ -39,6 +39,8 @@ class SubAgentWorker:
         tool_registry=None,
         interrupt_event: asyncio.Event | None = None,
         tool_context: ToolContext | None = None,
+        project_context=None,
+        message_store: list | None = None,
     ):
         self.prompt = prompt
         self.tools = tools
@@ -49,6 +51,10 @@ class SubAgentWorker:
         self.tool_registry = tool_registry
         self.interrupt_event = interrupt_event
         self.tool_context = tool_context
+        self.project_context = project_context
+        self._message_store = message_store
+        self._transcript_messages: list[dict] = []
+        self._transcript_tool_calls: list[dict] = []
 
     async def run(self) -> str:
         """Execute the sub-agent task and return a result string.
@@ -64,15 +70,26 @@ class SubAgentWorker:
             logger.warning("Sub-agent spawned without LLM provider")
             return "Error: No LLM provider configured for sub-agent"
 
+        # Build system prompt with optional project context (gap-31)
+        system_content = (
+            "You are a sub-agent assistant. Complete the assigned task "
+            "using available tools. Be concise and direct. Report your "
+            "final answer when done."
+        )
+        if self.project_context:
+            pc = self.project_context
+            ctx_lines = []
+            if hasattr(pc, 'project_type') and pc.project_type != "unknown":
+                ctx_lines.append(f"Project type: {pc.project_type}")
+            if hasattr(pc, 'is_git_repo') and pc.is_git_repo:
+                ctx_lines.append(f"Git branch: {getattr(pc, 'git_branch', 'unknown')}")
+            if hasattr(pc, 'structure_summary') and pc.structure_summary:
+                ctx_lines.append(f"Structure: {pc.structure_summary}")
+            if ctx_lines:
+                system_content += "\n\n## Project Context\n" + "\n".join(ctx_lines)
+
         messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are a sub-agent assistant. Complete the assigned task "
-                    "using available tools. Be concise and direct. Report your "
-                    "final answer when done."
-                ),
-            },
+            {"role": "system", "content": system_content},
             {"role": "user", "content": self.prompt},
         ]
 
@@ -85,6 +102,21 @@ class SubAgentWorker:
         iteration = 0
         while iteration < self.MAX_ITERATIONS:
             iteration += 1
+
+            # Check for pending messages from the parent (gap-20)
+            if self._message_store and self._message_store:
+                pending_msg = self._message_store.pop(0)
+                logger.info(
+                    "Sub-agent received message: %s", pending_msg[:100],
+                    extra={"category": "subagent"},
+                )
+                if pending_msg.lower() == "stop":
+                    return "[Interrupted]"
+                # Inject non-stop message as user message
+                messages.append({
+                    "role": "user",
+                    "content": f"[Message from parent]: {pending_msg}",
+                })
 
             # Check for interrupt before each LLM call
             if self.interrupt_event and self.interrupt_event.is_set():

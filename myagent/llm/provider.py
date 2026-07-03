@@ -12,6 +12,8 @@ import asyncio
 import json
 import logging
 import time
+from datetime import datetime
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import AsyncIterator, Literal
 
@@ -97,12 +99,15 @@ class LLMProvider:
                 case Done(stop_reason, usage): ...
     """
 
-    def __init__(self, model_config=None):
+    def __init__(self, model_config=None, logging_config=None, retry_callback=None):
         """Initialize with ModelConfig (or None for defaults).
 
         Args:
             model_config: ModelConfig dataclass from myagent.config.schema.
                           If None, uses deepseek-v4-pro defaults.
+            logging_config: LoggingConfig for prompt logging (gap-10).
+            retry_callback: Optional callable(attempt, max_retries, delay) for UI
+                            retry progress updates (gap-33).
         """
         if model_config is None:
             self.provider = "deepseek"
@@ -114,6 +119,14 @@ class LLMProvider:
             self._fallback_models = getattr(model_config, "fallback_models", []) or []
 
         self._current_fallback_index = -1  # -1 = primary model
+        self._logging_config = logging_config
+        self._retry_callback = retry_callback
+        self._session_id: str | None = None
+        self._prompt_counter: int = 0
+
+    def set_session_id(self, session_id: str) -> None:
+        """Set session ID for prompt log file naming."""
+        self._session_id = session_id
 
     # ── public API ─────────────────────────────────────────────
 
@@ -221,7 +234,7 @@ class LLMProvider:
                 if "deepseek" in model_name.lower():
                     kwargs["extra_body"] = {"thinking": thinking_param}
 
-                # Log request
+                # Log request + write prompt files (gap-10)
                 t0 = time.monotonic()
                 logger.info(
                     "LLM request: model=%s attempt=%d messages=%d tokens_est=%d",
@@ -235,6 +248,8 @@ class LLMProvider:
                         "retry_count": attempt,
                     },
                 )
+                # Write full prompts to .prompts/ if enabled
+                self._write_prompt_logs(model_name, messages, tools, attempt)
 
                 response = await litellm.acompletion(**kwargs)
 
@@ -327,6 +342,12 @@ class LLMProvider:
             # Exponential backoff before retry
             if attempt < MAX_RETRIES:
                 delay = min(BASE_DELAY * (2**attempt), MAX_DELAY)
+                # Notify retry callback for UI (gap-33)
+                if self._retry_callback:
+                    try:
+                        self._retry_callback(attempt + 1, MAX_RETRIES, delay)
+                    except Exception:
+                        pass
                 await asyncio.sleep(delay)
 
         # All retries exhausted for this model
@@ -438,6 +459,51 @@ class LLMProvider:
                         total_tokens=getattr(usage, "total_tokens", 0) or 0,
                     ),
                 )
+
+    def _write_prompt_logs(
+        self, model_name: str, messages: list[dict],
+        tools: list[dict] | None, attempt: int,
+    ) -> None:
+        """Write full prompt/response to .prompts/ directory when enabled (gap-10).
+
+        Triggered when logging_config.llm_prompts is True and log level is DEBUG.
+        Writes to ~/.myagent/logs/.prompts/<timestamp>-<session>-request.json
+        and response file.
+        """
+        logging_config = getattr(self, '_logging_config', None)
+        if logging_config is None:
+            return
+        if not getattr(logging_config, "llm_prompts", False):
+            return
+
+        # Only write at DEBUG level
+        import logging
+        if logging.getLogger("myagent.llm").getEffectiveLevel() > logging.DEBUG:
+            return
+
+        try:
+            log_dir = Path(getattr(self._logging_config, "dir", "~/.myagent/logs/")).expanduser().resolve()
+            prompts_dir = log_dir / ".prompts"
+            prompts_dir.mkdir(parents=True, exist_ok=True)
+
+            self._prompt_counter += 1
+            ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+            session_part = self._session_id or "nosession"
+
+            # Write request file
+            request_file = prompts_dir / f"{ts}-{session_part}-request-{self._prompt_counter:04d}.json"
+            request_data = {
+                "model": model_name,
+                "attempt": attempt + 1,
+                "messages": messages,
+                "tools": tools,
+            }
+            request_file.write_text(
+                json.dumps(request_data, ensure_ascii=False, indent=2, default=str),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass  # Prompt logging is best-effort
 
     # Allow setting model manually (for testing)
     def _set_test_model(self, model: str):

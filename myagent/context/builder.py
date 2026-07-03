@@ -82,6 +82,9 @@ web access, sub-agent orchestration, and task tracking.
         self.memory_store = memory_store
         self.skill_registry = skill_registry
         self.config = config
+        # Session-scoped memory cache (gap-27): load once, reuse across turns
+        self._memory_cache: dict[str, list] = {}
+        self._cache_key: str | None = None
 
     async def build(
         self,
@@ -95,12 +98,19 @@ web access, sub-agent orchestration, and task tracking.
         # L3: Project context
         l3 = self._format_project_context(project_context)
 
-        # L4: Relevant memories
+        # L4: Relevant memories — use session-scoped cache (gap-27)
         l4 = ""
         if self.memory_store:
             try:
-                from myagent.memory.recall import recall
-                memories = await recall(current_input, self.memory_store, limit=10)
+                # Use the initial input as cache key for the session
+                cache_key = self._cache_key or current_input[:100]
+                if self._memory_cache.get(cache_key) is not None:
+                    memories = self._memory_cache[cache_key]
+                else:
+                    from myagent.memory.recall import recall
+                    memories = await recall(cache_key, self.memory_store, limit=10)
+                    self._memory_cache[cache_key] = memories
+                    self._cache_key = cache_key
                 l4 = self._format_memories(memories)
             except Exception:
                 pass

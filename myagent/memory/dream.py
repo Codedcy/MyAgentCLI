@@ -54,8 +54,9 @@ class DreamEngine:
         return True
 
     async def run(self, session_store=None) -> DreamResult:
-        """Consolidate memories: deduplicate by description and remove empty ones.
+        """Consolidate memories: deduplicate, scan transcripts, find patterns.
 
+        Enhanced with transcript scanning (gap-18) and narrative analysis (gap-35).
         Principles: never modify project code, never ask user, always background.
         """
         result = DreamResult()
@@ -67,10 +68,12 @@ class DreamEngine:
         log_path = log_dir / f"{today}.md"
 
         actions: list[str] = []
+        analysis_sections: list[str] = []
+        analysis_sections.append("## Dream Analysis")
 
         if self.memory_store is not None:
             # ── 1. Gather all memories from both scopes ──
-            all_memories: list[tuple] = []   # (MemoryFile, mtime_float)
+            all_memories: list[tuple] = []
             seen_names: set[str] = set()
 
             for scope in ("project", "user"):
@@ -91,9 +94,7 @@ class DreamEngine:
                         mf = await self.memory_store.read(entry.name)
                     except Exception:
                         logger.warning(
-                            "Dream: failed to read memory '%s'",
-                            entry.name,
-                            exc_info=True,
+                            "Dream: failed to read memory '%s'", entry.name, exc_info=True
                         )
                         continue
 
@@ -112,9 +113,7 @@ class DreamEngine:
             for name in empty_names:
                 try:
                     await self.memory_store.delete(name)
-                    actions.append(
-                        f"- Deleted empty memory: `{name}` (body < 20 chars)"
-                    )
+                    actions.append(f"- Deleted empty memory: `{name}` (body < 20 chars)")
                     result.memories_deleted += 1
                     logger.info(
                         "Dream: deleted empty memory '%s'", name,
@@ -122,15 +121,10 @@ class DreamEngine:
                     )
                 except Exception:
                     logger.warning(
-                        "Dream: failed to delete empty memory '%s'",
-                        name, exc_info=True,
+                        "Dream: failed to delete empty memory '%s'", name, exc_info=True
                     )
 
-            # Remove deleted empties from the working set
-            all_memories = [
-                (mf, mt) for mf, mt in all_memories
-                if mf.name not in empty_names
-            ]
+            all_memories = [(mf, mt) for mf, mt in all_memories if mf.name not in empty_names]
 
             # ── 3. Deduplicate by description (keep newest by mtime) ──
             by_desc: dict[str, list[tuple]] = defaultdict(list)
@@ -143,15 +137,13 @@ class DreamEngine:
             for desc_key, items in by_desc.items():
                 if len(items) < 2:
                     continue
-                # Sort by mtime descending — newest first
                 items.sort(key=lambda x: x[1], reverse=True)
                 keeper = items[0][0]
                 for mf, _ in items[1:]:
                     try:
                         await self.memory_store.delete(mf.name)
                         actions.append(
-                            f"- Deleted duplicate memory: `{mf.name}` "
-                            f"(duplicate of `{keeper.name}`)"
+                            f"- Deleted duplicate memory: `{mf.name}` (duplicate of `{keeper.name}`)"
                         )
                         result.memories_deleted += 1
                         logger.info(
@@ -161,28 +153,65 @@ class DreamEngine:
                         )
                     except Exception:
                         logger.warning(
-                            "Dream: failed to delete duplicate '%s'",
-                            mf.name, exc_info=True,
+                            "Dream: failed to delete duplicate '%s'", mf.name, exc_info=True
                         )
 
-        # ── 4. Write dream log ──
+            # ── 4. Scan recent transcripts for patterns (gap-18) ──
+            transcript_findings = await self._scan_transcripts(session_store)
+            if transcript_findings:
+                analysis_sections.append("")
+                analysis_sections.append("### Patterns from Recent Sessions")
+                for finding in transcript_findings:
+                    analysis_sections.append(f"- {finding}")
+
+            # ── 5. Detect contradictions between memories (gap-18) ──
+            contradictions = self._detect_contradictions(all_memories)
+            if contradictions:
+                analysis_sections.append("")
+                analysis_sections.append("### Contradictions Detected")
+                for c in contradictions:
+                    analysis_sections.append(f"- {c}")
+
+            # ── 6. Identify stale memories (not accessed in > 30 days) ──
+            stale_count = 0
+            for mf, mtime in all_memories:
+                age_days = (time.time() - mtime) / 86400
+                if age_days > 30 and len(mf.content.strip()) >= 20:
+                    analysis_sections.append(
+                        f"- Stale memory: `{mf.name}` (last modified {age_days:.0f} days ago)"
+                    )
+                    stale_count += 1
+            if stale_count == 0:
+                analysis_sections.append("")
+                analysis_sections.append("### No Stale Memories")
+                analysis_sections.append("All memories have been accessed within the last 30 days.")
+
+        # ── 7. Write dream log with narrative analysis (gap-35) ──
         log_lines = [f"# Dream Log - {today}", ""]
+        log_lines.append(
+            "This dream cycle analyzed memories and recent sessions to consolidate "
+            "knowledge, detect patterns, and maintain memory health."
+        )
+        log_lines.append("")
         if actions:
             log_lines.append("## Actions")
             log_lines.append("")
             log_lines.extend(actions)
             log_lines.append("")
+        log_lines.extend(analysis_sections)
+        log_lines.append("")
         log_lines.append("## Summary")
         log_lines.append("")
         log_lines.append(f"- Created: {result.memories_created}")
         log_lines.append(f"- Updated: {result.memories_updated}")
         log_lines.append(f"- Deleted: {result.memories_deleted}")
+        log_lines.append(f"- Total memories after dream: {len(all_memories) if self.memory_store else 'N/A'}")
         log_lines.append("")
 
         log_path.write_text("\n".join(log_lines), encoding="utf-8")
         result.log_path = log_path
 
-        # ── 5. Update state ──
+        # ── 8. Update state ──
         self._state_file.parent.mkdir(parents=True, exist_ok=True)
         self._state_file.write_text(json.dumps({
             "last_run": time.time(),
@@ -190,6 +219,155 @@ class DreamEngine:
         }))
 
         return result
+
+    async def _scan_transcripts(self, session_store) -> list[str]:
+        """Scan recent unprocessed session transcripts for patterns (gap-18).
+
+        Identifies repeated corrections, new conventions, and topic clusters
+        by scanning transcript files from recent sessions.
+        """
+        findings: list[str] = []
+        if session_store is None:
+            return findings
+
+        try:
+            sessions_dir = Path(str(getattr(session_store, 'base_dir', '')))
+            if not sessions_dir or not sessions_dir.exists():
+                return findings
+
+            # Find recent sessions (last 7 days)
+            recent_cutoff = time.time() - 7 * 86400
+            recent_sessions = []
+            for proj_dir in sessions_dir.iterdir():
+                if not proj_dir.is_dir():
+                    continue
+                for hash_dir in proj_dir.iterdir():
+                    if not hash_dir.is_dir():
+                        continue
+                    for sess_dir in hash_dir.iterdir():
+                        if not sess_dir.is_dir():
+                            continue
+                        ts_file = sess_dir / "transcript.json"
+                        if ts_file.exists() and ts_file.stat().st_mtime > recent_cutoff:
+                            recent_sessions.append(ts_file)
+
+            if not recent_sessions:
+                return findings
+
+            # Sample up to 5 most recent sessions
+            recent_sessions.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+            sampled = recent_sessions[:5]
+
+            # Scan for patterns: repeated corrections, common topics, new conventions
+            correction_count = 0
+            topic_keywords: dict[str, int] = {}
+            for ts_file in sampled:
+                try:
+                    import json as _json
+                    data = _json.loads(ts_file.read_text(encoding="utf-8"))
+                    messages = data.get("messages", [])
+                    text = " ".join(
+                        m.get("content", "") for m in messages
+                        if isinstance(m, dict)
+                    )
+
+                    # Detect correction patterns: "actually", "let me correct", etc.
+                    correction_markers = [
+                        "let me correct", "actually,", "correction:",
+                        "更正", "纠正", "my mistake", "i was wrong",
+                        "let me fix", "that's not right",
+                    ]
+                    for marker in correction_markers:
+                        if marker in text.lower():
+                            correction_count += 1
+
+                    # Track topic keywords
+                    keywords = [
+                        "python", "javascript", "api", "database", "test",
+                        "config", "deploy", "error", "bug", "fix",
+                        "refactor", "性能", "安全", "日志", "权限",
+                    ]
+                    for kw in keywords:
+                        if kw in text.lower():
+                            topic_keywords[kw] = topic_keywords.get(kw, 0) + 1
+
+                except Exception:
+                    continue
+
+            if correction_count >= 2:
+                findings.append(
+                    f"**{correction_count} corrections** detected across {len(sampled)} "
+                    f"recent sessions. Consider consolidating correction patterns into "
+                    f"conventions."
+                )
+
+            if topic_keywords:
+                top_topics = sorted(topic_keywords.items(), key=lambda x: -x[1])[:3]
+                topic_str = ", ".join(f"`{t}`" for t, _ in top_topics)
+                findings.append(f"Most common topics: {topic_str}")
+
+            if not findings:
+                findings.append(
+                    f"Scanned {len(sampled)} recent sessions. No significant patterns "
+                    f"or repeated corrections detected."
+                )
+
+        except Exception as e:
+            logger.warning("Dream transcript scanning failed: %s", e)
+            findings.append(f"Transcript scanning encountered an error: {e}")
+
+        return findings
+
+    def _detect_contradictions(self, all_memories: list) -> list[str]:
+        """Detect potentially contradictory memories by comparing content (gap-18).
+
+        Uses simple keyword-based contradiction detection as a heuristic.
+        Full semantic contradiction detection would require LLM analysis.
+        """
+        contradictions: list[str] = []
+        if len(all_memories) < 2:
+            return contradictions
+
+        # Heuristic: check for memories with similar names but contradictory keywords
+        contradiction_pairs = {
+            ("use", "avoid"),
+            ("always", "never"),
+            ("prefer", "avoid"),
+            ("支持", "不支持"),
+            ("推荐", "避免"),
+        }
+
+        names_seen: dict[str, str] = {}  # name_lower → full_name
+        for mf, _ in all_memories:
+            name_lower = mf.name.lower()
+            if name_lower in names_seen:
+                continue
+            names_seen[name_lower] = mf.name
+
+        # Compare pairs
+        checked: set = set()
+        for i, (mf1, _) in enumerate(all_memories):
+            for mf2, _ in all_memories[i + 1:]:
+                pair_key = tuple(sorted([mf1.name, mf2.name]))
+                if pair_key in checked:
+                    continue
+                checked.add(pair_key)
+
+                text1 = mf1.content.lower()
+                text2 = mf2.content.lower()
+                for pos_word, neg_word in contradiction_pairs:
+                    if pos_word in text1 and neg_word in text2:
+                        contradictions.append(
+                            f"Potential contradiction: `{mf1.name}` uses `{pos_word}` "
+                            f"while `{mf2.name}` uses `{neg_word}`"
+                        )
+                    elif neg_word in text1 and pos_word in text2:
+                        contradictions.append(
+                            f"Potential contradiction: `{mf1.name}` uses `{neg_word}` "
+                            f"while `{mf2.name}` uses `{pos_word}`"
+                        )
+
+        return contradictions[:5]  # Limit to top 5
 
     def _load_state(self) -> dict:
         if self._state_file.exists():

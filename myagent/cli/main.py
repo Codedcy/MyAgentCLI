@@ -67,6 +67,9 @@ async def async_main(argv: list[str] | None = None) -> int:
     tool_registry = ToolRegistry()
     _register_builtin_tools(tool_registry)
 
+    # Start MCP servers and register their tools (gap-03)
+    mcp_clients = await _startup_mcp_servers(tool_registry)
+
     from myagent.permissions.controller import PermissionController
     permissions = PermissionController(
         default_mode=config.permissions.default_mode,
@@ -77,11 +80,21 @@ async def async_main(argv: list[str] | None = None) -> int:
         permissions.skip_all(True)
 
     from myagent.llm.provider import LLMProvider
-    llm = LLMProvider(config.model)
+    llm = LLMProvider(
+        config.model,
+        logging_config=config.logging,
+        retry_callback=(lambda attempt, max_r, delay:
+            status_bar.update(retry_info=f"Retry {attempt}/{max_r} ({delay:.1f}s)")
+            if status_bar else None
+        ) if status_bar else None,
+    )
 
+    from myagent.context.persistence import SessionStore
+    session_store = SessionStore()
     from myagent.subagent.pool import SubAgentPool
     subagent_pool = SubAgentPool(
         config.subagents.max_concurrent, llm=llm, tool_registry=tool_registry,
+        session_store=session_store, session=None,  # session set when REPL starts
     )
 
     from myagent.memory.store import MemoryStore
@@ -100,10 +113,24 @@ async def async_main(argv: list[str] | None = None) -> int:
     from myagent.context.compression import CompressionEngine
     compression = CompressionEngine(config=config.context.compression, llm=llm, tools_config=config.tools)
 
-    from myagent.context.persistence import SessionStore
-    session_store = SessionStore()
     from myagent.agent.session import SessionManager
     session_mgr = SessionManager(session_store, project_ctx, memory_store, permissions)
+
+    # Dream engine — construct and auto-trigger on startup (gap-04)
+    from myagent.memory.dream import DreamEngine
+    dream_engine = DreamEngine(
+        config=config.dream,
+        memory_store=memory_store,
+        state_dir=Path.home() / ".myagent",
+    )
+    # Check if dream should run
+    if dream_engine.should_run(session_mgr.estimate_total_rounds() if hasattr(session_mgr, 'estimate_total_rounds') else 0):
+        import logging as _logging
+        _log_dream = _logging.getLogger("myagent.cli")
+        _log_dream.info("Auto-triggering dream engine on startup")
+        # Run dream in background — non-blocking
+        if subagent_pool:
+            asyncio.create_task(_run_dream_background(dream_engine, session_store))
 
     from myagent.agent.goal import GoalTracker
     goal_tracker = GoalTracker(llm=llm)
@@ -129,9 +156,7 @@ async def async_main(argv: list[str] | None = None) -> int:
     # Handle one-shot commands
     if args.list_sessions:
         sessions = await session_mgr.list_sessions(project_dir)
-        print(f"Sessions for {project_dir.name}:")
-        for s in sessions:
-            print(f"  {s.session_id} — {s.first_message[:50]}...")
+        _print_sessions_rich(sessions, project_dir)
         return 0
 
     if args.session and args.export:
@@ -149,6 +174,24 @@ async def async_main(argv: list[str] | None = None) -> int:
     from myagent.cli.status import StatusBar
     status_bar = StatusBar(config.ui) if config.ui.show_status_bar else None
 
+    # Wire status bar to sub-agent pool state (gap-08)
+    if status_bar:
+        original_spawn = subagent_pool.spawn
+
+        async def _spawn_with_status(*spawn_args, **spawn_kw):
+            handle = await original_spawn(*spawn_args, **spawn_kw)
+            status_bar.update(
+                subagents_active=subagent_pool.active_count,
+                subagents_details=[
+                    f"{hid}: {h.status.value}"
+                    for hid, h in subagent_pool._agents.items()
+                    if h.status.value == "running"
+                ],
+            )
+            return handle
+
+        subagent_pool.spawn = _spawn_with_status
+
     # Start REPL
     from myagent.cli.repl import REPLEngine
 
@@ -160,6 +203,7 @@ async def async_main(argv: list[str] | None = None) -> int:
                 engine=engine, commands=commands, session_mgr=session_mgr,
                 config=config, project_dir=project_dir,
                 renderer=renderer, status_bar=status_bar,
+                dream_engine=dream_engine,
             )
             repl._current_session = session
             await repl.run()
@@ -172,6 +216,7 @@ async def async_main(argv: list[str] | None = None) -> int:
         engine=engine, commands=commands, session_mgr=session_mgr,
         config=config, project_dir=project_dir,
         renderer=renderer, status_bar=status_bar,
+        dream_engine=dream_engine,
     )
     await repl.run()
     return 0
@@ -194,6 +239,193 @@ def _register_builtin_tools(registry) -> None:
         MemoryWriteTool, WebFetchTool, WebSearchTool,
     ]:
         registry.register(tool_cls())
+
+
+async def _startup_mcp_servers(tool_registry) -> list:
+    """Read mcp.json configs and start MCP servers.
+
+    Checks user-level (~/.myagent/mcp.json) and project-level
+    (.myagent/mcp.json) configs. For each configured server, spawns
+    a subprocess via MCPClient, discovers tools, and registers them.
+    """
+    import json
+    import logging
+    _log = logging.getLogger("myagent.cli")
+
+    mcp_clients = []
+    # Priority: project-level overrides user-level for same-named servers
+    config_paths = [
+        Path.home() / ".myagent" / "mcp.json",
+        Path.cwd() / ".myagent" / "mcp.json",
+    ]
+    seen_servers: set[str] = set()
+
+    for config_path in config_paths:
+        if not config_path.exists():
+            continue
+        try:
+            data = json.loads(config_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as e:
+            _log.warning("Failed to read MCP config %s: %s", config_path, e)
+            continue
+
+        servers = data.get("servers", data) if isinstance(data, dict) else {}
+        if isinstance(servers, dict):
+            for name, server_cfg in servers.items():
+                if name in seen_servers:
+                    continue
+                seen_servers.add(name)
+                try:
+                    client = await _start_single_mcp_server(name, server_cfg, tool_registry)
+                    if client:
+                        mcp_clients.append(client)
+                except Exception as e:
+                    _log.error("Failed to start MCP server '%s': %s", name, e)
+
+        # Also support top-level array format: [{"name": "...", "command": "..."}]
+        if isinstance(data, list):
+            for server_cfg in data:
+                name = server_cfg.get("name", server_cfg.get("command", "unknown"))
+                if name in seen_servers:
+                    continue
+                seen_servers.add(name)
+                try:
+                    client = await _start_single_mcp_server(name, server_cfg, tool_registry)
+                    if client:
+                        mcp_clients.append(client)
+                except Exception as e:
+                    _log.error("Failed to start MCP server '%s': %s", name, e)
+
+    return mcp_clients
+
+
+async def _start_single_mcp_server(name: str, cfg: dict, tool_registry):
+    """Start one MCP server and register its tools."""
+    import logging
+    _log = logging.getLogger("myagent.cli")
+
+    from myagent.tools.mcp.client import MCPClient
+    from myagent.tools.mcp.adapter import MCPToolAdapter
+
+    command = cfg.get("command")
+    if not command:
+        _log.warning("MCP server '%s' has no command — skipping", name)
+        return None
+
+    args = cfg.get("args", [])
+    env = cfg.get("env", {})
+    disabled = cfg.get("disabled", False)
+    if disabled:
+        _log.info("MCP server '%s' is disabled — skipping", name)
+        return None
+
+    client = MCPClient(command=command, args=args, env=env)
+    try:
+        await client.start()
+    except Exception as e:
+        _log.error("MCP server '%s' failed to start: %s", name, e)
+        return None
+
+    try:
+        raw_tools = await client.list_tools()
+        for raw_tool in raw_tools:
+            adapter = MCPToolAdapter(
+                {"name": raw_tool.name, "description": raw_tool.description,
+                 "inputSchema": raw_tool.inputSchema},
+                client,
+            )
+            tool_registry.register(adapter, source="mcp")
+            _log.info("Registered MCP tool: %s (from %s)", raw_tool.name, name)
+
+        # Also list and log resources
+        try:
+            resources = await client.list_resources()
+            _log.info("MCP server '%s' provides %d resources", name, len(resources))
+        except Exception:
+            pass
+
+        _log.info("MCP server '%s' started with %d tools", name, len(raw_tools))
+    except Exception as e:
+        _log.error("MCP server '%s' failed to list tools: %s", name, e)
+        try:
+            await client.shutdown()
+        except Exception:
+            pass
+        return None
+
+    return client
+
+
+def _print_sessions_rich(sessions, project_dir) -> None:
+    """Rich-formatted session listing with status icons, duration, tokens (gap-22)."""
+    if not sessions:
+        print(f"No sessions found for {project_dir.name}.")
+        return
+    try:
+        from rich.console import Console
+        from rich.table import Table
+        console = Console()
+        table = Table(title=f"Sessions for {project_dir.name}")
+        table.add_column("Session ID", style="cyan", no_wrap=True)
+        table.add_column("Status", style="bold")
+        table.add_column("First Message")
+        table.add_column("Duration")
+        table.add_column("Tokens")
+        table.add_column("Goal")
+
+        for s in sessions:
+            # Status icon
+            if s.goal_achieved is True:
+                status = "[green]✓[/green]"
+            elif s.goal_achieved is False:
+                status = "[yellow]✗[/yellow]"
+            else:
+                status = "[dim]—[/dim]"
+
+            # Duration formatting
+            if s.duration > 0:
+                mins = int(s.duration // 60)
+                secs = int(s.duration % 60)
+                if mins > 0:
+                    dur = f"{mins}m {secs}s"
+                else:
+                    dur = f"{secs}s"
+            else:
+                dur = "—"
+
+            # Goal status
+            goal_text = "[green]achieved[/green]" if s.goal_achieved else ("[yellow]incomplete[/yellow]" if s.goal_achieved is False else "[dim]no goal[/dim]")
+
+            table.add_row(
+                s.session_id,
+                status,
+                s.first_message[:60] + ("..." if len(s.first_message) > 60 else ""),
+                dur,
+                str(s.total_tokens),
+                goal_text,
+            )
+        console.print(table)
+    except ImportError:
+        # Fallback plain text
+        print(f"Sessions for {project_dir.name}:")
+        for s in sessions:
+            status_icon = "✓" if s.goal_achieved else ("✗" if s.goal_achieved is False else "-")
+            print(f"  {status_icon} {s.session_id} — {s.first_message[:50]}...")
+
+
+async def _run_dream_background(dream_engine, session_store=None) -> None:
+    """Run dream engine in background without blocking startup."""
+    import logging as _logging
+    _log = _logging.getLogger("myagent.cli")
+    try:
+        result = await dream_engine.run(session_store=session_store)
+        _log.info(
+            "Dream completed: created=%d updated=%d deleted=%d log=%s",
+            result.memories_created, result.memories_updated,
+            result.memories_deleted, result.log_path,
+        )
+    except Exception as e:
+        _log.error("Background dream failed: %s", e)
 
 
 def main() -> None:

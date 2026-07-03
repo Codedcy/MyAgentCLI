@@ -172,11 +172,115 @@ class SessionStore:
     async def export_session(
         self, project_name: str, project_hash: str, session_id: str, fmt: str = "markdown"
     ) -> Path:
+        """Generate a self-contained export file for the session (gap-29).
+
+        Creates a standalone Markdown file with full conversation, tool
+        calls, and summaries. Writes to the export/ subdirectory.
+        """
         sess_dir = self._session_dir(project_name, project_hash, session_id)
+        export_dir = sess_dir / "export"
+        export_dir.mkdir(parents=True, exist_ok=True)
+
         if fmt == "markdown":
-            md_path = sess_dir / "transcript.md"
-            if md_path.exists():
-                return md_path
+            export_path = export_dir / f"{session_id}-export.md"
+            ts_path = sess_dir / "transcript.json"
+            if not ts_path.exists():
+                # Fall back to basic export
+                export_path.write_text(
+                    f"# Session Export: {session_id}\n\n"
+                    f"No transcript data available.\n",
+                    encoding="utf-8",
+                )
+                return export_path
+
+            data = json.loads(ts_path.read_text(encoding="utf-8"))
+            lines = [
+                f"# Session Export: {session_id}",
+                f"Project: {data.get('project_name', 'unknown')}",
+                f"Created: {data.get('created_at', 'unknown')}",
+                f"Duration: {data.get('duration', 0):.0f}s",
+                f"Total Tokens: {data.get('total_tokens', 0)}",
+                f"Goal: {data.get('goal', 'None')}",
+                f"Goal Achieved: {data.get('goal_achieved', 'N/A')}",
+                "",
+                "---",
+                "",
+                "## Conversation",
+                "",
+            ]
+
+            # Include full messages (truncated at 10000 chars each)
+            for m in data.get("messages", []):
+                role = m.get("role", "unknown").upper()
+                content = m.get("content", "")
+                timestamp = m.get("timestamp", "")
+                lines.append(f"### [{role}] {timestamp}")
+                lines.append("")
+                # Truncate very long tool results but keep substantial content
+                if len(content) > 10000:
+                    lines.append(content[:10000])
+                    lines.append(f"\n... (truncated, {len(content) - 10000} more chars)")
+                else:
+                    lines.append(content)
+                lines.append("")
+
+            # Include tool calls if available
+            tools_dir = sess_dir / "tools"
+            if tools_dir.exists():
+                tool_files = sorted(tools_dir.glob("call-*.json"))
+                if tool_files:
+                    lines.append("---")
+                    lines.append("")
+                    lines.append("## Tool Calls")
+                    lines.append("")
+                    for tf in tool_files:
+                        try:
+                            tc = json.loads(tf.read_text(encoding="utf-8"))
+                            lines.append(f"- **{tc.get('tool_name', 'unknown')}** "
+                                       f"({tc.get('timestamp', '')})")
+                            lines.append(f"  Result: {str(tc.get('result', ''))[:500]}")
+                            lines.append("")
+                        except Exception:
+                            pass
+
+            # Include summaries
+            summaries_dir = sess_dir / "summaries"
+            if summaries_dir.exists():
+                summary_files = sorted(summaries_dir.glob("compact-*.md"))
+                if summary_files:
+                    lines.append("---")
+                    lines.append("")
+                    lines.append("## Context Summaries")
+                    lines.append("")
+                    for sf in summary_files:
+                        lines.append(sf.read_text(encoding="utf-8")[:5000])
+                        lines.append("")
+
+            export_path.write_text("\n".join(lines), encoding="utf-8")
+            return export_path
+
+        # JSON export: include full transcript + tool calls + summaries
+        export_path = export_dir / f"{session_id}-export.json"
+        ts_path = sess_dir / "transcript.json"
+        if ts_path.exists():
+            export_data = json.loads(ts_path.read_text(encoding="utf-8"))
+            # Include tool calls
+            tools_dir = sess_dir / "tools"
+            if tools_dir.exists():
+                export_data["tool_calls"] = []
+                for tf in sorted(tools_dir.glob("call-*.json")):
+                    try:
+                        export_data["tool_calls"].append(
+                            json.loads(tf.read_text(encoding="utf-8"))
+                        )
+                    except Exception:
+                        pass
+            export_path.write_text(
+                json.dumps(export_data, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            return export_path
+
         return sess_dir / "transcript.json"
 
     def _write_transcripts(self, sess_dir: Path, session: Session) -> None:
