@@ -299,16 +299,31 @@ class REPLEngine:
 
             while self._running:
                 try:
-                    user_input = await session.prompt_async("myagent> ")
+                    # Stop Rich Live display so prompt_toolkit can take full
+                    # control of the terminal for input. The Live refresh loop
+                    # (4 FPS) otherwise conflicts with prompt_toolkit rendering.
+                    if self._live:
+                        self._live.stop()
+                    try:
+                        user_input = await session.prompt_async("myagent> ")
+                    finally:
+                        if self._live:
+                            self._live.start()
                 except KeyboardInterrupt:
                     # This is a fallback — the key binding handles most Ctrl+C cases.
                     # If KeyboardInterrupt still fires (e.g. during prompt_toolkit init),
                     # show the exit confirmation.
                     self._console.print()
                     try:
-                        confirm = await session.prompt_async(
-                            "Exit? (y/n) ", multiline=False
-                        )
+                        if self._live:
+                            self._live.stop()
+                        try:
+                            confirm = await session.prompt_async(
+                                "Exit? (y/n) ", multiline=False
+                            )
+                        finally:
+                            if self._live:
+                                self._live.start()
                         if confirm.strip().lower() in ("y", "yes"):
                             self._console.print()
                             break
@@ -324,9 +339,15 @@ class REPLEngine:
                 if user_input is self._SENTINEL_CTRL_C:
                     self._console.print()
                     try:
-                        confirm = await session.prompt_async(
-                            "Exit? (y/n) ", multiline=False
-                        )
+                        if self._live:
+                            self._live.stop()
+                        try:
+                            confirm = await session.prompt_async(
+                                "Exit? (y/n) ", multiline=False
+                            )
+                        finally:
+                            if self._live:
+                                self._live.start()
                         if confirm.strip().lower() in ("y", "yes"):
                             self._console.print()
                             break
