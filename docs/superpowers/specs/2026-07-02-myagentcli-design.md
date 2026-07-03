@@ -444,7 +444,7 @@ sequenceDiagram
 
 | Level | 描述 | 包含工具 | 默认行为 |
 |-------|------|---------|---------|
-| 0 | 只读 | read, glob, grep, web_fetch, web_search, task_create, task_update | 自动放行 |
+| 0 | 只读 | read, glob, grep, web_fetch, web_search, task_create, task_update, send_message | 自动放行 |
 | 1 | 写入 | write, edit, memory_write | 需确认 |
 | 2 | 执行 | bash, spawn_subagent | 需确认 |
 | 3 | 网络写入 | 任何修改外部系统的 MCP 工具 | 需显式允许 |
