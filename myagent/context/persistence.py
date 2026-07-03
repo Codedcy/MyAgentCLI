@@ -53,8 +53,9 @@ class SessionSummary:
 
 
 class SessionStore:
-    def __init__(self, base_dir: Path | None = None):
+    def __init__(self, base_dir: Path | None = None, config=None):
         self.base_dir = base_dir or Path.home() / ".myagent" / "sessions"
+        self._config = config
 
     def _session_dir(self, project_name: str, project_hash: str, session_id: str) -> Path:
         return self.base_dir / project_name / project_hash / session_id
@@ -301,68 +302,75 @@ class SessionStore:
         state including the resolved goal_achieved value and a closed_at
         timestamp so session listings can distinguish active vs closed.
         """
+        # G1: Gate on save_transcripts config
+        if not self._should_save_transcripts():
+            return
+
         import time
         closed_at = session.updated_at.isoformat() if hasattr(session, 'updated_at') else datetime.now().isoformat()
 
-        ts = sess_dir / "transcript.json"
-        # Read existing transcript data to update
-        existing = {}
-        if ts.exists():
-            try:
-                existing = json.loads(ts.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
-                existing = {}
-
-        # Write updated transcript with closed marker
-        updated = {
-            **existing,
-            "session_id": session.id,
-            "project_name": session.project_name,
-            "project_hash": session.project_hash,
-            "updated_at": closed_at,
-            "goal": session.goal,
-            "goal_achieved": session.goal_achieved,
-            "total_tokens": session.total_tokens,
-            "turn_count": session.turn_count,
-            "closed": True,
-            "closed_at": closed_at,
-        }
-        # Update first_message and duration if they existed
-        if session._messages:
-            updated["first_message"] = session._messages[0].content[:100]
-            if "created_at" in existing:
+        # G2: Only write JSON if configured
+        if self._should_write_format("json"):
+            ts = sess_dir / "transcript.json"
+            # Read existing transcript data to update
+            existing = {}
+            if ts.exists():
                 try:
-                    from datetime import datetime as dt
-                    created = dt.fromisoformat(existing["created_at"])
-                    updated["duration"] = (
-                        dt.fromisoformat(closed_at) - created
-                    ).total_seconds()
-                except Exception:
-                    updated["duration"] = existing.get("duration", 0)
+                    existing = json.loads(ts.read_text(encoding="utf-8"))
+                except (json.JSONDecodeError, OSError):
+                    existing = {}
 
-        ts.write_text(
-            json.dumps(updated, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+            # Write updated transcript with closed marker
+            updated = {
+                **existing,
+                "session_id": session.id,
+                "project_name": session.project_name,
+                "project_hash": session.project_hash,
+                "updated_at": closed_at,
+                "goal": session.goal,
+                "goal_achieved": session.goal_achieved,
+                "total_tokens": session.total_tokens,
+                "turn_count": session.turn_count,
+                "closed": True,
+                "closed_at": closed_at,
+            }
+            # Update first_message and duration if they existed
+            if session._messages:
+                updated["first_message"] = session._messages[0].content[:100]
+                if "created_at" in existing:
+                    try:
+                        from datetime import datetime as dt
+                        created = dt.fromisoformat(existing["created_at"])
+                        updated["duration"] = (
+                            dt.fromisoformat(closed_at) - created
+                        ).total_seconds()
+                    except Exception:
+                        updated["duration"] = existing.get("duration", 0)
 
-        # Update Markdown transcript with closed marker
-        md = sess_dir / "transcript.md"
-        lines = [
-            f"# Session: {session.id} [CLOSED]",
-            f"Project: {session.project_name}",
-            f"Closed at: {closed_at}",
-            f"Goal: {session.goal or 'None'}",
-            f"Goal Achieved: {session.goal_achieved}",
-            "",
-        ]
-        for i, m in enumerate(session._messages):
-            lines.append(f"### {m.role}")
-            full_content = m.content or ""
-            lines.append(self._persist_message_content(
-                sess_dir, i + 1, m.role, full_content
-            ))
-            lines.append("")
-        md.write_text("\n".join(lines), encoding="utf-8")
+            ts.write_text(
+                json.dumps(updated, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
+        # G2: Only write Markdown if configured
+        if self._should_write_format("markdown"):
+            md = sess_dir / "transcript.md"
+            lines = [
+                f"# Session: {session.id} [CLOSED]",
+                f"Project: {session.project_name}",
+                f"Closed at: {closed_at}",
+                f"Goal: {session.goal or 'None'}",
+                f"Goal Achieved: {session.goal_achieved}",
+                "",
+            ]
+            for i, m in enumerate(session._messages):
+                lines.append(f"### {m.role}")
+                full_content = m.content or ""
+                lines.append(self._persist_message_content(
+                    sess_dir, i + 1, m.role, full_content
+                ))
+                lines.append("")
+            md.write_text("\n".join(lines), encoding="utf-8")
 
     # Threshold: messages longer than this are stored in a separate reference
     # file to keep the main transcript manageable. Shorter messages are stored
@@ -403,54 +411,79 @@ class SessionStore:
             f"long-messages/msg-{msg_index:03d}.json)"
         )
 
+    def _should_save_transcripts(self) -> bool:
+        """Check config to determine if transcripts should be saved."""
+        if self._config is None:
+            return True  # No config means default behavior
+        session_cfg = getattr(self._config, "session", None)
+        if session_cfg is None:
+            return True
+        return getattr(session_cfg, "save_transcripts", True)
+
+    def _should_write_format(self, fmt: str) -> bool:
+        """Check if a specific transcript format should be written."""
+        if self._config is None:
+            return True
+        session_cfg = getattr(self._config, "session", None)
+        if session_cfg is None:
+            return True
+        transcript_format = getattr(session_cfg, "transcript_format", ["json", "markdown"])
+        return fmt in transcript_format
+
     def _write_transcripts(self, sess_dir: Path, session: Session) -> None:
+        # G1/G2: Gate on config save_transcripts and transcript_format
+        if not self._should_save_transcripts():
+            return
+
         # JSON — save ALL messages with full content (gap-r6-04: no truncation)
-        ts = sess_dir / "transcript.json"
-        messages_data = []
-        for i, m in enumerate(session._messages):
-            full_content = m.content or ""
-            messages_data.append({
-                "role": m.role,
-                "content": self._persist_message_content(
-                    sess_dir, i + 1, m.role, full_content
-                ),
-                "timestamp": m.timestamp.isoformat(),
-            })
-        ts.write_text(
-            json.dumps(
-                {
-                    "session_id": session.id,
-                    "project_name": session.project_name,
-                    "project_hash": session.project_hash,
-                    "created_at": session.created_at.isoformat(),
-                    "updated_at": session.updated_at.isoformat(),
-                    "goal": session.goal,
-                    "goal_achieved": session.goal_achieved,
-                    "total_tokens": session.total_tokens,
-                    "turn_count": session.turn_count,
-                    "first_message": session._messages[0].content[:100] if session._messages else "",
-                    "duration": 0,
-                    "messages": messages_data,
-                },
-                ensure_ascii=False,
-                indent=2,
+        if self._should_write_format("json"):
+            ts = sess_dir / "transcript.json"
+            messages_data = []
+            for i, m in enumerate(session._messages):
+                full_content = m.content or ""
+                messages_data.append({
+                    "role": m.role,
+                    "content": self._persist_message_content(
+                        sess_dir, i + 1, m.role, full_content
+                    ),
+                    "timestamp": m.timestamp.isoformat(),
+                })
+            ts.write_text(
+                json.dumps(
+                    {
+                        "session_id": session.id,
+                        "project_name": session.project_name,
+                        "project_hash": session.project_hash,
+                        "created_at": session.created_at.isoformat(),
+                        "updated_at": session.updated_at.isoformat(),
+                        "goal": session.goal,
+                        "goal_achieved": session.goal_achieved,
+                        "total_tokens": session.total_tokens,
+                        "turn_count": session.turn_count,
+                        "first_message": session._messages[0].content[:100] if session._messages else "",
+                        "duration": 0,
+                        "messages": messages_data,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
             )
-        )
 
         # Markdown — save ALL messages with full content
-        md = sess_dir / "transcript.md"
-        lines = [
-            f"# Session: {session.id}",
-            f"Project: {session.project_name}",
-            f"Created: {session.created_at.isoformat()}",
-            f"Goal: {session.goal or 'None'}",
-            "",
-        ]
-        for i, m in enumerate(session._messages):
-            lines.append(f"### {m.role}")
-            full_content = m.content or ""
-            lines.append(self._persist_message_content(
-                sess_dir, i + 1, m.role, full_content
-            ))
-            lines.append("")
-        md.write_text("\n".join(lines), encoding="utf-8")
+        if self._should_write_format("markdown"):
+            md = sess_dir / "transcript.md"
+            lines = [
+                f"# Session: {session.id}",
+                f"Project: {session.project_name}",
+                f"Created: {session.created_at.isoformat()}",
+                f"Goal: {session.goal or 'None'}",
+                "",
+            ]
+            for i, m in enumerate(session._messages):
+                lines.append(f"### {m.role}")
+                full_content = m.content or ""
+                lines.append(self._persist_message_content(
+                    sess_dir, i + 1, m.role, full_content
+                ))
+                lines.append("")
+            md.write_text("\n".join(lines), encoding="utf-8")
