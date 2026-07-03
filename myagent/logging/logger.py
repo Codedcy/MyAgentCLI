@@ -132,14 +132,40 @@ class LogManager:
         _root_logger = root
         _initialized = True
 
-        # Log startup
+        # Log startup with metadata (gap-2-12)
         if session_id:
             from myagent.logging.context import set_context
             set_context(session_id=session_id)
 
+        # Compute startup metadata
+        import hashlib, json, platform, sys
+        config_hash = ""
+        python_version = sys.version
+        platform_info = platform.platform()
+        try:
+            if config and hasattr(config, '__dict__'):
+                # Use a stable serialization for hashing
+                config_dict = {
+                    k: v for k, v in config.__dict__.items()
+                    if not k.startswith('_')
+                }
+                config_hash = hashlib.sha256(
+                    json.dumps(config_dict, sort_keys=True, default=str).encode()
+                ).hexdigest()[:12]
+        except Exception:
+            config_hash = "unknown"
+
         root.info(
             "Logging initialized",
-            extra={"extra_fields": {"category": LOG_SYSTEM, "event": "startup"}},
+            extra={
+                "extra_fields": {
+                    "category": LOG_SYSTEM,
+                    "event": "startup",
+                    "config_hash": config_hash,
+                    "python_version": python_version,
+                    "platform": platform_info,
+                },
+            },
         )
 
     @staticmethod
