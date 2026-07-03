@@ -73,6 +73,9 @@ class SlashCompleter:
 class REPLEngine:
     """Interactive REPL using prompt_toolkit."""
 
+    # Sentinel object for Ctrl+C exit flow (gap-8-05)
+    _SENTINEL_CTRL_C = object()
+
     def __init__(
         self,
         engine=None,
@@ -182,8 +185,10 @@ class REPLEngine:
                     engine_task.cancel()
                     event.app.current_buffer.reset()
                     return
-                buffer = event.app.current_buffer
-                buffer.reset()
+                # Idle — trigger exit confirmation flow (gap-8-05)
+                # Use app.exit() with sentinel to break out of prompt_async
+                # so the main loop can show "Exit? (y/n)" confirmation
+                event.app.exit(result=self._SENTINEL_CTRL_C)
 
             # Build completer (gap-2-05)
             skill_registry = (
@@ -202,7 +207,9 @@ class REPLEngine:
                 try:
                     user_input = await session.prompt_async("myagent> ")
                 except KeyboardInterrupt:
-                    # Ctrl+C in idle: ask "Exit? (y/n)"
+                    # This is a fallback — the key binding handles most Ctrl+C cases.
+                    # If KeyboardInterrupt still fires (e.g. during prompt_toolkit init),
+                    # show the exit confirmation.
                     self._console.print()
                     try:
                         confirm = await session.prompt_async(
@@ -218,6 +225,21 @@ class REPLEngine:
                 except EOFError:
                     self._console.print()
                     break
+
+                # gap-8-05: Ctrl+C on idle — key binding returns sentinel
+                if user_input is self._SENTINEL_CTRL_C:
+                    self._console.print()
+                    try:
+                        confirm = await session.prompt_async(
+                            "Exit? (y/n) ", multiline=False
+                        )
+                        if confirm.strip().lower() in ("y", "yes"):
+                            self._console.print()
+                            break
+                        continue
+                    except (EOFError, KeyboardInterrupt):
+                        self._console.print()
+                        break
 
                 user_input = user_input.strip()
                 if not user_input:

@@ -97,9 +97,7 @@ async def async_main(argv: list[str] | None = None) -> int:
     from myagent.context.persistence import SessionStore
     # G4: respect config.session.sessions_dir; resolve ~ and expand env vars
     sessions_dir_raw = config.session.sessions_dir
-    sessions_dir = Path(
-        sessions_dir_raw.replace("~", str(Path.home()))
-    ) if sessions_dir_raw else None
+    sessions_dir = Path(sessions_dir_raw).expanduser() if sessions_dir_raw else None
     session_store = SessionStore(base_dir=sessions_dir)
     from myagent.subagent.pool import SubAgentPool
     subagent_pool = SubAgentPool(
@@ -201,11 +199,18 @@ async def async_main(argv: list[str] | None = None) -> int:
             for hid, h in pool._agents.items():
                 task_name = pool._task_names.get(hid, hid)
                 if h.status.value in ("running", "created"):
+                    # gap-8-06: compute real progress from worker iteration
+                    progress_pct = 0.0
+                    pi = getattr(h, '_progress_iter', None)
+                    if pi:
+                        cur, max_i = pi
+                        if max_i > 0:
+                            progress_pct = (cur / max_i) * 100.0
                     details.append(SubAgentInfo(
                         agent_id=hid,
                         task_name=task_name,
                         status="running",
-                        progress_pct=0.0,
+                        progress_pct=progress_pct,
                     ))
                 elif h.status.value == "completed":
                     result = h._result_data
@@ -314,12 +319,14 @@ def _register_builtin_tools(registry) -> None:
     from myagent.tools.builtin.session_tools import TaskCreateTool, TaskUpdateTool
     from myagent.tools.builtin.memory_tools import MemoryWriteTool
     from myagent.tools.builtin.web_tools import WebFetchTool, WebSearchTool
+    from myagent.tools.builtin.config_tools import ConfigSetTool
     for tool_cls in [
         ReadTool, WriteTool, EditTool, GlobTool,
         GrepTool, BashTool,
         SpawnSubagentTool, SendMessageTool,
         TaskCreateTool, TaskUpdateTool,
         MemoryWriteTool, WebFetchTool, WebSearchTool,
+        ConfigSetTool,
     ]:
         registry.register(tool_cls())
 

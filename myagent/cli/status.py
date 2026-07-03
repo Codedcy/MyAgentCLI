@@ -69,6 +69,11 @@ class StatusBar:
 
         lines = ["  ".join(items)]
 
+        # Retry progress display (gap-8-07)
+        retry_info = self._data.get("retry_info")
+        if retry_info:
+            lines.append(f"  🔄 {retry_info}")
+
         # Sub-agent detail lines (gap-2-08)
         details = self._data.get("subagents_details", [])
         for info in details:
