@@ -169,9 +169,9 @@ class GrepTool:
         elif output_mode == "count":
             cmd.append("--count")
 
-        if "head_limit" in params and params["head_limit"]:
-            cmd.extend(["-m", str(params["head_limit"])])
-
+        # NOTE: We intentionally do NOT use rg's -m flag for head_limit
+        # because -m limits matches per-file, not globally. Instead, we
+        # post-process the combined output to apply a global head_limit.
         for flag in ("-A", "-B", "-C"):
             if flag in params:
                 cmd.extend([flag, str(params[flag])])
@@ -210,11 +210,19 @@ class GrepTool:
                 )
             output = stdout.decode("utf-8", errors="replace").strip() or "(no matches)"
 
-            # Apply offset (post-process for rg since it has no native --offset)
+            # Apply offset and head_limit as global post-processing
+            # (rg's -m flag is per-file, not global, so we handle the limit here)
+            lines = output.split("\n")
             offset = params.get("offset", 0)
+            head_limit = params.get("head_limit")
+
             if offset and offset > 0:
-                lines = output.split("\n")
-                output = "\n".join(lines[offset:]) or "(no matches)"
+                lines = lines[offset:]
+
+            if head_limit and len(lines) > head_limit:
+                lines = lines[:head_limit]
+
+            output = "\n".join(lines) or "(no matches)"
 
             return ToolResult(
                 output=output,
