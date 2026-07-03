@@ -13,6 +13,7 @@ import logging
 import logging.handlers
 import os
 import time
+from datetime import datetime
 from pathlib import Path
 from queue import Queue
 from typing import TYPE_CHECKING
@@ -41,6 +42,80 @@ def get_logger(name: str) -> logging.Logger:
     Equivalent to logging.getLogger(f"myagent.{name}").
     """
     return logging.getLogger(f"myagent.{name}")
+
+
+class TimedSizeRotatingFileHandler(logging.handlers.RotatingFileHandler):
+    """Combined time-based (midnight) + size-based file rotation handler.
+
+    Design doc §十一 specifies TimedRotatingFileHandler (daily) +
+    RotatingFileHandler (size). This class subclasses RotatingFileHandler
+    and adds midnight rollover by checking the date on each emit and
+    recomputing the filename pattern when the day changes (gap-09).
+    """
+
+    def __init__(
+        self,
+        filename: str,
+        max_bytes: int = 0,
+        backup_count: int = 0,
+        encoding: str = "utf-8",
+        delay: bool = True,
+    ):
+        self._base_pattern = filename
+        self._max_bytes = max_bytes
+        self._backup_count = backup_count
+        self._encoding = encoding
+        self._delay = delay
+        self._current_date = datetime.now().strftime("%Y-%m-%d")
+        # Compute the actual filename with today's date
+        self._last_base = ""
+        actual_filename = self._compute_filename()
+        super().__init__(
+            filename=actual_filename,
+            maxBytes=max_bytes,
+            backupCount=backup_count,
+            encoding=encoding,
+            delay=delay,
+        )
+
+    def emit(self, record: logging.LogRecord) -> None:
+        """Check for date change before emitting. If midnight has passed,
+        close the current file and open a new one with the new date.
+        """
+        today = datetime.now().strftime("%Y-%m-%d")
+        if today != self._current_date:
+            self._current_date = today
+            new_filename = self._compute_filename()
+            self._do_date_rollover(new_filename)
+        super().emit(record)
+
+    def _compute_filename(self) -> str:
+        """Substitute the date placeholder in the base pattern."""
+        from datetime import datetime as _dt
+        today = _dt.now().strftime("%Y-%m-%d")
+        # Replace date in the filename if it follows the pattern myagent-YYYY-MM-DD
+        import re
+        pattern = r"myagent-\d{4}-\d{2}-\d{2}"
+        if re.search(pattern, self._base_pattern):
+            self._last_base = re.sub(pattern, f"myagent-{today}", self._base_pattern)
+            return self._last_base
+        # Fallback: insert date before extension
+        if "." in self._base_pattern:
+            base, ext = self._base_pattern.rsplit(".", 1)
+            self._last_base = f"{base}-{today}.{ext}"
+        else:
+            self._last_base = f"{self._base_pattern}-{today}"
+        return self._last_base
+
+    def _do_date_rollover(self, new_filename: str) -> None:
+        """Close current file stream and reopen with the new date-based name."""
+        try:
+            if self.stream:
+                self.stream.close()
+        except Exception:
+            pass
+        self.baseFilename = new_filename
+        self.stream = self._open()
 
 
 class LogManager:
@@ -85,7 +160,6 @@ class LogManager:
         size_backup_count = max(config.retention_days, 5)
 
         # Date stamp for daily rotation (gap-09)
-        from datetime import datetime
         date_str = datetime.now().strftime("%Y-%m-%d")
 
         # Build handlers
@@ -202,27 +276,16 @@ class LogManager:
     @staticmethod
     def _make_rotating_handler(
         filename: str, max_bytes: int, backup_count: int
-    ) -> logging.handlers.RotatingFileHandler:
-        """Create a RotatingFileHandler with size-based rotation.
+    ) -> "TimedSizeRotatingFileHandler":
+        """Create a TimedSizeRotatingFileHandler with time + size-based rotation.
 
-        Rotates when the file reaches max_bytes, keeping up to backup_count
-        old files.
+        Combines TimedRotatingFileHandler (midnight rollover) with
+        RotatingFileHandler (size-based rollover) as specified in the
+        design doc §十一 日志系统 (gap-09).
         """
-        return logging.handlers.RotatingFileHandler(
+        return TimedSizeRotatingFileHandler(
             filename=filename,
-            maxBytes=max_bytes,
-            backupCount=backup_count,
-            encoding="utf-8",
-            delay=True,
+            max_bytes=max_bytes,
+            backup_count=backup_count,
         )
 
-    @staticmethod
-    def _rotated_filename(default_name: str) -> str:
-        """Insert date suffix for rotated files."""
-        from datetime import datetime
-
-        base = default_name.rsplit(".", 1)
-        date_str = datetime.now().strftime("%Y-%m-%d")
-        if len(base) == 2:
-            return f"{base[0]}-{date_str}.{base[1]}"
-        return f"{default_name}-{date_str}"
