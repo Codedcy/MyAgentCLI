@@ -203,7 +203,11 @@ async def async_main(argv: list[str] | None = None) -> int:
             """
             details = []
             for hid, h in pool._agents.items():
-                task_name = pool._task_names.get(hid, hid)
+                # gap-19-08: Gracefully handle missing task names. The name is
+                # stored immediately after spawn returns (synchronously, before
+                # any callback can fire for that agent). If a name is missing,
+                # fall back to the agent ID as a display label.
+                task_name = pool._task_names.get(hid, hid[:12] + ".." if len(hid) > 14 else hid)
                 if h.status.value in ("running", "created"):
                     # gap-8-06: compute real progress from worker iteration
                     progress_pct = 0.0
@@ -280,7 +284,14 @@ async def async_main(argv: list[str] | None = None) -> int:
         async def _spawn_with_task_name(*spawn_args, **spawn_kw):
             prompt = spawn_kw.get("prompt", spawn_args[0] if spawn_args else "")
             handle = await _original_spawn(*spawn_args, **spawn_kw)
-            # Store task name for use in lifecycle callbacks
+            # gap-19-08: Store task name AFTER _original_spawn returns.
+            # This is safe because _original_spawn returns immediately for
+            # background tasks (it creates the asyncio.Task and returns the
+            # handle). The callback that reads _task_names fires asynchronously
+            # when the task actually completes, which happens well after this
+            # point. If a name is missing (e.g., the callback fires before this
+            # line due to a synchronous edge case), the callback gracefully
+            # falls back to displaying the agent ID.
             subagent_pool._task_names[handle.id] = _extract_task_name(prompt)
             # Fire initial spawn notification via the same callback
             await _on_subagent_status_change(
@@ -462,24 +473,24 @@ async def _start_single_mcp_server(name: str, cfg: dict, tool_registry):
             tool_registry.register(adapter, source="mcp")
             _log.info("Registered MCP tool: %s (from %s)", raw_tool.name, name)
 
-        # Also list and store resources and prompts (G10: integrate into context)
-        try:
-            resources = await client.list_resources()
-            if resources:
-                tool_registry.mcp_resources.extend(resources)
-                _log.info("MCP server '%s' provides %d resources", name, len(resources))
-        except Exception:
-            pass
+        # gap-19-10: Discover MCP resources and prompts with proper error
+        # differentiation. The MCPClient methods now distinguish between
+        # "method not supported" (logged at DEBUG) and genuine failures
+        # (logged at WARNING) internally. We simply call them and collect
+        # results — empty lists mean the capability is not available.
+        resources = await client.list_resources()
+        if resources:
+            tool_registry.mcp_resources.extend(resources)
+            _log.info("MCP server '%s' provides %d resources", name, len(resources))
+        else:
+            _log.debug("MCP server '%s' provides no resources", name)
 
-        try:
-            prompts = await client.list_prompts()
-            if prompts:
-                tool_registry.mcp_prompts.extend(prompts)
-                _log.info("MCP server '%s' provides %d prompts", name, len(prompts))
-            else:
-                _log.debug("MCP server '%s' provides no prompts", name)
-        except Exception:
-            pass
+        prompts = await client.list_prompts()
+        if prompts:
+            tool_registry.mcp_prompts.extend(prompts)
+            _log.info("MCP server '%s' provides %d prompts", name, len(prompts))
+        else:
+            _log.debug("MCP server '%s' provides no prompts", name)
 
         _log.info("MCP server '%s' started with %d tools", name, len(raw_tools))
     except Exception as e:
