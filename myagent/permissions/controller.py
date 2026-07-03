@@ -90,25 +90,97 @@ class PermissionController:
     def apply_runtime_rule(self, rule: str) -> None:
         """Parse natural-language rule into allow/deny lists.
 
-        Examples:
+        Supports atomic patterns:
             "git *" → auto_allow.commands: ["git *"]
             "allow all" → set_mode("allow_all")
+
+        Supports compound patterns (spec §五 对话内调整):
+            "除了 rm -rf 之外都放行" → allow_all + auto_deny: ["rm -rf"]
+            "allow all except X" → allow_all + auto_deny: [X]
+            "allow everything except X and Y" → allow_all + auto_deny: [X, Y]
         """
-        rule = rule.strip().lower()
-        change = {"rule": rule, "timestamp": time.time(), "action": "unknown"}
-        if rule in ("allow all", "allow everything", "全部放行"):
+        import re
+
+        rule_stripped = rule.strip()
+        change: dict = {"rule": rule_stripped, "timestamp": time.time(), "action": "unknown"}
+
+        # ── Check compound patterns first: "allow all except X" ──
+        compound_result = self._try_parse_compound_rule(rule_stripped)
+        if compound_result is not None:
+            exceptions, action_desc = compound_result
+            self.set_mode("allow_all")
+            for exc in exceptions:
+                self.auto_deny.commands.append(exc.lower())
+            change["action"] = "compound_allow_all_except"
+            change["exceptions"] = exceptions
+            self._runtime_changes.append(change)
+            return
+
+        rule_lower = rule_stripped.lower()
+
+        if rule_lower in ("allow all", "allow everything", "全部放行"):
             self.set_mode("allow_all")
             change["action"] = "set_mode_allow_all"
-        elif rule.startswith("deny "):
-            denied = rule[5:]
+        elif rule_lower.startswith("deny "):
+            denied = rule_lower[5:]
             self.auto_deny.commands.append(denied)
             change["action"] = "add_deny"
             change["denied"] = denied
         else:
-            self.auto_allow.commands.append(rule)
+            self.auto_allow.commands.append(rule_lower)
             change["action"] = "add_allow"
-            change["allowed"] = rule
+            change["allowed"] = rule_lower
         self._runtime_changes.append(change)
+
+    @staticmethod
+    def _try_parse_compound_rule(rule: str) -> tuple[list[str], str] | None:
+        """Try to parse a compound "allow all except X" pattern.
+
+        Returns (exceptions_list, description) on success, or None if
+        the rule does not match any known compound pattern.
+
+        Supported patterns:
+          Chinese: "除了 X 之外都放行" / "除了 X , Y 之外都放行"
+          English: "allow all except X" / "allow everything except X and Y"
+        """
+        import re
+
+        exceptions: list[str] = []
+
+        # Pattern 1: Chinese "除了...之外都放行" / "除了...都放行"
+        chinese_match = re.match(
+            r'除了\s+(.+?)\s*(?:之外)?\s*都\s*(?:放行|允许|通过)',
+            rule,
+        )
+        if chinese_match:
+            exceptions_str = chinese_match.group(1).strip()
+            # Split by common Chinese separators: 、 , ， 和 与 以及
+            exceptions = [
+                e.strip() for e in re.split(r'[、,，\s]+|和|与|以及', exceptions_str)
+                if e.strip()
+            ]
+            if exceptions:
+                return (exceptions, "除 {} 之外都放行".format(", ".join(exceptions)))
+
+        # Pattern 2: English "allow all except X" / "allow everything except X"
+        eng_match = re.match(
+            r'allow\s+(?:all|everything)\s+except\s+(.+)',
+            rule.lower(),
+        )
+        if eng_match:
+            exceptions_str = eng_match.group(1).strip()
+            # Split by "and" or commas
+            exceptions = [
+                e.strip().strip('\'"') for e in re.split(r'\s+and\s+|,', exceptions_str)
+                if e.strip()
+            ]
+            if exceptions:
+                return (exceptions, "allow all except {}".format(", ".join(exceptions)))
+
+        # Pattern 3: "除了X都放行" (no space between 了 and X, no 之外)
+        # Already covered by Pattern 1 above.
+
+        return None
 
     def get_session_changes(self) -> list[dict]:
         """Return list of runtime rule changes made during this session."""
