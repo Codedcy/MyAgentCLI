@@ -118,9 +118,11 @@ class WebFetchTool:
             from markdownify import markdownify as md
 
             markdown_content = md(raw_html)
-            logger.debug("web_fetch: used markdownify for HTML→markdown")
+            logger.debug("web_fetch: used markdownify for HTML→markdown",
+                         extra={"category": "tool"})
         except ImportError:
-            logger.debug("web_fetch: markdownify not available, using regex fallback")
+            logger.debug("web_fetch: markdownify not available, using regex fallback",
+                         extra={"category": "tool"})
             markdown_content = _html_to_text(raw_html)
 
         # Apply prompt-guided extraction

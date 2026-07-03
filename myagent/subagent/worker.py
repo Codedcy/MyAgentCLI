@@ -120,7 +120,8 @@ class SubAgentWorker:
     async def _run_impl(self) -> str:
         """Inner run implementation after worktree setup."""
         if not self.llm:
-            logger.warning("Sub-agent spawned without LLM provider")
+            logger.warning("Sub-agent spawned without LLM provider",
+                           extra={"category": "subagent"})
             return "Error: No LLM provider configured for sub-agent"
 
         # Build system prompt with optional project context (gap-31)
@@ -439,7 +440,8 @@ class SubAgentWorker:
             # Check if this is a git repo
             git_dir = self._project_dir / ".git"
             if not git_dir.exists():
-                logger.debug("Worktree isolation skipped: not a git repo")
+                logger.debug("Worktree isolation skipped: not a git repo",
+                             extra={"category": "subagent"})
                 return None
 
             # Create the worktree using git
@@ -455,6 +457,7 @@ class SubAgentWorker:
                 logger.warning(
                     "Failed to create worktree: %s",
                     stderr.decode("utf-8", errors="replace")[:200],
+                    extra={"category": "subagent"},
                 )
                 return None
 
@@ -465,7 +468,8 @@ class SubAgentWorker:
             )
             return worktree_path
         except Exception as e:
-            logger.warning("Failed to create worktree: %s", e)
+            logger.warning("Failed to create worktree: %s", e,
+                           extra={"category": "subagent"})
             return None
 
     async def _cleanup_worktree(self) -> None:
@@ -481,9 +485,11 @@ class SubAgentWorker:
                 stderr=asyncio.subprocess.PIPE,
             )
             await proc.communicate()
-            logger.debug("Cleaned up worktree: %s", self._worktree_path)
+            logger.debug("Cleaned up worktree: %s", self._worktree_path,
+                         extra={"category": "subagent"})
         except Exception as e:
-            logger.warning("Failed to cleanup worktree %s: %s", self._worktree_path, e)
+            logger.warning("Failed to cleanup worktree %s: %s", self._worktree_path, e,
+                           extra={"category": "subagent"})
 
     @staticmethod
     def _filter_project_context(prompt: str, project_context) -> list[str]:

@@ -129,20 +129,24 @@ class StdioTransport:
                     "error", "traceback", "panic", "fatal", "critical",
                     "exception", "fail",
                 )):
-                    logger.error("MCP stderr [%s]: %s", self.command, decoded)
+                    logger.error("MCP stderr [%s]: %s", self.command, decoded,
+                                 extra={"category": "error", "component": "mcp", "context": "mcp_stderr"})
                 elif any(marker in line_lower for marker in ("warn",)):
-                    logger.warning("MCP stderr [%s]: %s", self.command, decoded)
+                    logger.warning("MCP stderr [%s]: %s", self.command, decoded,
+                                   extra={"category": "system"})
                 else:
                     logger.debug(
                         "MCP stderr [%s]: %s",
                         self.command,
                         decoded,
+                        extra={"category": "system"},
                     )
         except asyncio.CancelledError:
             pass
         except Exception:
             logger.debug(
-                "MCP stderr drainer stopped for %s", self.command, exc_info=True
+                "MCP stderr drainer stopped for %s", self.command, exc_info=True,
+                extra={"category": "system"},
             )
 
 
@@ -206,13 +210,15 @@ class MCPClient:
             "capabilities": {},
             "clientInfo": {"name": "myagent", "version": "0.1.0"},
         })
-        logger.debug("MCP initialized: %s", init_result)
+        logger.debug("MCP initialized: %s", init_result,
+                     extra={"category": "system"})
 
         # Send initialized notification
         await self._send_notification("notifications/initialized", {})
 
         self._started = True
-        logger.info("MCP server started: %s", self.command)
+        logger.info("MCP server started: %s", self.command,
+                    extra={"category": "system"})
 
     async def list_tools(self) -> list[RawToolDef]:
         """Call tools/list and return tool definitions."""
@@ -246,7 +252,8 @@ class MCPClient:
             result = await self._send_request("prompts/list", {})
             return result.get("prompts", [])
         except Exception:
-            logger.debug("MCP server does not support prompts/list: %s", self.command)
+            logger.debug("MCP server does not support prompts/list: %s", self.command,
+                         extra={"category": "system"})
             return []
 
     async def read_resource(self, uri: str) -> dict:
@@ -290,7 +297,7 @@ class MCPClient:
 
         await self._transport.close()
 
-        logger.info("MCP server shut down")
+        logger.info("MCP server shut down", extra={"category": "system"})
 
     # ── internal ────────────────────────────────────────────────
 
@@ -379,7 +386,8 @@ class MCPClient:
                         message = json.loads(body)
                         await self._handle_message(message)
                     except json.JSONDecodeError as e:
-                        logger.warning("Invalid JSON from MCP server: %s", e)
+                        logger.warning("Invalid JSON from MCP server: %s", e,
+                                       extra={"category": "system"})
 
         except asyncio.CancelledError:
             pass

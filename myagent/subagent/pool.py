@@ -271,6 +271,7 @@ class SubAgentPool:
                 logger.debug(
                     "Status callback failed for %s → %s", agent_id, status.value,
                     exc_info=True,
+                    extra={"category": "subagent"},
                 )
 
     async def shutdown(self) -> None:

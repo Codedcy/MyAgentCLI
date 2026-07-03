@@ -859,7 +859,8 @@ class AgentEngine:
                     )
                     await self.session_store.save_tool_call(session, record)
                 except Exception:
-                    logger.debug("Failed to persist tool call record", exc_info=True)
+                    logger.debug("Failed to persist tool call record", exc_info=True,
+                                 extra={"category": "system"})
 
             return result
         except Exception as e:
@@ -1086,4 +1087,5 @@ class AgentEngine:
                 )
                 self.session_store._write_transcripts(sess_dir, session)
         except Exception:
-            logger.debug("Failed to persist turn to session store", exc_info=True)
+            logger.debug("Failed to persist turn to session store", exc_info=True,
+                         extra={"category": "system"})

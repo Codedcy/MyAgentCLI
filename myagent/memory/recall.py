@@ -41,15 +41,18 @@ def _get_embedding_model():
         _embedding_model = SentenceTransformer(
             "paraphrase-multilingual-MiniLM-L12-v2"
         )
-        logger.info("Loaded sentence-transformers for semantic memory recall")
+        logger.info("Loaded sentence-transformers for semantic memory recall",
+                    extra={"category": "system"})
         return _embedding_model
     except ImportError:
         _EMBEDDING_UNAVAILABLE = True
-        logger.debug("sentence-transformers not available — using keyword recall")
+        logger.debug("sentence-transformers not available — using keyword recall",
+                     extra={"category": "system"})
         return None
     except Exception as e:
         _EMBEDDING_UNAVAILABLE = True
-        logger.warning("Failed to load sentence-transformers: %s", e)
+        logger.warning("Failed to load sentence-transformers: %s", e,
+                       extra={"category": "system"})
         return None
 
 

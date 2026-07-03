@@ -135,14 +135,16 @@ class DreamEngine:
             )
             sub_result = await handle.wait()
         except Exception as e:
-            logger.error("Dream sub-agent spawn/wait failed: %s", e, exc_info=True)
+            logger.error("Dream sub-agent spawn/wait failed: %s", e, exc_info=True,
+                         extra={"category": "error", "component": "dream"})
             raise
 
         # ── Parse sub-agent result ──
         analysis_text = sub_result.output or ""
         if sub_result.error:
             logger.warning(
-                "Dream sub-agent reported error: %s", sub_result.error
+                "Dream sub-agent reported error: %s", sub_result.error,
+                extra={"category": "system"},
             )
             result.memories_created = 0
             result.memories_updated = 0
@@ -349,6 +351,7 @@ Do NOT interact with project code files — only memory files."""
                 logger.warning(
                     "Dream sub-agent failed: %s — falling back to inline analysis", e,
                     exc_info=True,
+                    extra={"category": "error", "component": "dream"},
                 )
 
         return await self._run_inline(session_store)
@@ -382,7 +385,8 @@ Do NOT interact with project code files — only memory files."""
                     entries = await self.memory_store.list_all(scope)
                 except Exception:
                     logger.warning(
-                        "Dream: failed to list %s memories", scope, exc_info=True
+                        "Dream: failed to list %s memories", scope, exc_info=True,
+                        extra={"category": "system"},
                     )
                     continue
 
@@ -395,7 +399,8 @@ Do NOT interact with project code files — only memory files."""
                         mf = await self.memory_store.read(entry.name)
                     except Exception:
                         logger.warning(
-                            "Dream: failed to read memory '%s'", entry.name, exc_info=True
+                            "Dream: failed to read memory '%s'", entry.name, exc_info=True,
+                            extra={"category": "system"},
                         )
                         continue
 
@@ -422,7 +427,8 @@ Do NOT interact with project code files — only memory files."""
                     )
                 except Exception:
                     logger.warning(
-                        "Dream: failed to delete empty memory '%s'", name, exc_info=True
+                        "Dream: failed to delete empty memory '%s'", name, exc_info=True,
+                        extra={"category": "system"},
                     )
 
             all_memories = [(mf, mt) for mf, mt in all_memories if mf.name not in empty_names]
@@ -454,7 +460,8 @@ Do NOT interact with project code files — only memory files."""
                         )
                     except Exception:
                         logger.warning(
-                            "Dream: failed to delete duplicate '%s'", mf.name, exc_info=True
+                            "Dream: failed to delete duplicate '%s'", mf.name, exc_info=True,
+                            extra={"category": "system"},
                         )
 
             # ── 4. Scan recent transcripts for patterns (gap-18) ──
@@ -498,7 +505,8 @@ Do NOT interact with project code files — only memory files."""
                     )
                 except Exception:
                     logger.warning(
-                        "Dream: failed to delete stale memory '%s'", name, exc_info=True
+                        "Dream: failed to delete stale memory '%s'", name, exc_info=True,
+                        extra={"category": "system"},
                     )
 
             if stale_count == 0:
@@ -654,7 +662,8 @@ Do NOT interact with project code files — only memory files."""
                 )
 
         except Exception as e:
-            logger.warning("Dream transcript scanning failed: %s", e)
+            logger.warning("Dream transcript scanning failed: %s", e,
+                           extra={"category": "system"})
             findings.text.append(f"Transcript scanning encountered an error: {e}")
 
         return findings
@@ -935,6 +944,7 @@ Do NOT interact with project code files — only memory files."""
                 logger.warning(
                     "Dream: failed to update '%s' for contradiction resolution",
                     keeper.name, exc_info=True,
+                    extra={"category": "system"},
                 )
 
             # Delete the older memory
@@ -946,7 +956,8 @@ Do NOT interact with project code files — only memory files."""
                 result.memories_deleted += 1
             except Exception:
                 logger.warning(
-                    "Dream: failed to delete older memory '%s'", older.name, exc_info=True
+                    "Dream: failed to delete older memory '%s'", older.name, exc_info=True,
+                    extra={"category": "system"},
                 )
 
     async def _create_memories_from_patterns(
@@ -1000,7 +1011,8 @@ Do NOT interact with project code files — only memory files."""
                     extra={"category": "system"},
                 )
             except Exception:
-                logger.warning("Dream: failed to create 'common-corrections' memory", exc_info=True)
+                logger.warning("Dream: failed to create 'common-corrections' memory", exc_info=True,
+                               extra={"category": "system"})
 
         if findings.top_topics:
             try:
@@ -1026,7 +1038,8 @@ Do NOT interact with project code files — only memory files."""
                 result.memories_created += 1
                 actions.append(f"- Created `frequent-topics` memory ({topics_list})")
             except Exception:
-                logger.warning("Dream: failed to create 'frequent-topics' memory", exc_info=True)
+                logger.warning("Dream: failed to create 'frequent-topics' memory", exc_info=True,
+                               extra={"category": "system"})
 
     def _load_state(self) -> dict:
         if self._state_file.exists():

@@ -235,6 +235,7 @@ class PermissionController:
                 "Non-interactive environment — auto-allowing %s (level=%s)",
                 tool_name,
                 level_name,
+                extra={"category": "system"},
             )
             return True
 
@@ -244,7 +245,8 @@ class PermissionController:
             from rich.panel import Panel
             from rich.prompt import Prompt
         except ImportError:
-            logger.warning("Rich not available — auto-allowing %s", tool_name)
+            logger.warning("Rich not available — auto-allowing %s", tool_name,
+                           extra={"category": "system"})
             return True
 
         console = Console()

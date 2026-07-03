@@ -121,6 +121,7 @@ class CompressionEngine:
                         "Overall compression savings (%.1f%%) below minimum_savings (%.1f%%); "
                         "discarding compacted result (layers 2-3).",
                         total_savings * 100, min_savings * 100,
+                        extra={"category": "agent"},
                     )
                     messages = original_messages
                     # Re-apply only Layer 1 (zero-cost cleanup)
@@ -135,11 +136,13 @@ class CompressionEngine:
                     logger.debug(
                         "Layer 1 only compaction — keeping result (%.1f%% savings).",
                         total_savings * 100,
+                        extra={"category": "agent"},
                     )
             else:
                 logger.debug(
                     "Compression complete: %.1f%% savings across layers %s.",
                     total_savings * 100, layers_applied,
+                    extra={"category": "agent"},
                 )
 
         # Layer 4: Hard truncation (safety, always applies regardless of debounce)
