@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -148,6 +149,241 @@ class StdioTransport:
                 "MCP stderr drainer stopped for %s", self.command, exc_info=True,
                 extra={"category": "system"},
             )
+
+
+class SSETransport:
+    """MCP transport over HTTP SSE (Server-Sent Events) (gap-18-05).
+
+    Connects to an MCP server via:
+    - GET  /sse       — SSE stream for server→client messages
+    - POST /message   — HTTP POST for client→server messages
+
+    Per MCP transport spec: the client opens an SSE stream and sends
+    JSON-RPC messages via POST. Responses are delivered as SSE events.
+    """
+
+    _SSE_LINE_RE = re.compile(r"^(?P<field>[^:\r\n]+):\s?(?P<value>.*)$")
+
+    def __init__(
+        self,
+        url: str,
+        headers: dict[str, str] | None = None,
+        session_id: str | None = None,
+    ):
+        self.url = url.rstrip("/")
+        self.headers = headers or {}
+        self.session_id = session_id
+        self._client: httpx.AsyncClient | None = None
+        self._sse_response: httpx.Response | None = None
+        self._sse_iter: Any = None
+        self._receive_queue: asyncio.Queue[bytes] = asyncio.Queue()
+        self._connected = False
+
+    async def connect(self) -> None:
+        """Open SSE stream and link the message endpoint.
+
+        Per MCP SSE spec: GET /sse starts the SSE stream. The server
+        responds with an 'endpoint' event containing the POST URL for
+        client→server messages. A session ID query param may be used
+        to reconnect.
+        """
+        import httpx
+
+        self._client = httpx.AsyncClient(
+            headers={
+                "Accept": "text/event-stream",
+                "Cache-Control": "no-cache",
+                **self.headers,
+            },
+            timeout=httpx.Timeout(60.0, connect=15.0),
+        )
+
+        # Build SSE URL with optional session_id
+        sse_url = self.url
+        if self.session_id:
+            sse_url = f"{sse_url}/sse?sessionId={self.session_id}"
+        else:
+            sse_url = f"{sse_url}/sse"
+
+        # Open SSE stream
+        self._sse_response = await self._client.send(
+            method="GET", url=sse_url, stream=True,
+        )
+        # httpx GET streaming
+        # Actually use a streaming GET
+        await self._sse_response.aclose()
+        sse_stream = await self._client.stream("GET", sse_url)
+        # httpx sends on __aenter__; we need to manually trigger the request
+        # Use a raw connect approach
+        await self._client.aclose()
+
+        # Re-create client with default timeout for POSTs
+        self._client = httpx.AsyncClient(
+            headers={
+                "Accept": "text/event-stream",
+                "Cache-Control": "no-cache",
+                **self.headers,
+            },
+            timeout=httpx.Timeout(30.0, connect=15.0),
+        )
+
+        # Open SSE stream for reading
+        self._sse_response = await self._client.send(
+            httpx.Request("GET", sse_url),
+            stream=True,
+        )
+        self._sse_iter = self._sse_response.aiter_raw()
+        self._connected = True
+
+        # Start background reader that parses SSE events and enqueues
+        # complete JSON-RPC messages to _receive_queue.
+        self._reader_task = asyncio.create_task(self._sse_reader())
+
+    async def send(self, data: bytes) -> None:
+        """Send a JSON-RPC message via POST to the message endpoint."""
+        import httpx
+
+        if not self._client:
+            raise RuntimeError("SSE transport not connected")
+
+        post_url = f"{self.url}/message"
+        if self.session_id:
+            post_url = f"{post_url}?sessionId={self.session_id}"
+
+        response = await self._client.post(
+            post_url,
+            content=data,
+            headers={"Content-Type": "application/json"},
+        )
+        if response.status_code not in (200, 202):
+            logger.warning(
+                "SSE POST returned %d: %s",
+                response.status_code,
+                response.text[:200],
+                extra={"category": "error", "component": "mcp"},
+            )
+
+    async def receive(self) -> bytes | None:
+        """Receive a JSON-RPC message from the SSE stream.
+
+        Blocks until a complete message is available or returns None
+        if the stream ended.
+        """
+        if not self._connected:
+            return None
+        try:
+            return await asyncio.wait_for(self._receive_queue.get(), timeout=30.0)
+        except asyncio.TimeoutError:
+            return None
+
+    async def close(self) -> None:
+        """Close the SSE transport and release resources."""
+        self._connected = False
+
+        if self._reader_task:
+            self._reader_task.cancel()
+            try:
+                await self._reader_task
+            except asyncio.CancelledError:
+                pass
+
+        if self._sse_response:
+            try:
+                await self._sse_response.aclose()
+            except Exception:
+                pass
+
+        if self._client:
+            try:
+                await self._client.aclose()
+            except Exception:
+                pass
+
+        # Drain the receive queue
+        while not self._receive_queue.empty():
+            try:
+                self._receive_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+
+    async def _sse_reader(self) -> None:
+        """Read raw bytes from the SSE stream and parse SSE events.
+
+        SSE format:
+            event: <event-type>
+            data: <json-data>
+            <blank line>
+
+        Complete messages (terminated by double newline) are enqueued
+        to _receive_queue.
+        """
+        try:
+            buffer = b""
+            while self._connected:
+                try:
+                    chunk = await asyncio.wait_for(
+                        self._sse_iter.__anext__() if hasattr(self._sse_iter, '__anext__') else
+                        self._sse_response.aiter_bytes().__anext__(),
+                        timeout=5.0,
+                    )
+                    if not chunk:
+                        break
+                    buffer += chunk
+
+                    # Process complete SSE events (terminated by \n\n)
+                    while b"\n\n" in buffer:
+                        event_end = buffer.find(b"\n\n")
+                        event_bytes = buffer[:event_end]
+                        buffer = buffer[event_end + 2:]
+
+                        message = self._parse_sse_event(event_bytes)
+                        if message:
+                            await self._receive_queue.put(message)
+
+                except asyncio.TimeoutError:
+                    continue
+                except StopAsyncIteration:
+                    break
+                except Exception:
+                    logger.debug(
+                        "SSE reader error",
+                        exc_info=True,
+                        extra={"category": "error", "component": "mcp"},
+                    )
+                    break
+        except asyncio.CancelledError:
+            pass
+
+    def _parse_sse_event(self, event_bytes: bytes) -> bytes | None:
+        """Parse a single SSE event into bytes to return via receive().
+
+        Reconstructs the JSON-RPC message from the SSE 'data' field.
+        The event type is currently ignored since MCP uses a single
+        message stream; the framing is handled by JSON-RPC ID matching.
+        """
+        text = event_bytes.decode("utf-8", errors="replace")
+        data_lines = []
+        for line in text.splitlines():
+            match = self._SSE_LINE_RE.match(line)
+            if not match:
+                continue
+            field = match.group("field").strip()
+            value = match.group("value")
+            if field == "data":
+                data_lines.append(value)
+
+        if not data_lines:
+            return None
+
+        # Join data lines (SSE spec allows multiple data: lines per event)
+        data = "\n".join(data_lines)
+        try:
+            # Wrap in MCP framing (Content-Length header + body)
+            body = data.encode("utf-8")
+            header = f"Content-Length: {len(body)}\r\n\r\n"
+            return header.encode("utf-8") + body
+        except Exception:
+            return None
 
 
 @dataclass
