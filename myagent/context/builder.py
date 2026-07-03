@@ -295,14 +295,16 @@ tool usage limit."""
         return "\n".join(lines)
 
     def _format_skill_content(self, skill) -> str:
-        """Format full skill content for injection as L5 context."""
+        """Format full skill content for injection into the system prompt.
+
+        Per spec §七: "加载完整 SKILL.md 注入 system prompt" — the full
+        SKILL.md content is loaded when a skill is invoked. Context window
+        management is handled by the four-layer progressive compression
+        system at higher layers (spec §三).
+        """
         lines = [f"### {skill.name}", skill.description, ""]
         if skill.content:
-            # Truncate very long skill content to avoid exceeding context window
-            content = skill.content[:4000]
-            if len(skill.content) > 4000:
-                content += "\n... (content truncated for context window)"
-            lines.append(content)
+            lines.append(skill.content)
         if skill.resources:
             refs = skill.resources.references or []
             scripts = skill.resources.scripts or []
