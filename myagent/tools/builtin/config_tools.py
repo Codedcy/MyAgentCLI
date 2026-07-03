@@ -219,18 +219,9 @@ class ConfigSetTool:
                 return value
             return [value]
 
-        # Fallback: heuristic-based coercion for subtypes not resolved
-        # Boolean-like keys
-        bool_keys = {"dream.enabled", "ui.show_status_bar", "ui.streaming",
-                     "ui.syntax_highlight", "logging.llm_prompts",
-                     "subagents.speculative_exploration", "session.save_transcripts"}
-        if key in bool_keys:
-            if isinstance(value, bool):
-                return value
-            if isinstance(value, str):
-                return value.lower() in ("true", "1", "yes", "on")
-            return bool(value)
-
+        # gap-13-07: No hardcoded bool_keys fallback — all keys with bool type
+        # are already handled by the _TYPE_MAP above. If a key is not in
+        # _TYPE_MAP, we return the value as-is to avoid incorrect coercion.
         return value
 
     @staticmethod
