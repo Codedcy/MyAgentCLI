@@ -276,8 +276,10 @@ class AgentEngine:
                     )
                     # Append partial assistant message to history
                     messages.append({"role": "assistant", "content": partial_text})
+                    self._persist_turn(session, messages)
                     yield IntentSignal(intent="continue")
                     return
+                self._persist_turn(session, messages)
                 yield Error(message=str(e))
                 return
 
@@ -354,6 +356,7 @@ class AgentEngine:
                     })
 
                 # Loop again — LLM will see tool results in next iteration
+                self._persist_turn(session, messages)
                 logger.info(
                     "ReAct iteration %d complete (tool calls)", iteration,
                     extra={
@@ -376,6 +379,7 @@ class AgentEngine:
             if intent and intent != "continue":
                 yield IntentSignal(intent=intent)
                 if intent == "stop":
+                    self._persist_turn(session, messages)
                     yield Done()
                     return
                 elif intent == "correct":
@@ -387,6 +391,7 @@ class AgentEngine:
                             "the corrected approach. What would you like to do differently?"
                         ),
                     })
+                    self._persist_turn(session, messages)
                     logger.info(
                         "ReAct iteration %d complete (correct)", iteration,
                         extra={
@@ -405,6 +410,7 @@ class AgentEngine:
                             "you mentioned, then continue with the original work."
                         ),
                     })
+                    self._persist_turn(session, messages)
                     logger.info(
                         "ReAct iteration %d complete (insert)", iteration,
                         extra={
@@ -417,6 +423,7 @@ class AgentEngine:
 
             # Detect AskUserQuestion — stop this turn; wait for user reply
             if self._is_question(full_text):
+                self._persist_turn(session, messages)
                 yield AskUserQuestion(question=full_text)
                 return
 
@@ -436,6 +443,7 @@ class AgentEngine:
                 if not goal_check.achieved:
                     # Inject feedback and re-enter the loop
                     self._continue_with_feedback(goal_check, messages)
+                    self._persist_turn(session, messages)
                     logger.info(
                         "ReAct iteration %d complete (goal not achieved)", iteration,
                         extra={
@@ -447,6 +455,7 @@ class AgentEngine:
                     continue
 
             # Goal achieved (or no goal set) — we are done
+            self._persist_turn(session, messages)
             logger.info(
                 "ReAct iteration %d complete (done)", iteration,
                 extra={
@@ -459,6 +468,7 @@ class AgentEngine:
             return
 
         # Max iterations exhausted
+        self._persist_turn(session, messages)
         yield Error(
             message=f"ReAct loop reached max iterations ({self.MAX_ITERATIONS})"
         )
@@ -750,3 +760,37 @@ class AgentEngine:
         estimated_tokens = total_chars / 3
         context_window = 1_000_000  # DeepSeek V4 Pro nominal context
         return min(estimated_tokens / context_window, 1.0)
+
+    def _persist_turn(self, session, messages: list[dict]) -> None:
+        """Persist the current messages state to the session store (gap-04).
+
+        Converts API-format dict messages to Message objects and appends
+        them to the session, then writes transcripts to disk. Best-effort:
+        failures are logged but do not interrupt the agent loop.
+        """
+        if not self.session_store or not session:
+            return
+        try:
+            from myagent.context.builder import Message as CtxMessage
+            from datetime import datetime as _dt
+            # Persist only the new messages since last save: track a _persist_idx
+            persist_idx = getattr(session, '_persist_idx', 0)
+            new_msgs = messages[persist_idx:]
+            if not new_msgs:
+                return
+            for m in new_msgs:
+                msg_obj = CtxMessage(
+                    role=m.get("role", "user"),
+                    content=m.get("content", ""),
+                    timestamp=_dt.now(),
+                )
+                session.add_message(msg_obj)
+            session._persist_idx = len(messages)
+            # Write transcripts to disk
+            if hasattr(session, 'project_name') and hasattr(session, 'project_hash'):
+                sess_dir = self.session_store._session_dir(
+                    session.project_name, session.project_hash, session.id
+                )
+                self.session_store._write_transcripts(sess_dir, session)
+        except Exception:
+            logger.debug("Failed to persist turn to session store", exc_info=True)
