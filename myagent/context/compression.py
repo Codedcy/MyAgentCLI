@@ -8,9 +8,13 @@ Layer 4 — Hard truncation: drop oldest blocks to stay under hard_limit
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from myagent.context.builder import Message
+
+logger = logging.getLogger("myagent.context.compression")
 
 
 @dataclass
@@ -29,6 +33,16 @@ class CompressionEngine:
         self._layer3_failures = 0
         self._compact_counter = 0
         self._session_dir = None
+
+    def set_session_dir(self, session_dir: str | Path | None) -> None:
+        """Set the session directory for persisting compression summaries.
+
+        Must be called before compaction with layer 3 is triggered,
+        otherwise summaries are silently skipped (gap-03).
+        """
+        from pathlib import Path as _Path
+        if session_dir is not None:
+            self._session_dir = _Path(session_dir)
 
     async def compact(
         self, messages: list[Message], current_usage_pct: float

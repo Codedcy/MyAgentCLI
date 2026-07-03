@@ -166,6 +166,14 @@ class AgentEngine:
         if api_format.get("system"):
             messages.insert(0, {"role": "system", "content": api_format["system"]})
 
+        # Wire session directory for compression summary persistence (gap-03)
+        if self.compression and self.session_store:
+            if hasattr(session, 'project_name') and hasattr(session, 'project_hash'):
+                sess_dir = self.session_store._session_dir(
+                    session.project_name, session.project_hash, session.id
+                )
+                self.compression.set_session_dir(sess_dir)
+
         thinking_mode = self._get_thinking_mode()
         iteration = 0
         context_notified_50 = False  # gap-25: only notify once
