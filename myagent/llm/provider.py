@@ -357,8 +357,18 @@ class LLMProvider:
             return {"type": "enabled"}
 
     async def _stream_response(self, response) -> AsyncIterator[LLMEvent]:
-        """Process streaming response into LLMEvent instances."""
-        tool_call_buffers: dict[int, dict] = {}  # index → {id, name, args_str}
+        """Process streaming response into LLMEvent instances.
+
+        Tool calls arrive in streaming chunks: the id, name, and
+        arguments may be spread across multiple deltas for the same
+        tool call index.  We accumulate them in a buffer and emit a
+        single ToolCall event per index once the arguments form valid
+        JSON.  A ``_yielded`` flag prevents duplicate emissions when
+        subsequent chunks carry additional data for the same index.
+
+        Fixes audit #42.
+        """
+        tool_call_buffers: dict[int, dict] = {}  # index → {id, name, args_str, _yielded}
 
         async for chunk in response:
             if not chunk.choices:
@@ -386,8 +396,14 @@ class LLMProvider:
                             "id": tc.id or "",
                             "name": "",
                             "args_str": "",
+                            "_yielded": False,
                         }
                     buf = tool_call_buffers[idx]
+
+                    # Skip if already emitted for this index
+                    if buf["_yielded"]:
+                        continue
+
                     if tc.id:
                         buf["id"] = tc.id
                     func = getattr(tc, "function", None)
@@ -397,14 +413,15 @@ class LLMProvider:
                         if func.arguments:
                             buf["args_str"] += func.arguments
 
-                    # If we have complete info, emit and clear
+                    # Emit tool call once we have a name and parseable args
                     if buf["args_str"] and buf["name"]:
                         try:
                             params = json.loads(buf["args_str"])
                         except json.JSONDecodeError:
-                            params = {}
+                            # Args still incomplete — wait for more chunks
+                            continue
+                        buf["_yielded"] = True
                         yield ToolCall(id=buf["id"], name=buf["name"], params=params)
-                        buf["args_str"] = ""
 
             # Check for usage in final chunk
             usage = getattr(chunk, "usage", None)
