@@ -50,10 +50,13 @@ class SessionManager:
                 return await self.session_store.load_session(project_name, project_hash, sessions[0].session_id)
         return None
 
-    def estimate_total_rounds(self) -> int:
+    def estimate_total_rounds(self, current_session=None) -> int:
         """Estimate total conversation rounds from session history.
 
-        Used for dream engine trigger check on startup.
+        Used for dream engine trigger check at startup and periodically
+        during long-running sessions. When current_session is provided,
+        its live turn_count is added to the persisted totals (gap-r6-07).
+
         Returns 0 if no sessions exist or session_store is unavailable.
         """
         if not self.session_store:
@@ -79,6 +82,9 @@ class SessionManager:
                                     total += data.get("turn_count", 0)
                                 except Exception:
                                     pass
+            # Add current session's live (unsaved) rounds (gap-r6-07)
+            if current_session is not None and hasattr(current_session, 'turn_count'):
+                total += current_session.turn_count
             return total
         except Exception:
             return 0

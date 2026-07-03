@@ -455,10 +455,12 @@ class REPLEngine:
             if not self._running:
                 break
             try:
-                # Re-estimate total rounds (includes current session)
+                # Re-estimate total rounds (includes current session's live turns)
                 total_rounds = 0
                 if self._session_mgr and hasattr(self._session_mgr, 'estimate_total_rounds'):
-                    total_rounds = self._session_mgr.estimate_total_rounds()
+                    total_rounds = self._session_mgr.estimate_total_rounds(
+                        current_session=self._current_session
+                    )
                 if self._dream_engine and self._dream_engine.should_run(total_rounds):
                     _log.info("Mid-session dream trigger fired (interval check)")
                     session_store = getattr(self._engine, 'session_store', None) if self._engine else None
