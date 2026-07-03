@@ -285,6 +285,23 @@ class SubAgentPool:
                 except Exception:
                     pass
 
+    async def _remove_handle_after_delay(self, agent_id: str, delay: float = 3.0) -> None:
+        """Remove a handle from _agents dict after a configurable delay.
+
+        The delay gives status bar observers time to render the final
+        state (COMPLETED, FAILED, INTERRUPTED) before the entry is removed.
+        After removal, the status bar callback is re-invoked so the UI
+        reflects the updated pool state.
+        """
+        await asyncio.sleep(delay)
+        if agent_id in self._agents:
+            del self._agents[agent_id]
+            # Notify status observers one final time so they drop this entry
+            try:
+                await self._notify_status_callbacks(agent_id, AgentStatus.RESULT_CONSUMED, None)
+            except Exception:
+                pass
+
     # ── internal ──────────────────────────────────────────────────
 
     async def _run_background(
@@ -388,6 +405,10 @@ class SubAgentPool:
                 await self._notify_status_callbacks(handle.id, AgentStatus.FAILED, handle)
             finally:
                 handle._completion_event.set()
+                # gap-10-2: Remove terminal handles from _agents dict after
+                # a brief delay so status bar observers have time to render
+                # the final state. This prevents unbounded growth over long sessions.
+                asyncio.create_task(self._remove_handle_after_delay(handle.id, delay=3.0))
 
     async def _run_foreground(
         self,
