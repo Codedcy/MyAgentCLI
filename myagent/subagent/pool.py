@@ -184,14 +184,14 @@ class SubAgentPool:
                 self._run_background(
                     handle, prompt, tools, mode, model, _llm, _tool_registry,
                     handle._interrupt_event, _tool_context, project_ctx, handle._pending_messages,
-                    isolation=isolation, schema=schema,
+                    isolation=isolation, schema=schema, parent_session=parent_session,
                 )
             )
         else:
             await self._run_foreground(
                 handle, prompt, tools, mode, model, _llm, _tool_registry,
                 handle._interrupt_event, _tool_context, project_ctx, handle._pending_messages,
-                isolation=isolation, schema=schema,
+                isolation=isolation, schema=schema, parent_session=parent_session,
             )
 
         return handle
@@ -225,6 +225,7 @@ class SubAgentPool:
         message_store: list | None = None,
         isolation: str | None = None,
         schema: dict | None = None,
+        parent_session: str | None = None,
     ) -> None:
         """Run a sub-agent worker under the concurrency semaphore."""
         async with self._semaphore:
@@ -245,10 +246,20 @@ class SubAgentPool:
                 message_store=message_store,
             )
             try:
+                # Format prompt_summary: first ~100 chars of the spawn prompt
+                prompt_summary = prompt[:100] if prompt else ""
+                ps = getattr(self._session, 'id', None) if self._session else None
+                actual_parent = parent_session or ps
                 logger.info(
                     "Sub-agent %s starting",
                     handle.id,
-                    extra={"category": "subagent"},
+                    extra={
+                        "category": "subagent",
+                        "event": "spawned",
+                        "subagent_id": handle.id,
+                        "parent_session": actual_parent,
+                        "prompt_summary": prompt_summary,
+                    },
                 )
                 t0 = time.monotonic()
                 output = await worker.run()
@@ -259,7 +270,14 @@ class SubAgentPool:
                     "Sub-agent %s completed in %.1fms",
                     handle.id,
                     duration_ms,
-                    extra={"category": "subagent"},
+                    extra={
+                        "category": "subagent",
+                        "event": "completed",
+                        "subagent_id": handle.id,
+                        "parent_session": actual_parent,
+                        "prompt_summary": prompt_summary,
+                        "duration_ms": round(duration_ms, 1),
+                    },
                 )
                 # Persist sub-agent transcript (gap-07)
                 if self._session_store and self._session:
@@ -272,7 +290,12 @@ class SubAgentPool:
                     "Sub-agent %s failed: %s",
                     handle.id,
                     str(e),
-                    extra={"category": "error", "component": "subagent"},
+                    extra={
+                        "category": "error",
+                        "component": "subagent",
+                        "subagent_id": handle.id,
+                        "event": "failed",
+                    },
                 )
                 handle.status = AgentStatus.FAILED
                 handle._result_data = ToolResult(error=str(e))
@@ -294,10 +317,11 @@ class SubAgentPool:
         message_store: list | None = None,
         isolation: str | None = None,
         schema: dict | None = None,
+        parent_session: str | None = None,
     ) -> None:
         """Run a sub-agent worker in foreground (caller awaits)."""
         await self._run_background(
             handle, prompt, tools, mode, model, llm, tool_registry,
             interrupt_event, tool_context, project_context, message_store,
-            isolation=isolation, schema=schema,
+            isolation=isolation, schema=schema, parent_session=parent_session,
         )
