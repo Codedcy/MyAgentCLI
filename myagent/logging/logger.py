@@ -232,13 +232,11 @@ class LogManager:
         root.info(
             "Logging initialized",
             extra={
-                "extra_fields": {
-                    "category": LOG_SYSTEM,
-                    "event": "startup",
-                    "config_hash": config_hash,
-                    "python_version": python_version,
-                    "platform": platform_info,
-                },
+                "category": LOG_SYSTEM,
+                "event": "startup",
+                "config_hash": config_hash,
+                "python_version": python_version,
+                "platform": platform_info,
             },
         )
 
@@ -253,7 +251,7 @@ class LogManager:
         root = logging.getLogger("myagent")
         root.info(
             "Logging shutting down",
-            extra={"extra_fields": {"category": LOG_SYSTEM, "event": "shutdown"}},
+            extra={"category": LOG_SYSTEM, "event": "shutdown"},
         )
 
         if _queue_listener:
@@ -264,10 +262,14 @@ class LogManager:
 
     @staticmethod
     def _cleanup_old_logs(log_dir: Path, retention_days: int) -> None:
-        """Remove log files older than retention_days."""
+        """Remove log files older than retention_days.
+
+        Cleans up both .jsonl and .log files (and their rotated siblings).
+        (gap-8-04: previously only matched myagent*.log*, missing .jsonl files)
+        """
         cutoff = time.time() - (retention_days * 86400)
         try:
-            for f in log_dir.glob("myagent*.log*"):
+            for f in log_dir.glob("myagent*.*"):
                 if f.stat().st_mtime < cutoff:
                     f.unlink()
         except Exception:
