@@ -148,6 +148,10 @@ web access, sub-agent orchestration, and task tracking.
             system_parts.append(f"## Active Skill\n{skill_content}")
         if l2:
             system_parts.append(f"## Available Skills\n{l2}")
+        # G10: MCP resources and prompts — expose as reference information
+        mcp_ref = self._format_mcp_refs()
+        if mcp_ref:
+            system_parts.append(mcp_ref)
         if goal_context:
             system_parts.append(goal_context)
         system = "\n\n".join(system_parts)
@@ -207,4 +211,52 @@ web access, sub-agent orchestration, and task tracking.
                 lines.append("References: " + ", ".join(str(r.name) for r in refs))
             if scripts:
                 lines.append("Scripts: " + ", ".join(str(s.name) for s in scripts))
+        return "\n".join(lines)
+
+    def _format_mcp_refs(self) -> str:
+        """G10: Format MCP resources and prompts as reference information.
+
+        Provides the LLM with awareness of available MCP resources (which
+        can be read as data) and prompt templates (which can be invoked).
+        Limited to 2000 chars total to avoid bloating the system prompt.
+        """
+        if not self.tool_registry:
+            return ""
+
+        resources = getattr(self.tool_registry, 'mcp_resources', []) or []
+        prompts = getattr(self.tool_registry, 'mcp_prompts', []) or []
+        if not resources and not prompts:
+            return ""
+
+        lines = ["## MCP Reference"]
+        MAX_LEN = 2000
+        current_len = len(lines[0]) + 2  # +2 for newline
+
+        if resources:
+            lines.append("### Available Resources")
+            current_len += len(lines[-1]) + 1
+            for r in resources:
+                uri = r.get("uri", r.get("name", "unknown"))
+                name = r.get("name", uri)
+                desc = r.get("description", "")[:100]
+                entry = f"- `{name}`: {desc}" if desc else f"- `{name}`"
+                if current_len + len(entry) > MAX_LEN:
+                    lines.append(f"- ... and {len(resources) - resources.index(r)} more")
+                    break
+                lines.append(entry)
+                current_len += len(entry) + 1
+
+        if prompts:
+            lines.append("### Available Prompts")
+            current_len += len(lines[-1]) + 1
+            for p in prompts:
+                name = p.get("name", "unknown")
+                desc = p.get("description", "")[:100]
+                entry = f"- `{name}`: {desc}" if desc else f"- `{name}`"
+                if current_len + len(entry) > MAX_LEN:
+                    lines.append(f"- ... and {len(prompts) - prompts.index(p)} more")
+                    break
+                lines.append(entry)
+                current_len += len(entry) + 1
+
         return "\n".join(lines)

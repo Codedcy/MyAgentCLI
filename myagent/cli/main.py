@@ -400,16 +400,19 @@ async def _start_single_mcp_server(name: str, cfg: dict, tool_registry):
             tool_registry.register(adapter, source="mcp")
             _log.info("Registered MCP tool: %s (from %s)", raw_tool.name, name)
 
-        # Also list and log resources and prompts (gap-2-03)
+        # Also list and store resources and prompts (G10: integrate into context)
         try:
             resources = await client.list_resources()
-            _log.info("MCP server '%s' provides %d resources", name, len(resources))
+            if resources:
+                tool_registry.mcp_resources.extend(resources)
+                _log.info("MCP server '%s' provides %d resources", name, len(resources))
         except Exception:
             pass
 
         try:
             prompts = await client.list_prompts()
             if prompts:
+                tool_registry.mcp_prompts.extend(prompts)
                 _log.info("MCP server '%s' provides %d prompts", name, len(prompts))
             else:
                 _log.debug("MCP server '%s' provides no prompts", name)

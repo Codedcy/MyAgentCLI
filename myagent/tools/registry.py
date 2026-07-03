@@ -32,6 +32,9 @@ class ToolRegistry:
 
     def __init__(self):
         self._tools: dict[str, ToolEntry] = {}
+        # G10: MCP resources and prompts discovered at startup
+        self.mcp_resources: list[dict] = []
+        self.mcp_prompts: list[dict] = []
 
     def register(self, tool: Tool, source: str = "builtin") -> None:
         """Register a tool instance.
