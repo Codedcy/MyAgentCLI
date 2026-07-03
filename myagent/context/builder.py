@@ -95,10 +95,11 @@ web access, sub-agent orchestration, and task tracking.
         active_skill: str | None = None,
         goal: str | None = None,
     ) -> LLMRequest:
-        # L3: Project context
+        # L3: Project context (spec §三 六层模型 L3)
         l3 = self._format_project_context(project_context)
 
         # L4: Relevant memories — use session-scoped cache (gap-27)
+        # (spec §三 六层模型 L4)
         l4 = ""
         if self.memory_store:
             try:
@@ -115,36 +116,40 @@ web access, sub-agent orchestration, and task tracking.
             except Exception:
                 pass
 
-        # L5: Active skill content — inject full skill instructions when invoked
-        l5 = ""
+        # Active skill content — full skill instructions injected into system prompt
+        # when a skill is invoked (not a context layer; injected alongside L2)
+        skill_content = ""
         if active_skill and self.skill_registry:
             skill = self.skill_registry.get(active_skill)
             if skill:
-                l5 = self._format_skill_content(skill)
+                skill_content = self._format_skill_content(skill)
 
-        # L2: Skills index
+        # L2: Skills index (spec §三 六层模型 L2 — name + description only)
         l2 = ""
         if self.skill_registry:
             skills = self.skill_registry.list_all()
             l2 = self._format_skills_index(skills)
 
-        # L6: Goal context — inject current goal when in goal mode
-        l6 = ""
+        # Goal context — inject current goal when in goal mode
+        # (not a context layer; injected into system prompt alongside L0)
+        goal_context = ""
         if goal:
-            l6 = f"## Current Goal\n{goal}\n\nWork toward this goal. When you believe it is achieved, indicate completion."
+            goal_context = f"## Current Goal\n{goal}\n\nWork toward this goal. When you believe it is achieved, indicate completion."
 
-        # Assemble system prompt: L0 + L3 + L4 + L5 + L2 + L6
+        # Assemble system prompt: L0 + L3 + L4 + skill_content + L2 + goal_context
+        # (spec §三: L0=system prompt, L3=project, L4=memory, L2=skills index;
+        #  skill_content and goal_context are not layers but injected here)
         system_parts = [self.L0_SYSTEM_PROMPT]
         if l3:
             system_parts.append(f"## Project Context\n{l3}")
         if l4:
             system_parts.append(f"## Relevant Memories\n{l4}")
-        if l5:
-            system_parts.append(f"## Active Skill\n{l5}")
+        if skill_content:
+            system_parts.append(f"## Active Skill\n{skill_content}")
         if l2:
             system_parts.append(f"## Available Skills\n{l2}")
-        if l6:
-            system_parts.append(l6)
+        if goal_context:
+            system_parts.append(goal_context)
         system = "\n\n".join(system_parts)
 
         # L1: Tool schemas
