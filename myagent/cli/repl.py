@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+from prompt_toolkit.completion import Completer
 
-class SlashCompleter:
+
+class SlashCompleter(Completer):
     """Auto-completion for slash commands, skills, mode values, and file paths.
 
     Provides context-aware completions for the REPL input:
