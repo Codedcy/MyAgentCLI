@@ -5,7 +5,118 @@ Design doc reference: §九 配置系统 — Layer 2 (runtime overrides)
 
 from __future__ import annotations
 
+import dataclasses
+from typing import Any, get_type_hints
+
 from myagent.tools.base import ToolContext, ToolResult
+
+
+def _derive_valid_keys(cls=None, prefix: str = "") -> set[str]:
+    """Derive all dot-separated config paths from a dataclass hierarchy (G8).
+
+    Recursively walks nested dataclass fields to produce the full set of
+    valid config keys (e.g. "model.thinking", "session.sessions_dir").
+    Non-dataclass leaf fields become terminal keys.
+
+    Args:
+        cls: The dataclass to introspect (defaults to AppConfig).
+        prefix: Current key prefix for nested fields.
+
+    Returns:
+        Set of dot-separated key strings.
+    """
+    if cls is None:
+        from myagent.config.schema import AppConfig
+        cls = AppConfig
+
+    keys: set[str] = set()
+    try:
+        hints = get_type_hints(cls)
+    except Exception:
+        return keys
+
+    for field in dataclasses.fields(cls):
+        field_name = field.name
+        full_name = f"{prefix}.{field_name}" if prefix else field_name
+        field_type = hints.get(field_name)
+
+        # If the field type is a dataclass, recurse into it
+        if dataclasses.is_dataclass(field_type):
+            nested_keys = _derive_valid_keys(field_type, full_name)
+            keys.update(nested_keys)
+        else:
+            keys.add(full_name)
+
+    return keys
+
+
+# Build the valid keys set once at module load time
+_VALID_KEYS: set[str] = _derive_valid_keys()
+
+
+def _derive_type_map(cls=None, prefix: str = "") -> dict[str, type]:
+    """Derive type mapping for config keys from the dataclass hierarchy (G8).
+
+    Returns a dict mapping dot-separated keys to their Python types,
+    which drives type coercion in _validate_value.
+    """
+    if cls is None:
+        from myagent.config.schema import AppConfig
+        cls = AppConfig
+
+    type_map: dict[str, type] = {}
+    try:
+        hints = get_type_hints(cls)
+    except Exception:
+        return type_map
+
+    for field in dataclasses.fields(cls):
+        field_name = field.name
+        full_name = f"{prefix}.{field_name}" if prefix else field_name
+        field_type = hints.get(field_name)
+
+        if dataclasses.is_dataclass(field_type):
+            type_map.update(_derive_type_map(field_type, full_name))
+        else:
+            # Resolve the origin type (strip Optional, List wrapper, etc.)
+            resolved = _resolve_field_type(field_type)
+            type_map[full_name] = resolved
+
+    return type_map
+
+
+def _resolve_field_type(field_type) -> type:
+    """Resolve a type annotation to its concrete Python type.
+
+    Strips Optional, handles list[int]/list[str], etc.
+    """
+    import typing
+
+    origin = typing.get_origin(field_type)
+    if origin is not None:
+        # Handle Optional[X] = Union[X, None]
+        if origin is typing.Union:
+            args = typing.get_args(field_type)
+            non_none = [a for a in args if a is not type(None)]
+            if len(non_none) == 1:
+                return _resolve_field_type(non_none[0])
+            return str
+        # Handle list[str], list[int], etc.
+        if origin is list:
+            args = typing.get_args(field_type)
+            if args:
+                return _resolve_field_type(args[0])
+            return list
+        # Handle Literal["a", "b"]
+        if origin is typing.Literal or str(origin) == "typing.Literal":
+            return str
+        return str
+
+    return field_type
+
+
+# Build the type map once at module load time
+_TYPE_MAP: dict[str, type] = _derive_type_map()
 
 
 class ConfigSetTool:
@@ -27,7 +138,8 @@ class ConfigSetTool:
                     "'subagents.max_concurrent', 'tools.shell_timeout_seconds', "
                     "'tools.tool_result_max_chars', 'dream.enabled', "
                     "'permissions.default_mode', 'permissions.auto_allow.commands', "
-                    "'permissions.auto_deny.commands', 'ui.show_status_bar'"
+                    "'permissions.auto_deny.commands', 'ui.show_status_bar', "
+                    "'session.sessions_dir', 'model.provider', 'model.model'"
                 ),
             },
             "value": {
@@ -52,35 +164,15 @@ class ConfigSetTool:
                       "Runtime config changes are not supported."
             )
 
-        # Validate known config paths
-        valid_keys = {
-            "model.thinking", "model.fallback_models",
-            "context.compression.primary_threshold",
-            "context.compression.target_after",
-            "context.compression.hard_limit",
-            "context.compression.minimum_messages",
-            "context.compression.minimum_savings",
-            "permissions.default_mode",
-            "permissions.auto_allow.commands",
-            "permissions.auto_allow.paths",
-            "permissions.auto_allow.levels",
-            "permissions.auto_deny.commands",
-            "permissions.auto_deny.paths",
-            "subagents.max_concurrent", "subagents.speculative_exploration",
-            "dream.trigger_hours", "dream.trigger_rounds", "dream.enabled",
-            "tools.tool_result_max_chars", "tools.shell_timeout_seconds",
-            "ui.show_status_bar", "ui.streaming", "ui.syntax_highlight",
-            "session.save_transcripts", "session.transcript_format",
-            "logging.level", "logging.format", "logging.llm_prompts",
-        }
-        if key not in valid_keys:
+        # G8: Valid keys derived from AppConfig schema — always in sync
+        if key not in _VALID_KEYS:
             return ToolResult(
                 error=f"Unknown config key: '{key}'. Valid keys: "
-                      f"{', '.join(sorted(valid_keys))}"
+                      f"{', '.join(sorted(_VALID_KEYS))}"
             )
 
         try:
-            # Validate type coercion for common config values
+            # Validate type coercion from the schema-derived type map
             validated = self._validate_value(key, value)
 
             updated_config = config_loader.apply_runtime_override(key, validated)
@@ -102,54 +194,42 @@ class ConfigSetTool:
 
     @staticmethod
     def _validate_value(key: str, value):
-        """Validate and coerce value to the expected type for known config keys."""
-        # Boolean keys
+        """Validate and coerce value to the expected type from the schema (G8).
+
+        Uses _TYPE_MAP derived from AppConfig dataclass annotations.
+        Falls back to heuristic detection for keys not in the type map.
+        """
+        expected_type = _TYPE_MAP.get(key)
+
+        # G8: Type-based coercion from schema-derived type map
+        if expected_type is bool:
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, str):
+                return value.lower() in ("true", "1", "yes", "on")
+            return bool(value)
+        if expected_type is float:
+            return float(value)
+        if expected_type is int:
+            return int(value)
+        if expected_type is str:
+            return str(value)
+        if expected_type is list:
+            if isinstance(value, list):
+                return value
+            return [value]
+
+        # Fallback: heuristic-based coercion for subtypes not resolved
+        # Boolean-like keys
         bool_keys = {"dream.enabled", "ui.show_status_bar", "ui.streaming",
                      "ui.syntax_highlight", "logging.llm_prompts",
                      "subagents.speculative_exploration", "session.save_transcripts"}
-        # Float keys
-        float_keys = {"context.compression.primary_threshold",
-                      "context.compression.target_after",
-                      "context.compression.hard_limit",
-                      "context.compression.minimum_savings"}
-        # Int keys
-        int_keys = {"subagents.max_concurrent", "dream.trigger_hours",
-                    "dream.trigger_rounds", "tools.tool_result_max_chars",
-                    "tools.shell_timeout_seconds",
-                    "context.compression.minimum_messages"}
-        # String keys
-        string_keys = {"model.thinking", "permissions.default_mode",
-                       "logging.level", "logging.format"}
-        # List-of-strings keys
-        list_keys = {
-            "permissions.auto_allow.commands",
-            "permissions.auto_allow.paths",
-            "permissions.auto_deny.commands",
-            "permissions.auto_deny.paths",
-        }
-
         if key in bool_keys:
             if isinstance(value, bool):
                 return value
             if isinstance(value, str):
                 return value.lower() in ("true", "1", "yes", "on")
             return bool(value)
-        if key in float_keys:
-            return float(value)
-        if key in int_keys:
-            return int(value)
-        if key in string_keys:
-            return str(value)
-        if key in list_keys:
-            if isinstance(value, list):
-                return [str(v) for v in value]
-            return [str(value)]
-
-        # permissions.auto_allow.levels: list of ints
-        if key == "permissions.auto_allow.levels":
-            if isinstance(value, list):
-                return [int(v) for v in value]
-            return [int(value)]
 
         return value
 
