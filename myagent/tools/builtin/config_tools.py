@@ -26,13 +26,15 @@ class ConfigSetTool:
                     "Dot-separated config path, e.g. 'model.thinking', "
                     "'subagents.max_concurrent', 'tools.shell_timeout_seconds', "
                     "'tools.tool_result_max_chars', 'dream.enabled', "
-                    "'permissions.default_mode', 'ui.show_status_bar'"
+                    "'permissions.default_mode', 'permissions.auto_allow.commands', "
+                    "'permissions.auto_deny.commands', 'ui.show_status_bar'"
                 ),
             },
             "value": {
                 "description": (
                     "The new value. Numbers passed as int/float, booleans as bool, "
-                    "strings as string."
+                    "strings as string. For list keys like auto_allow.commands, "
+                    "pass a list of strings."
                 ),
             },
         },
@@ -59,6 +61,11 @@ class ConfigSetTool:
             "context.compression.minimum_messages",
             "context.compression.minimum_savings",
             "permissions.default_mode",
+            "permissions.auto_allow.commands",
+            "permissions.auto_allow.paths",
+            "permissions.auto_allow.levels",
+            "permissions.auto_deny.commands",
+            "permissions.auto_deny.paths",
             "subagents.max_concurrent", "subagents.speculative_exploration",
             "dream.trigger_hours", "dream.trigger_rounds", "dream.enabled",
             "tools.tool_result_max_chars", "tools.shell_timeout_seconds",
@@ -81,6 +88,10 @@ class ConfigSetTool:
             # Also update the in-memory config reference on the context
             if context.config is not None:
                 self._update_in_memory_config(context.config, key, validated)
+
+            # Update the live PermissionController for permission-related keys
+            if key.startswith("permissions.") and context.permissions is not None:
+                self._apply_permission_change(context.permissions, key, validated)
 
             return ToolResult(
                 output=f"Config updated: {key} = {validated} (runtime override, not persisted)",
@@ -109,6 +120,13 @@ class ConfigSetTool:
         # String keys
         string_keys = {"model.thinking", "permissions.default_mode",
                        "logging.level", "logging.format"}
+        # List-of-strings keys
+        list_keys = {
+            "permissions.auto_allow.commands",
+            "permissions.auto_allow.paths",
+            "permissions.auto_deny.commands",
+            "permissions.auto_deny.paths",
+        }
 
         if key in bool_keys:
             if isinstance(value, bool):
@@ -122,8 +140,64 @@ class ConfigSetTool:
             return int(value)
         if key in string_keys:
             return str(value)
+        if key in list_keys:
+            if isinstance(value, list):
+                return [str(v) for v in value]
+            return [str(value)]
+
+        # permissions.auto_allow.levels: list of ints
+        if key == "permissions.auto_allow.levels":
+            if isinstance(value, list):
+                return [int(v) for v in value]
+            return [int(value)]
 
         return value
+
+    @staticmethod
+    def _apply_permission_change(permissions, key: str, value) -> None:
+        """Update the live PermissionController for permission config changes.
+
+        This ensures that permission changes take effect immediately in the
+        running session without waiting for a config reload.
+        """
+        if key == "permissions.default_mode":
+            permissions.set_mode(value)
+        elif key == "permissions.auto_allow.commands":
+            for cmd in (value if isinstance(value, list) else [value]):
+                if cmd not in permissions.auto_allow.commands:
+                    permissions.auto_allow.commands.append(cmd)
+                    permissions._runtime_changes.append({
+                        "rule": cmd, "action": "add_allow", "allowed": cmd,
+                        "timestamp": __import__("time").time(),
+                    })
+        elif key == "permissions.auto_allow.paths":
+            for path in (value if isinstance(value, list) else [value]):
+                if path not in permissions.auto_allow.paths:
+                    permissions.auto_allow.paths.append(path)
+                    permissions._runtime_changes.append({
+                        "rule": path, "action": "add_allow_path", "path": path,
+                        "timestamp": __import__("time").time(),
+                    })
+        elif key == "permissions.auto_allow.levels":
+            for level in (value if isinstance(value, list) else [value]):
+                if level not in permissions.auto_allow.levels:
+                    permissions.auto_allow.levels.append(level)
+        elif key == "permissions.auto_deny.commands":
+            for cmd in (value if isinstance(value, list) else [value]):
+                if cmd not in permissions.auto_deny.commands:
+                    permissions.auto_deny.commands.append(cmd)
+                    permissions._runtime_changes.append({
+                        "rule": cmd, "action": "add_deny", "denied": cmd,
+                        "timestamp": __import__("time").time(),
+                    })
+        elif key == "permissions.auto_deny.paths":
+            for path in (value if isinstance(value, list) else [value]):
+                if path not in permissions.auto_deny.paths:
+                    permissions.auto_deny.paths.append(path)
+                    permissions._runtime_changes.append({
+                        "rule": path, "action": "add_deny_path", "path": path,
+                        "timestamp": __import__("time").time(),
+                    })
 
     @staticmethod
     def _update_in_memory_config(config, key: str, value) -> None:
