@@ -287,6 +287,9 @@ async def async_main(argv: list[str] | None = None) -> int:
             # Set logging context with session_id (gap-16)
             from myagent.logging.context import set_context
             set_context(session_id=session.id, project_name=project_dir.name)
+            # Emit startup event now that session_id is known (gap-18-04)
+            from myagent.logging.logger import LogManager as _LM
+            _LM.log_startup(config=config.logging, session_id=session.id)
             # Wire session into sub-agent pool so transcripts are persisted
             # and the counter is advanced past existing sub-agent IDs (gap-r14-04)
             subagent_pool.set_session(session, session_store)

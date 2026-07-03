@@ -133,12 +133,13 @@ class LogManager:
 
         Called once at application startup. Creates:
         - Root logger "myagent" with configured level
-        - QueueHandler → QueueListener → file handlers
+        - QueueHandler -> QueueListener -> file handlers
         - Daily rotation + size-based rotation + retention cleanup
 
         Args:
             config: LoggingConfig dataclass. If None, uses defaults.
-            session_id: Optional session ID for context.
+            session_id: Optional session ID for context. If provided, sets
+                context before the startup event is emitted (gap-18-04).
         """
         global _initialized, _queue_listener, _root_logger
 
@@ -212,39 +213,9 @@ class LogManager:
         _root_logger = root
         _initialized = True
 
-        # Log startup with metadata (gap-2-12)
-        if session_id:
-            from myagent.logging.context import set_context
-            set_context(session_id=session_id)
-
-        # Compute startup metadata
-        import hashlib, json, platform, sys
-        config_hash = ""
-        python_version = sys.version
-        platform_info = platform.platform()
-        try:
-            if config and hasattr(config, '__dict__'):
-                # Use a stable serialization for hashing
-                config_dict = {
-                    k: v for k, v in config.__dict__.items()
-                    if not k.startswith('_')
-                }
-                config_hash = hashlib.sha256(
-                    json.dumps(config_dict, sort_keys=True, default=str).encode()
-                ).hexdigest()[:12]
-        except Exception:
-            config_hash = "unknown"
-
-        root.info(
-            "Logging initialized",
-            extra={
-                "category": LOG_SYSTEM,
-                "event": "startup",
-                "config_hash": config_hash,
-                "python_version": python_version,
-                "platform": platform_info,
-            },
-        )
+        # Infrastructure is ready. The startup event is emitted separately
+        # via log_startup() after session creation, so it always carries
+        # the session_id (gap-18-04).
 
     @staticmethod
     def shutdown() -> None:
@@ -265,6 +236,56 @@ class LogManager:
             _queue_listener = None
 
         _initialized = False
+
+    @staticmethod
+    def log_startup(config=None, session_id: str | None = None) -> None:
+        """Log a startup event with session_id in context (gap-18-04).
+
+        Call this AFTER session creation when session_id becomes known.
+        The startup event will carry the session_id via LogContext.
+
+        Args:
+            config: LoggingConfig dataclass. If None, uses defaults.
+            session_id: Session ID to bind to logging context before emitting.
+        """
+        root = logging.getLogger("myagent")
+        if session_id:
+            from myagent.logging.context import set_context
+            set_context(session_id=session_id)
+        if config is None:
+            from myagent.config.schema import LoggingConfig
+            config = LoggingConfig()
+        LogManager._emit_startup_event(root, config)
+
+    @staticmethod
+    def _emit_startup_event(root: logging.Logger, config: object) -> None:
+        """Emit a single startup event with metadata (gap-2-12, gap-18-04)."""
+        import hashlib, json, platform, sys
+        config_hash = ""
+        python_version = sys.version
+        platform_info = platform.platform()
+        try:
+            if config and hasattr(config, '__dict__'):
+                config_dict = {
+                    k: v for k, v in config.__dict__.items()
+                    if not k.startswith('_')
+                }
+                config_hash = hashlib.sha256(
+                    json.dumps(config_dict, sort_keys=True, default=str).encode()
+                ).hexdigest()[:12]
+        except Exception:
+            config_hash = "unknown"
+
+        root.info(
+            "Logging initialized",
+            extra={
+                "category": LOG_SYSTEM,
+                "event": "startup",
+                "config_hash": config_hash,
+                "python_version": python_version,
+                "platform": platform_info,
+            },
+        )
 
     @staticmethod
     def _cleanup_old_logs(log_dir: Path, retention_days: int) -> None:

@@ -119,6 +119,12 @@ class REPLEngine:
                 session_id=self._current_session.id,
                 project_name=self._project_dir.name,
             )
+            # Emit startup event now that session_id is known (gap-18-04)
+            from myagent.logging.logger import LogManager as _LM
+            _LM.log_startup(
+                config=getattr(self._config, 'logging', None),
+                session_id=self._current_session.id,
+            )
             # Reset task list for the new session (gap-12)
             if hasattr(self._current_session, 'project_name') and self._session_mgr.session_store:
                 from myagent.tools.builtin.session_tools import reset_task_list
