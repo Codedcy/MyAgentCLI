@@ -942,7 +942,7 @@ class AgentEngine:
         return TOOL_LEVEL_MAP.get(tool_name, 3)
 
     # Known model context window sizes (in tokens).
-    # Used as fallback when the LLM provider does not expose its own window.
+    # Used as fallback when dynamic discovery from litellm fails.
     _CONTEXT_WINDOW_MAP: dict[str, int] = {
         "deepseek-v4-pro": 1_000_000,
         "deepseek-chat": 65536,
@@ -954,6 +954,43 @@ class AgentEngine:
         "claude-3-haiku": 200000,
         "claude-3.5-sonnet": 200000,
     }
+
+    @staticmethod
+    def _get_context_window(model_name: str | None) -> int:
+        """Get the context window size for a model (gap-13-05).
+
+        First tries dynamic discovery via litellm.model_cost, then falls
+        back to the static _CONTEXT_WINDOW_MAP, defaulting to 1_000_000.
+
+        Args:
+            model_name: The model identifier (e.g. "deepseek-v4-pro").
+                        Can be in litellm format ("deepseek/deepseek-v4-pro").
+
+        Returns:
+            Context window size in tokens.
+        """
+        if not model_name:
+            return 1_000_000
+
+        # ── Dynamic discovery via litellm.model_cost ──────────────
+        try:
+            import litellm
+            model_cost_map = getattr(litellm, 'model_cost', None)
+            if isinstance(model_cost_map, dict):
+                # litellm.model_cost keys are like "deepseek/deepseek-v4-pro"
+                # Try both the full litellm key and the short model name
+                for candidate in (model_name, f"deepseek/{model_name}"):
+                    info = model_cost_map.get(candidate)
+                    if isinstance(info, dict):
+                        max_input = info.get("max_input_tokens")
+                        if max_input is not None and max_input > 0:
+                            return int(max_input)
+        except Exception:
+            pass  # Dynamic discovery is best-effort
+
+        # ── Fallback: static map with litellm prefix stripped ─────
+        short_name = model_name.split("/")[-1] if "/" in model_name else model_name
+        return AgentEngine._CONTEXT_WINDOW_MAP.get(short_name, 1_000_000)
 
     def _estimate_context_usage(self, messages: list[dict], tools: list[dict] | None = None) -> float:
         """Estimate context window usage as a fraction [0.0, 1.0].
@@ -973,11 +1010,11 @@ class AgentEngine:
         else:
             estimated_tokens = self._char_based_token_estimate(messages, tools)
 
-        # ── Context window lookup ───────────────────────────────
+        # ── Context window lookup (dynamic + fallback, gap-13-05) ─
         model_name = None
         if self.config and hasattr(self.config, 'model'):
             model_name = getattr(self.config.model, 'model', None)
-        context_window = self._CONTEXT_WINDOW_MAP.get(model_name or "", 1_000_000)
+        context_window = self._get_context_window(model_name)
 
         return min(estimated_tokens / context_window, 1.0)
 
