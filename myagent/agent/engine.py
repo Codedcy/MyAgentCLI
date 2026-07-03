@@ -268,6 +268,18 @@ class AgentEngine:
                     # Re-insert system message if it got removed
                     if api_format.get("system") and messages[0].get("role") != "system":
                         messages.insert(0, {"role": "system", "content": api_format["system"]})
+                    # Surface Layer 3 degradation notice to user (gap-r12-07)
+                    if compact_result.degradation_notice:
+                        logger.warning(
+                            "Compression Layer 3 degraded: %s",
+                            compact_result.degradation_notice,
+                            extra={"category": "agent", "event": "layer3_degraded"},
+                        )
+                        yield TextChunk(
+                            content=(
+                                f"\n[Warning: {compact_result.degradation_notice}]\n"
+                            )
+                        )
                     if compact_result.layers_applied:
                         yield TextChunk(
                             content=(

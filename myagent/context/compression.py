@@ -23,6 +23,7 @@ class CompactResult:
     usage_after: float
     layers_applied: list[int]
     messages_changed: bool = False
+    degradation_notice: str | None = None  # gap-r12-07: Layer 3 degradation notice
 
 
 class CompressionEngine:
@@ -50,10 +51,15 @@ class CompressionEngine:
         if self.config and len(messages) < self.config.minimum_messages:
             return CompactResult(messages=messages, usage_after=current_usage_pct, layers_applied=[])
 
-        layers_applied = []
+        # ── Save original state for debounce rollback ──────────
+        original_messages = list(messages)
+        original_size = sum(len(m.content) for m in messages)
+        layers_applied: list[int] = []
         changed = False
+        degradation_notice: str | None = None
+        min_savings = getattr(self.config, 'minimum_savings', 0.10)
 
-        # Layer 1: Cleanup
+        # Layer 1: Cleanup (zero-cost, always applied when threshold met)
         if self.config and current_usage_pct >= self.config.primary_threshold:
             old_len = len(messages)
             messages = self._layer1_cleanup(messages)
@@ -62,42 +68,81 @@ class CompressionEngine:
                 changed = True
                 current_usage_pct *= 0.95  # rough estimate
 
-        # Layer 2: Summarize tool results
+        # Layer 2: Summarize tool results (always apply; global debounce
+        # at the end will roll back if needed)
         if self.config and current_usage_pct >= self.config.primary_threshold:
-            old_size = sum(len(m.content) for m in messages)
+            pre_l2_size = sum(len(m.content) for m in messages)
             messages = self._layer2_summarize(messages)
-            new_size = sum(len(m.content) for m in messages)
-            # Calculate actual savings ratio
-            if old_size > 0:
-                savings = (old_size - new_size) / old_size
-            else:
-                savings = 0.0
-            # Debounce: skip if savings below minimum_savings threshold (spec §三 防抖保护)
-            min_savings = getattr(self.config, 'minimum_savings', 0.10)
-            if savings >= min_savings:
+            post_l2_size = sum(len(m.content) for m in messages)
+            if post_l2_size < pre_l2_size:
                 layers_applied.append(2)
                 changed = True
                 current_usage_pct *= 0.7
-            elif savings > 0:
-                logger.debug(
-                    "Layer 2 compression savings (%.1f%%) below minimum_savings (%.1f%%); skipping.",
-                    savings * 100, min_savings * 100,
-                )
 
         # Layer 3: Conversation summary
-        if current_usage_pct > self.config.primary_threshold if self.config else 0.75:
-            try:
-                messages = await self._layer3_summarize(messages)
-                layers_applied.append(3)
-                changed = True
-                current_usage_pct = (
-                    self.config.target_after if self.config else 0.30
+        if current_usage_pct > (self.config.primary_threshold if self.config else 0.75):
+            if self._layer3_failures >= 3:
+                # Layer 3 is degraded — set notice once for user notification
+                degradation_notice = (
+                    "Conversation summarization (Layer 3) has been disabled after "
+                    "3 consecutive failures. Context pressure may build faster. "
+                    "Consider using /compact or /clear to manually reduce context."
                 )
-                self._layer3_failures = 0
-            except Exception:
-                self._layer3_failures += 1
+            else:
+                try:
+                    messages = await self._layer3_summarize(messages)
+                    layers_applied.append(3)
+                    changed = True
+                    current_usage_pct = (
+                        self.config.target_after if self.config else 0.30
+                    )
+                    self._layer3_failures = 0
+                except Exception:
+                    self._layer3_failures += 1
+                    if self._layer3_failures >= 3:
+                        degradation_notice = (
+                            "Conversation summarization (Layer 3) has been disabled after "
+                            "3 consecutive failures. Context pressure may build faster. "
+                            "Consider using /compact or /clear to manually reduce context."
+                        )
 
-        # Layer 4: Hard truncation
+        # ── Global debounce: roll back if total savings < minimum_savings ──
+        # Per spec §三 防抖保护: "压缩后 token 减少 < 10% → 跳过"
+        # This applies to Layers 2-3 (which have real cost: content reduction / API call).
+        # Layer 1 is zero-cost cleanup (removing empty messages) and is always kept.
+        if changed and original_size > 0:
+            post_size = sum(len(m.content) for m in messages)
+            total_savings = (original_size - post_size) / original_size
+            if total_savings < min_savings:
+                # Only roll back if Layers 2 or 3 were applied (Layer 1 alone is always kept).
+                has_costly_layers = any(l in layers_applied for l in (2, 3))
+                if has_costly_layers:
+                    logger.debug(
+                        "Overall compression savings (%.1f%%) below minimum_savings (%.1f%%); "
+                        "discarding compacted result (layers 2-3).",
+                        total_savings * 100, min_savings * 100,
+                    )
+                    messages = original_messages
+                    # Re-apply only Layer 1 (zero-cost cleanup)
+                    if 1 in layers_applied:
+                        messages = self._layer1_cleanup(messages)
+                        layers_applied = [1]
+                    else:
+                        layers_applied = []
+                    changed = bool(layers_applied)
+                else:
+                    # Only Layer 1: keep it (zero-cost, always beneficial)
+                    logger.debug(
+                        "Layer 1 only compaction — keeping result (%.1f%% savings).",
+                        total_savings * 100,
+                    )
+            else:
+                logger.debug(
+                    "Compression complete: %.1f%% savings across layers %s.",
+                    total_savings * 100, layers_applied,
+                )
+
+        # Layer 4: Hard truncation (safety, always applies regardless of debounce)
         hard_limit = self.config.hard_limit if self.config else 0.90
         if current_usage_pct > hard_limit:
             messages = self._layer4_truncate(messages)
@@ -109,6 +154,7 @@ class CompressionEngine:
             usage_after=current_usage_pct,
             layers_applied=layers_applied,
             messages_changed=changed,
+            degradation_notice=degradation_notice,
         )
 
     def _layer1_cleanup(self, messages: list[Message]) -> list[Message]:
