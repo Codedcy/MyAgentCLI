@@ -232,6 +232,7 @@ class AgentEngine:
             # ── Context compression check (gap-01, gap-25) ──────
             if self.compression:
                 usage_pct = self._estimate_context_usage(messages, tools_list)
+                compact_was_called = False  # gap-19-07: track whether compact() ran
                 if usage_pct >= 0.50 and not context_notified_50:
                     context_notified_50 = True
                     logger.info(
@@ -247,6 +248,7 @@ class AgentEngine:
                         )
                     )
                 if usage_pct >= 0.75:
+                    compact_was_called = True
                     logger.info(
                         "Auto-compacting context at %.0f%%", usage_pct * 100,
                         extra={"category": "agent", "event": "auto_compact"},
@@ -296,39 +298,62 @@ class AgentEngine:
                     if usage_pct < 0.30:
                         context_notified_50 = False
 
-                # G9: Independent 90% hard truncation trigger (separate from 75% compaction guard)
-                # Per spec flowchart §三: 90% hard limit is a separate trigger path (HARSH).
-                # It must fire even when the 75% compaction path was skipped (e.g. minimum_messages guard).
+                # gap-19-07: 90% hard limit — route through compact() pipeline
+                # instead of calling _layer4_truncate directly. This ensures
+                # L1-L3 are applied first, potentially reducing context enough
+                # to avoid hard truncation. compact() already handles L4 as a
+                # safety net (compression.py lines 170-175).
                 HARD_LIMIT = self.config.context.compression.hard_limit if self.config and getattr(self.config, 'context', None) and getattr(self.config.context, 'compression', None) else 0.90
                 if usage_pct >= HARD_LIMIT:
-                    logger.warning(
-                        "Context at %.0f%% — triggering hard truncation (Layer 4)",
-                        usage_pct * 100,
-                        extra={"category": "agent", "event": "hard_truncation"},
-                    )
-                    from myagent.context.builder import Message as CtxMessage2
-                    ctx_messages_hard = [
-                        CtxMessage2(
-                            role=m.get("role", "user"),
-                            content=m.get("content", ""),
+                    if not compact_was_called:
+                        # compact was skipped at 75% (e.g. minimum_messages guard) —
+                        # call it now with all layers including L4 safety net
+                        logger.warning(
+                            "Context at %.0f%% — triggering compaction via pipeline (Layer 4)",
+                            usage_pct * 100,
+                            extra={"category": "agent", "event": "hard_truncation"},
                         )
-                        for m in messages
-                    ]
-                    truncated = self.compression._layer4_truncate(ctx_messages_hard)
-                    messages = [
-                        {"role": m.role, "content": m.content}
-                        for m in truncated
-                    ]
-                    # Re-insert system message if it got removed
-                    if api_format.get("system") and messages[0].get("role") != "system":
-                        messages.insert(0, {"role": "system", "content": api_format["system"]})
-                    yield TextChunk(
-                        content=(
-                            f"\n[Hard truncation applied: context exceeded {int(HARD_LIMIT * 100)}%. "
-                            f"Messages reduced from {len(ctx_messages_hard)} to {len(messages)}. "
-                            f"Consider running /clear to free more space.]\n"
+                        from myagent.context.builder import Message as CtxMessage2
+                        ctx_messages_hard = [
+                            CtxMessage2(
+                                role=m.get("role", "user"),
+                                content=m.get("content", ""),
+                            )
+                            for m in messages
+                        ]
+                        compact_result_l4 = await self.compression.compact(ctx_messages_hard, usage_pct)
+                        messages = [
+                            {"role": m.role, "content": m.content}
+                            for m in compact_result_l4.messages
+                        ]
+                        # Re-insert system message if it got removed
+                        if api_format.get("system") and messages[0].get("role") != "system":
+                            messages.insert(0, {"role": "system", "content": api_format["system"]})
+                        yield TextChunk(
+                            content=(
+                                f"\n[Hard truncation applied: context exceeded {int(HARD_LIMIT * 100)}%. "
+                                f"Messages reduced from {len(ctx_messages_hard)} to {len(messages)}. "
+                                f"Consider running /clear to free more space.]\n"
+                            )
                         )
-                    )
+                    else:
+                        # compact was already called (>= 75% path), L4 was already
+                        # applied by compact(). Log a warning that we're still
+                        # above the hard limit despite all layers being applied.
+                        logger.warning(
+                            "Context at %.0f%% after compaction (layers: %s) — "
+                            "all compression layers exhausted. Manual /clear "
+                            "recommended.",
+                            usage_pct * 100,
+                            compact_result.layers_applied,
+                            extra={"category": "agent", "event": "hard_limit_exhausted"},
+                        )
+                        yield TextChunk(
+                            content=(
+                                f"\n[Warning: Context at {int(usage_pct * 100)}% after compression. "
+                                f"All layers exhausted. Consider running /clear to free space.]\n"
+                            )
+                        )
 
             text_buffer: list[str] = []
             tool_calls_in_turn: list = []
@@ -894,14 +919,12 @@ class AgentEngine:
         Falls back to truncation if the sub-agent pool is unavailable or
         summarization fails.
 
-        When call_id is provided, includes a reference to the persisted
-        full result file (tools/call-{call_id}.json) in the summary output.
-
-        Truncation note: the full tool result is passed to the summarizer
-        sub-agent without truncation. The sub-agent has a 1M context window
-        and can handle very large inputs. For extremely large results
-        (>100K chars), the prompt also includes a file-reference instruction
-        so the sub-agent knows where to find the persisted copy.
+        Size limits (gap-19-06):
+        - Results <= 200K chars: passed in full to the sub-agent prompt
+        - Results 200K-1M chars: truncated to 200K in the prompt, with
+          a file-reference instruction pointing to the persisted copy
+        - Results > 1M chars: fall back to truncation immediately — even
+          the sub-agent's 1M context window cannot hold the full result
         """
         if not self.subagent_pool:
             return self._truncate_result(result)
@@ -909,21 +932,54 @@ class AgentEngine:
         # Compute the file reference for the persisted full result
         file_ref = ""
         if call_id:
-            file_ref = f" Full result: tools/call-{call_id}.json"
+            file_ref = f"tools/call-{call_id}.json"
+
+        # Size guard: results exceeding 1M chars cannot fit in any
+        # sub-agent context window — fall back to truncation immediately
+        MAX_PROMPT_CHARS = 200_000
+        HARD_LIMIT_CHARS = 1_000_000
+
+        if len(result.output) > HARD_LIMIT_CHARS:
+            logger.warning(
+                "Tool result (%d chars) exceeds sub-agent context limit "
+                "(%d chars) — falling back to truncation",
+                len(result.output), HARD_LIMIT_CHARS,
+                extra={"category": "tool"},
+            )
+            return self._truncate_result(result)
 
         try:
-            # Pass the full result to the summarizer sub-agent without truncation.
-            # The sub-agent has a large context window and needs the complete
-            # content for accurate summarization.
             full_output = result.output
+            truncated_for_prompt = False
+
+            # Apply 200K ceiling for the sub-agent prompt (gap-19-06)
+            if len(full_output) > MAX_PROMPT_CHARS:
+                truncated_for_prompt = True
+                prompt_output = full_output[:MAX_PROMPT_CHARS]
+            else:
+                prompt_output = full_output
+
             prompt = (
                 f"Summarize this tool result from '{tool_name}' concisely. "
-                f"Keep all key information but compress redundant parts.\n\n"
-                f"{full_output}"
+                f"Keep all key information but compress redundant parts."
             )
+            if truncated_for_prompt and file_ref:
+                prompt += (
+                    f" Note: the result was truncated to {MAX_PROMPT_CHARS} "
+                    f"chars for this prompt. The full result ({len(result.output)} "
+                    f"chars) is available at {file_ref} — use the read tool to "
+                    f"access it if you need details beyond what is shown here."
+                )
+            elif truncated_for_prompt:
+                prompt += (
+                    f" Note: the result was truncated to {MAX_PROMPT_CHARS} "
+                    f"chars for this prompt (original: {len(result.output)} chars)."
+                )
+            prompt += f"\n\n{prompt_output}"
+
             handle = await self.subagent_pool.spawn(
                 prompt=prompt,
-                tools=[],
+                tools=["read"] if (truncated_for_prompt and file_ref) else [],
                 mode="Non-think",
                 background=True,
             )
@@ -932,7 +988,7 @@ class AgentEngine:
                 raise Exception(summary_result.error)
             return ToolResult(
                 output=(
-                    f"[Summarized from {len(result.output)} chars.{file_ref}]\n"
+                    f"[Summarized from {len(result.output)} chars.{' ' + file_ref if file_ref else ''}]\n"
                     f"{summary_result.output}"
                 ),
                 error=result.error,
