@@ -378,11 +378,14 @@ class LLMProvider:
                 else:
                     yield Done(stop_reason="end_turn")
 
+            # Capture actual retry count from LiteLLM's failure hook (gap-13-02)
+            retry_count = getattr(self, '_failure_count', 0)
+
             # Log successful response with individual token breakdown (gap-2-10)
             latency_ms = (time.monotonic() - t0) * 1000
             logger.info(
-                "LLM response: model=%s latency_ms=%.1f tokens=%d tool_calls=%d",
-                model_name, latency_ms, total_tokens, tool_calls_count,
+                "LLM response: model=%s latency_ms=%.1f tokens=%d tool_calls=%d retries=%d",
+                model_name, latency_ms, total_tokens, tool_calls_count, retry_count,
                 extra={
                     "category": "llm",
                     "event": "response",
@@ -393,13 +396,13 @@ class LLMProvider:
                     "total_tokens": total_tokens,
                     "token_consumption": total_tokens,
                     "tool_calls_count": tool_calls_count,
-                    "retry_count": 0,
+                    "retry_count": retry_count,
                 },
             )
             # Write response prompt file (gap-2-06)
             self._write_response_log(
                 model_name, response_text_chunks, response_tool_calls,
-                prompt_tokens, completion_tokens, total_tokens, latency_ms, 0,
+                prompt_tokens, completion_tokens, total_tokens, latency_ms, retry_count,
             )
             return
 
