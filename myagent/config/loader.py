@@ -1,15 +1,16 @@
 """ConfigLoader — 7-level YAML loader with deep merge.
 
-Priority (low→high):
+Priority (low→high), per spec §九:
 1. Hardcoded defaults
 2. User AGENT.md (~/.myagent/AGENT.md)
 3. User config (~/.myagent/config.yaml)
 4. Project AGENT.md (.myagent/AGENT.md)
-5. Project config (.myagent/config.yaml)
+5. Project config (.myagent/config.yaml; or --config path if specified)
 6. Runtime overrides (in-memory dict)
 7. CLI args
 
-Design doc reference: §九 — Config merge strategy
+The --config CLI flag changes the source for level 5 (project config),
+not a separate priority layer. This keeps exactly 7 levels as documented.
 """
 
 from __future__ import annotations
@@ -159,27 +160,25 @@ class ConfigLoader:
         )
 
         # Level 5: Project config
-        project_config = self._load_yaml(
-            self.project_dir / ".myagent" / "config.yaml"
-        )
-
-        # Level 1.x: Custom config path (--config CLI arg)
-        # Loaded as a high-priority file layer between project config
-        # and runtime overrides. If the path contains ~, expand it.
-        custom_config = {}
+        # When --config is specified, it REPLACES the default project config
+        # file path. This keeps exactly 7 priority levels as documented in
+        # spec §九, rather than adding an 8th level.
         if self._config_path:
             resolved_path = Path(
                 re.sub(r"~(?=/)", lambda m: os.path.expanduser(m.group(0)),
                        self._config_path)
             )
-            custom_config = self._load_yaml(resolved_path)
+            project_config = self._load_yaml(resolved_path)
+        else:
+            project_config = self._load_yaml(
+                self.project_dir / ".myagent" / "config.yaml"
+            )
 
-        # Merge in priority order (low→high)
+        # Merge in priority order (low→high): exactly 7 levels
         merged = deep_merge(defaults_dict, user_agent_md)
         merged = deep_merge(merged, user_config)
         merged = deep_merge(merged, project_agent_md)
         merged = deep_merge(merged, project_config)
-        merged = deep_merge(merged, custom_config)
         merged = deep_merge(merged, self._runtime_overrides)
 
         # Level 7: CLI args
