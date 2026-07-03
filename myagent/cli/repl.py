@@ -67,6 +67,9 @@ class SlashCompleter:
             for mode_val in self.MODE_VALUES:
                 if mode_val.startswith(arg):
                     yield Completion(mode_val, start_position=-len(arg))
+
+
+class REPLEngine:
     """Interactive REPL using prompt_toolkit."""
 
     def __init__(
