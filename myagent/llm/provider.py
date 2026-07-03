@@ -512,7 +512,7 @@ class LLMProvider:
             prompts_dir.mkdir(parents=True, exist_ok=True)
 
             self._prompt_counter += 1
-            ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+            ts = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
             session_part = self._session_id or "nosession"
 
             # Write request file
@@ -557,7 +557,7 @@ class LLMProvider:
             prompts_dir = log_dir / ".prompts"
             prompts_dir.mkdir(parents=True, exist_ok=True)
 
-            ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+            ts = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
             session_part = self._session_id or "nosession"
 
             response_file = prompts_dir / f"{ts}-{session_part}-response-{self._prompt_counter:04d}.json"
