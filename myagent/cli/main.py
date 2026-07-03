@@ -290,6 +290,14 @@ async def async_main(argv: list[str] | None = None) -> int:
             # Wire session into sub-agent pool so transcripts are persisted
             # and the counter is advanced past existing sub-agent IDs (gap-r14-04)
             subagent_pool.set_session(session, session_store)
+            # Restore goal from resumed session (gap-18-07)
+            if session.goal:
+                goal_tracker.set_goal(session.goal)
+                import logging
+                logging.getLogger("myagent.cli").info(
+                    "Goal restored from resumed session: %s", session.goal[:100],
+                    extra={"category": "agent", "event": "goal_restored"},
+                )
             # Reset task list with session persistence path (gap-12)
             if hasattr(session, 'project_name') and session_store:
                 from myagent.tools.builtin.session_tools import reset_task_list
