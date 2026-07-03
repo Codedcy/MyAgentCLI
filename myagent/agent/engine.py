@@ -337,6 +337,7 @@ class AgentEngine:
                     "LLM error in iteration %d: %s",
                     iteration,
                     str(e),
+                    exc_info=True,
                     extra={"category": "error", "component": "llm", "context": "llm_stream_complete"},
                 )
                 if partial_text:
@@ -351,8 +352,9 @@ class AgentEngine:
                     self._persist_turn(session, messages)
                     yield IntentSignal(intent="continue")
                     return
+                # gap-8-03: user-friendly guidance when LLM retries exhausted
                 self._persist_turn(session, messages)
-                yield Error(message=str(e))
+                yield self._build_llm_error_event(e)
                 return
 
             # ── Execute tool calls and feed results back ─────────
@@ -589,6 +591,56 @@ class AgentEngine:
             return getattr(self.config.model, "thinking", "Think High")
         return "Think High"
 
+    def _build_llm_error_event(self, exception: Exception) -> Error:
+        """Build a user-friendly Error event for exhausted LLM retries (gap-8-03).
+
+        When all 3 retries across all fallback models fail, provide actionable
+        guidance to the user instead of raw exception text (per spec: "降级提示
+        用户检查网络/API key").
+        """
+        from myagent.llm.provider import LLMError as ProviderLLMError
+
+        err_msg = str(exception)
+        if isinstance(exception, ProviderLLMError):
+            code = exception.code
+            if code == "rate_limit":
+                guidance = (
+                    "API 请求频率超限 (rate limit)。请稍等几分钟后重试，"
+                    "或检查 API 配额是否充足。"
+                )
+            elif code == "connection_error":
+                guidance = (
+                    "无法连接到模型服务。请检查网络连接是否正常，"
+                    "或确认 API endpoint 地址是否正确。"
+                )
+            elif code in ("auth_error",):
+                guidance = (
+                    "API Key 认证失败。请检查 API Key 是否有效，"
+                    "或环境变量是否正确配置。"
+                )
+            elif code == "all_models_exhausted":
+                guidance = (
+                    "所有模型（主模型 + 备用模型）均已尝试但全部失败。"
+                    "请检查网络连接和 API Key 配置。"
+                )
+            elif code == "max_retries":
+                guidance = (
+                    "LLM API 调用经过 3 次重试后仍然失败。"
+                    "请检查网络连接和 API Key 是否有效。"
+                )
+            else:
+                guidance = (
+                    f"LLM API 调用失败 (错误码: {code})。"
+                    "请检查网络连接和 API Key 是否有效。"
+                )
+        else:
+            guidance = (
+                f"LLM API 调用失败: {err_msg[:200]}。"
+                "请检查网络连接和 API Key 是否有效。"
+            )
+
+        return Error(message=f"{guidance}\n错误详情: {err_msg[:300]}")
+
     # Structured intent marker prefix (spec §二: model signals intent via cues)
     _INTENT_MARKER_PREFIX = "[INTENT:"
 
@@ -792,6 +844,7 @@ class AgentEngine:
         except Exception as e:
             logger.error(
                 "Tool '%s' failed: %s", tc.name, str(e),
+                exc_info=True,
                 extra={"category": "error", "component": "tool", "context": f"execute_tool:{tc.name}"},
             )
             return ToolResult(error=str(e))

@@ -20,7 +20,14 @@ from myagent.llm.provider import Done as LLMDone
 from myagent.llm.provider import TextDelta as LLMTextDelta
 from myagent.llm.provider import ThinkingDelta as LLMThinkingDelta
 from myagent.llm.provider import ToolCall as LLMToolCall
+from myagent.llm.provider import LLMError
 from myagent.tools.base import ToolContext, ToolResult
+
+# Retry constants for sub-agent LLM calls (gap-8-01)
+# Same strategy as LLMProvider: exponential backoff, max 3 retries, 2s-30s
+_SUBAGENT_MAX_RETRIES = 3
+_SUBAGENT_BASE_DELAY = 2.0
+_SUBAGENT_MAX_DELAY = 30.0
 
 logger = logging.getLogger("myagent.subagent")
 
@@ -65,6 +72,7 @@ class SubAgentWorker:
         project_context=None,
         message_store: list | None = None,
         project_dir: Path | None = None,
+        progress_callback=None,
     ):
         self.prompt = prompt
         self.tools = tools
@@ -82,6 +90,8 @@ class SubAgentWorker:
         self._transcript_tool_calls: list[dict] = []
         self._project_dir = project_dir
         self._worktree_path: Path | None = None
+        self._progress_callback = progress_callback
+        self._current_iteration: int = 0
 
     async def run(self) -> str:
         """Execute the sub-agent task and return a result string.
@@ -147,6 +157,14 @@ class SubAgentWorker:
         iteration = 0
         while iteration < self.MAX_ITERATIONS:
             iteration += 1
+            self._current_iteration = iteration
+
+            # Report iteration progress to pool/status bar (gap-8-06)
+            if self._progress_callback:
+                try:
+                    self._progress_callback(iteration, self.MAX_ITERATIONS)
+                except Exception:
+                    pass
 
             # Check for pending messages from the parent (gap-20)
             if self._message_store and self._message_store:
@@ -175,27 +193,12 @@ class SubAgentWorker:
             text_buffer: list[str] = []
             tool_calls_in_turn: list = []
 
-            # ── Stream LLM response ──────────────────────────────
-            try:
-                async for event in self.llm.complete(
-                    messages=messages,
-                    tools=tools_schemas if tools_schemas else None,
-                    thinking=self.mode,
-                ):
-                    kind = self._classify_event(event)
-                    if kind == "text":
-                        text_buffer.append(event.content)
-                    elif kind == "tool_call":
-                        tool_calls_in_turn.append(event)
-                    # "done", "thinking", "unknown" — absorbed
-            except Exception as e:
-                logger.error(
-                    "LLM error in sub-agent iteration %d: %s",
-                    iteration,
-                    str(e),
-                    extra={"category": "error", "component": "llm", "context": "subagent_llm_call"},
-                )
-                return f"Error: {e}"
+            # ── Stream LLM response with retry (gap-8-01) ───────
+            stream_error = await self._stream_llm_with_retry(
+                messages, tools_schemas, iteration, text_buffer, tool_calls_in_turn,
+            )
+            if stream_error is not None:
+                return stream_error
 
             # ── Execute tool calls ───────────────────────────────
             if tool_calls_in_turn:
@@ -233,6 +236,10 @@ class SubAgentWorker:
                             project_dir=None,
                             permissions=None,
                             config=None,
+                            subagent_pool=(
+                                getattr(self.tool_context, 'subagent_pool', None)
+                                if self.tool_context else None
+                            ),
                         )
                         try:
                             t0 = time.monotonic()
@@ -255,6 +262,7 @@ class SubAgentWorker:
                                 "Tool '%s' failed: %s",
                                 tc.name,
                                 str(e),
+                                exc_info=True,
                                 extra={"category": "error", "component": "tool", "context": f"subagent_tool:{tc.name}"},
                             )
                             result_text = f"Error executing {tc.name}: {e}"
@@ -287,6 +295,86 @@ class SubAgentWorker:
         return f"Error: Sub-agent reached max iterations ({self.MAX_ITERATIONS})"
 
     # ── helpers ────────────────────────────────────────────────────
+
+    async def _stream_llm_with_retry(
+        self,
+        messages: list[dict],
+        tools_schemas: list[dict],
+        iteration: int,
+        text_buffer: list[str],
+        tool_calls_in_turn: list,
+    ) -> str | None:
+        """Stream LLM response with exponential backoff retry (gap-8-01).
+
+        Retries the entire complete() call up to _SUBAGENT_MAX_RETRIES times
+        on transient LLMErrors (rate_limit, connection_error, server_error,
+        timeout). Fatal errors (auth_error, bad_request) fail immediately.
+
+        Returns None on success (results in text_buffer/tool_calls_in_turn),
+        or an error string on final failure.
+        """
+        last_error = None
+        for attempt in range(_SUBAGENT_MAX_RETRIES + 1):
+            try:
+                async for event in self.llm.complete(
+                    messages=messages,
+                    tools=tools_schemas if tools_schemas else None,
+                    thinking=self.mode,
+                ):
+                    kind = self._classify_event(event)
+                    if kind == "text":
+                        text_buffer.append(event.content)
+                    elif kind == "tool_call":
+                        tool_calls_in_turn.append(event)
+                    # "done", "thinking", "unknown" — absorbed
+                return None  # Success
+            except LLMError as e:
+                last_error = e
+                if not e.retryable:
+                    # Fatal error — fail immediately (silent for sub-agent)
+                    logger.error(
+                        "Sub-agent LLM fatal error (iteration %d, attempt %d): %s",
+                        iteration, attempt + 1, str(e),
+                        exc_info=True,
+                        extra={"category": "error", "component": "llm",
+                               "context": "subagent_llm_fatal"},
+                    )
+                    return f"Error: LLM call failed — {e}"
+                # Retryable error
+                if attempt < _SUBAGENT_MAX_RETRIES:
+                    delay = min(
+                        _SUBAGENT_BASE_DELAY * (2 ** attempt),
+                        _SUBAGENT_MAX_DELAY,
+                    )
+                    logger.warning(
+                        "Sub-agent LLM retry %d/%d after %.1fs (iteration %d): %s",
+                        attempt + 1, _SUBAGENT_MAX_RETRIES, delay,
+                        iteration, str(e)[:200],
+                        extra={"category": "llm", "event": "subagent_retry",
+                               "retry_count": attempt + 1},
+                    )
+                    await asyncio.sleep(delay)
+                # else: max retries exhausted, will raise below
+            except Exception as e:
+                # Non-LLMError — treat as non-retryable
+                logger.error(
+                    "Sub-agent LLM unexpected error (iteration %d): %s",
+                    iteration, str(e),
+                    exc_info=True,
+                    extra={"category": "error", "component": "llm",
+                           "context": "subagent_llm_unexpected"},
+                )
+                return f"Error: {e}"
+
+        # All retries exhausted
+        logger.error(
+            "Sub-agent LLM retries exhausted after %d attempts (iteration %d): %s",
+            _SUBAGENT_MAX_RETRIES + 1, iteration, str(last_error),
+            exc_info=True,
+            extra={"category": "error", "component": "llm",
+                   "context": "subagent_llm_retries_exhausted"},
+        )
+        return f"Error: LLM call failed after {_SUBAGENT_MAX_RETRIES + 1} attempts — {last_error}"
 
     def _validate_schema_output(self, output: str) -> str:
         """Validate sub-agent output against the expected JSON Schema (gap-2-16).

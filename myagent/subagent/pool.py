@@ -322,6 +322,9 @@ class SubAgentPool:
                 project_context=project_context,
                 message_store=message_store,
                 project_dir=getattr(tool_context, 'project_dir', None) if tool_context else None,
+                progress_callback=lambda cur, max_i: setattr(
+                    handle, '_progress_iter', (cur, max_i)
+                ),
             )
             try:
                 # Format prompt_summary: first ~100 chars of the spawn prompt
@@ -370,6 +373,7 @@ class SubAgentPool:
                     "Sub-agent %s failed: %s",
                     handle.id,
                     str(e),
+                    exc_info=True,
                     extra={
                         "category": "error",
                         "component": "subagent",
