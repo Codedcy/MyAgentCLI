@@ -53,7 +53,7 @@ class TestSubAgentPool:
         )
         result = await handle.wait()
         assert result.error is None
-        assert handle.status == AgentStatus.COMPLETED
+        assert handle.status == AgentStatus.RESULT_CONSUMED
         assert "Test task" in result.output
 
     @pytest.mark.asyncio
@@ -122,8 +122,8 @@ class TestSubAgentPool:
         await h1.wait()
         await h2.wait()
 
-        assert h1.status == AgentStatus.COMPLETED
-        assert h2.status == AgentStatus.COMPLETED
+        assert h1.status == AgentStatus.RESULT_CONSUMED
+        assert h2.status == AgentStatus.RESULT_CONSUMED
         assert llm.complete.call_count == 2
 
     @pytest.mark.asyncio
@@ -141,8 +141,8 @@ class TestSubAgentPool:
         await pool.send_message(handle.id, "stop")
 
         result = await handle.wait()
-        # Either interrupted or completed (race between interrupt and LLM)
-        assert handle.status in (AgentStatus.INTERRUPTED, AgentStatus.COMPLETED)
+        # After wait(), status transitions to RESULT_CONSUMED
+        assert handle.status == AgentStatus.RESULT_CONSUMED
 
     @pytest.mark.asyncio
     async def test_cap_exceeded_raises(self):

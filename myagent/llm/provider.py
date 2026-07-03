@@ -239,7 +239,10 @@ class LLMProvider:
                 response = await litellm.acompletion(**kwargs)
 
                 total_tokens = 0
+                tool_calls_count = 0
                 async for event in self._stream_response(response):
+                    if isinstance(event, ToolCall):
+                        tool_calls_count += 1
                     yield event
                     # Track token usage from Done events for logging
                     if isinstance(event, Done) and event.usage:
@@ -248,14 +251,15 @@ class LLMProvider:
                 # Log successful response
                 latency_ms = (time.monotonic() - t0) * 1000
                 logger.info(
-                    "LLM response: model=%s latency_ms=%.1f tokens=%d attempt=%d",
-                    model_name, latency_ms, total_tokens, attempt + 1,
+                    "LLM response: model=%s latency_ms=%.1f tokens=%d attempt=%d tool_calls=%d",
+                    model_name, latency_ms, total_tokens, attempt + 1, tool_calls_count,
                     extra={
                         "category": "llm",
                         "event": "response",
                         "model": model_name,
                         "latency_ms": round(latency_ms, 1),
                         "token_consumption": total_tokens,
+                        "tool_calls_count": tool_calls_count,
                         "retry_count": attempt,
                     },
                 )

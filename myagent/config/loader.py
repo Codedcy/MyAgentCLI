@@ -14,12 +14,15 @@ Design doc reference: §九 — Config merge strategy
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+logger = logging.getLogger("myagent.config")
 
 from myagent.config.schema import (
     AppConfig,
@@ -169,7 +172,100 @@ class ConfigLoader:
         if cli_args:
             merged = self._apply_cli_args(merged, cli_args)
 
-        return _dict_to_dataclass(merged, AppConfig)
+        config = _dict_to_dataclass(merged, AppConfig)
+        self._validate(config)
+        return config
+
+    @staticmethod
+    def _validate(config: AppConfig) -> None:
+        """Validate config values are within reasonable ranges. Logs warnings
+        for out-of-range values and raises ValueError for clearly invalid ones.
+        """
+
+        # Validate thresholds are in [0.0, 1.0]
+        for name, value in [
+            ("context.compression.primary_threshold", config.context.compression.primary_threshold),
+            ("context.compression.target_after", config.context.compression.target_after),
+            ("context.compression.hard_limit", config.context.compression.hard_limit),
+            ("context.compression.minimum_savings", config.context.compression.minimum_savings),
+        ]:
+            if not 0.0 <= value <= 1.0:
+                logger.warning(
+                    "Config %s = %.2f is out of range [0.0, 1.0]; using default",
+                    name, value,
+                )
+
+        # Validate hard_limit > primary_threshold
+        if config.context.compression.hard_limit <= config.context.compression.primary_threshold:
+            logger.warning(
+                "compression.hard_limit (%.2f) must be > primary_threshold (%.2f)",
+                config.context.compression.hard_limit,
+                config.context.compression.primary_threshold,
+            )
+
+        # Validate concurrency limits are positive
+        if config.subagents.max_concurrent < 1:
+            logger.warning(
+                "subagents.max_concurrent = %d is too low; minimum is 1",
+                config.subagents.max_concurrent,
+            )
+
+        # Validate time values are positive
+        if config.dream.trigger_hours < 1:
+            logger.warning(
+                "dream.trigger_hours = %d is too low; minimum is 1",
+                config.dream.trigger_hours,
+            )
+        if config.dream.trigger_rounds < 1:
+            logger.warning(
+                "dream.trigger_rounds = %d is too low; minimum is 1",
+                config.dream.trigger_rounds,
+            )
+
+        # Validate tool_result_max_chars
+        if config.tools.tool_result_max_chars < 100:
+            logger.warning(
+                "tools.tool_result_max_chars = %d is too small; minimum is 100",
+                config.tools.tool_result_max_chars,
+            )
+
+        # Validate shell_timeout_seconds
+        if config.tools.shell_timeout_seconds < 1:
+            logger.warning(
+                "tools.shell_timeout_seconds = %d is too low; minimum is 1",
+                config.tools.shell_timeout_seconds,
+            )
+
+        # Validate log level
+        valid_levels = {"DEBUG", "INFO", "WARNING", "ERROR"}
+        if config.logging.level not in valid_levels:
+            logger.warning(
+                "logging.level = '%s' is invalid; must be one of %s",
+                config.logging.level, valid_levels,
+            )
+
+        # Validate log format
+        valid_formats = {"jsonl", "text", "both"}
+        if config.logging.format not in valid_formats:
+            logger.warning(
+                "logging.format = '%s' is invalid; must be one of %s",
+                config.logging.format, valid_formats,
+            )
+
+        # Validate retention_days
+        if config.logging.retention_days < 1:
+            logger.warning(
+                "logging.retention_days = %d is too low; minimum is 1",
+                config.logging.retention_days,
+            )
+
+        # Validate thinking mode
+        valid_thinking = {"Think High", "Think Max", "Non-think"}
+        if config.model.thinking not in valid_thinking:
+            logger.warning(
+                "model.thinking = '%s' is invalid; must be one of %s",
+                config.model.thinking, valid_thinking,
+            )
 
     def apply_runtime_override(self, key: str, value: Any) -> AppConfig:
         """Apply a runtime override and return updated config.

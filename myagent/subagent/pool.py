@@ -20,6 +20,7 @@ class AgentStatus(Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     INTERRUPTED = "interrupted"
+    RESULT_CONSUMED = "result_consumed"
 
 
 @dataclass
@@ -34,7 +35,10 @@ class SubAgentHandle:
 
     async def wait(self) -> ToolResult:
         await self._completion_event.wait()
-        return self._result_data or ToolResult(error="Sub-agent returned no result")
+        result = self._result_data or ToolResult(error="Sub-agent returned no result")
+        if self.status in (AgentStatus.COMPLETED, AgentStatus.FAILED, AgentStatus.INTERRUPTED):
+            self.status = AgentStatus.RESULT_CONSUMED
+        return result
 
     async def send_message(self, msg: str) -> None:
         """Store message; trigger interrupt if 'stop'."""

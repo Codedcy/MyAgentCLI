@@ -14,6 +14,7 @@ from __future__ import annotations
 import fnmatch
 import logging
 import sys
+import time
 from dataclasses import dataclass
 from enum import Enum
 from typing import Literal
@@ -76,6 +77,7 @@ class PermissionController:
             commands=["sudo", "rm -rf /"],
         )
         self._skip_all = False
+        self._runtime_changes: list[dict] = []
 
     def skip_all(self, value: bool = True) -> None:
         """Toggle --dangerously-skip-permissions mode."""
@@ -93,12 +95,24 @@ class PermissionController:
             "allow all" → set_mode("allow_all")
         """
         rule = rule.strip().lower()
+        change = {"rule": rule, "timestamp": time.time(), "action": "unknown"}
         if rule in ("allow all", "allow everything", "全部放行"):
             self.set_mode("allow_all")
+            change["action"] = "set_mode_allow_all"
         elif rule.startswith("deny "):
-            self.auto_deny.commands.append(rule[5:])
+            denied = rule[5:]
+            self.auto_deny.commands.append(denied)
+            change["action"] = "add_deny"
+            change["denied"] = denied
         else:
             self.auto_allow.commands.append(rule)
+            change["action"] = "add_allow"
+            change["allowed"] = rule
+        self._runtime_changes.append(change)
+
+    def get_session_changes(self) -> list[dict]:
+        """Return list of runtime rule changes made during this session."""
+        return list(self._runtime_changes)
 
     def check(
         self,

@@ -19,14 +19,6 @@ class SpawnSubagentTool:
             "prompt": {"type": "string"},
             "tools": {"type": "array", "items": {"type": "string"}},
             "mode": {"type": "string", "enum": ["Think High", "Think Max", "Non-think"]},
-            "model": {
-                "type": "string",
-                "enum": ["sonnet", "opus", "haiku", "fable"],
-                "description": "Optional model override for this agent. Takes precedence "
-                "over the agent definition's model frontmatter. If omitted, uses the agent "
-                "definition's model, or inherits from the parent. Ignored for subagent_type: "
-                '"fork" — forks always inherit the parent model.',
-            },
             "isolation": {"type": "string", "enum": ["worktree"]},
             "schema": {"type": "object"},
             "background": {"type": "boolean", "default": True},
@@ -47,11 +39,11 @@ class SpawnSubagentTool:
                 prompt=params["prompt"],
                 tools=params.get("tools"),
                 mode=params.get("mode", "Think High"),
-                model=params.get("model"),
                 isolation=params.get("isolation"),
                 schema=params.get("schema"),
                 background=params.get("background", True),
                 parent_session=context.session_id,
+                config=context.config,
             )
             return ToolResult(
                 output=f"Sub-agent spawned: {handle.id}",

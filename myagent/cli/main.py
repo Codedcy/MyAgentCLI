@@ -98,7 +98,7 @@ async def async_main(argv: list[str] | None = None) -> int:
     context_builder = ContextBuilder(tool_registry, memory_store, skill_registry, config.context)
 
     from myagent.context.compression import CompressionEngine
-    compression = CompressionEngine(config=config.context.compression, llm=llm)
+    compression = CompressionEngine(config=config.context.compression, llm=llm, tools_config=config.tools)
 
     from myagent.context.persistence import SessionStore
     session_store = SessionStore()

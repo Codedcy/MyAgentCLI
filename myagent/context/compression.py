@@ -22,10 +22,13 @@ class CompactResult:
 
 
 class CompressionEngine:
-    def __init__(self, config=None, llm=None):
+    def __init__(self, config=None, llm=None, tools_config=None):
         self.config = config
         self.llm = llm
+        self.tools_config = tools_config
         self._layer3_failures = 0
+        self._compact_counter = 0
+        self._session_dir = None
 
     async def compact(
         self, messages: list[Message], current_usage_pct: float
@@ -92,8 +95,17 @@ class CompressionEngine:
         return kept
 
     def _layer2_summarize(self, messages: list[Message]) -> list[Message]:
-        """Truncate large tool results to max 5000 chars."""
-        max_chars = self.config.tool_result_max_chars if hasattr(self.config, 'tool_result_max_chars') else 5000
+        """Truncate large tool results to max chars from ToolsConfig.
+
+        Checks tools_config (ToolsConfig) first, then falls back to config
+        attribute for backward compatibility in tests.
+        """
+        if self.tools_config and hasattr(self.tools_config, 'tool_result_max_chars'):
+            max_chars = self.tools_config.tool_result_max_chars
+        elif self.config and hasattr(self.config, 'tool_result_max_chars'):
+            max_chars = self.config.tool_result_max_chars
+        else:
+            max_chars = 5000
         # Protect last 5 rounds
         protected = 5 * 2  # ~5 user+assistant pairs
         result = []
