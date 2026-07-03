@@ -152,16 +152,21 @@ class StdioTransport:
 
 
 class SSETransport:
-    """MCP transport over HTTP SSE (Server-Sent Events) (gap-18-05).
+    """MCP transport over HTTP SSE (Server-Sent Events) (gap-19-05).
 
     Connects to an MCP server via:
-    - GET  /sse       — SSE stream for server→client messages
-    - POST /message   — HTTP POST for client→server messages
+    - GET  /sse       — SSE stream for server->client messages
+    - POST /message   — HTTP POST for client->server messages
 
     Per MCP transport spec: the client opens an SSE stream and sends
     JSON-RPC messages via POST. Responses are delivered as SSE events.
+
+    Uses a single httpx.AsyncClient for the entire connection lifetime.
+    SSE parsing uses a proper state machine that handles comments,
+    multi-line data fields, and event types correctly.
     """
 
+    # Regex for SSE field lines: "field: value" or "field:value"
     _SSE_LINE_RE = re.compile(r"^(?P<field>[^:\r\n]+):\s?(?P<value>.*)$")
 
     def __init__(
@@ -173,22 +178,32 @@ class SSETransport:
         self.url = url.rstrip("/")
         self.headers = headers or {}
         self.session_id = session_id
-        self._client: httpx.AsyncClient | None = None
-        self._sse_response: httpx.Response | None = None
-        self._sse_iter: Any = None
+        self._client: "httpx.AsyncClient | None" = None
+        self._sse_response: "httpx.Response | None" = None
         self._receive_queue: asyncio.Queue[bytes] = asyncio.Queue()
         self._connected = False
+        self._reader_task: asyncio.Task | None = None
 
     async def connect(self) -> None:
-        """Open SSE stream and link the message endpoint.
+        """Open SSE stream via a single httpx.AsyncClient.
 
         Per MCP SSE spec: GET /sse starts the SSE stream. The server
         responds with an 'endpoint' event containing the POST URL for
-        client→server messages. A session ID query param may be used
+        client->server messages. A session ID query param may be used
         to reconnect.
+
+        gap-19-05: Previously created three httpx.AsyncClient instances
+        and immediately destroyed the first two. Now creates exactly one
+        client and one stream for the entire connection lifetime.
         """
         import httpx
 
+        # Build SSE URL with optional session_id
+        sse_url = f"{self.url}/sse"
+        if self.session_id:
+            sse_url = f"{sse_url}?sessionId={self.session_id}"
+
+        # Create a single HTTP client for the entire connection lifetime
         self._client = httpx.AsyncClient(
             headers={
                 "Accept": "text/event-stream",
@@ -198,41 +213,11 @@ class SSETransport:
             timeout=httpx.Timeout(60.0, connect=15.0),
         )
 
-        # Build SSE URL with optional session_id
-        sse_url = self.url
-        if self.session_id:
-            sse_url = f"{sse_url}/sse?sessionId={self.session_id}"
-        else:
-            sse_url = f"{sse_url}/sse"
-
-        # Open SSE stream
-        self._sse_response = await self._client.send(
-            method="GET", url=sse_url, stream=True,
-        )
-        # httpx GET streaming
-        # Actually use a streaming GET
-        await self._sse_response.aclose()
-        sse_stream = await self._client.stream("GET", sse_url)
-        # httpx sends on __aenter__; we need to manually trigger the request
-        # Use a raw connect approach
-        await self._client.aclose()
-
-        # Re-create client with default timeout for POSTs
-        self._client = httpx.AsyncClient(
-            headers={
-                "Accept": "text/event-stream",
-                "Cache-Control": "no-cache",
-                **self.headers,
-            },
-            timeout=httpx.Timeout(30.0, connect=15.0),
-        )
-
-        # Open SSE stream for reading
+        # Open SSE stream via a streaming GET request
         self._sse_response = await self._client.send(
             httpx.Request("GET", sse_url),
             stream=True,
         )
-        self._sse_iter = self._sse_response.aiter_raw()
         self._connected = True
 
         # Start background reader that parses SSE events and enqueues
@@ -241,8 +226,6 @@ class SSETransport:
 
     async def send(self, data: bytes) -> None:
         """Send a JSON-RPC message via POST to the message endpoint."""
-        import httpx
-
         if not self._client:
             raise RuntimeError("SSE transport not connected")
 
@@ -309,33 +292,66 @@ class SSETransport:
     async def _sse_reader(self) -> None:
         """Read raw bytes from the SSE stream and parse SSE events.
 
-        SSE format:
-            event: <event-type>
-            data: <json-data>
-            <blank line>
+        SSE format per W3C spec:
+            event: <event-type>    (optional)
+            id: <event-id>         (optional)
+            data: <payload>        (one or more lines)
+            : <comment>            (ignored)
+            <blank line>           (event boundary)
 
-        Complete messages (terminated by double newline) are enqueued
-        to _receive_queue.
+        Complete events (terminated by double newline) are parsed and
+        enqueued as MCP-framed messages to _receive_queue.
+
+        gap-19-05: Uses a proper state-machine approach that handles:
+        - Multi-line data fields (multiple data: lines joined by \\n)
+        - Comments (lines starting with :)
+        - Event type and id fields
+        - All line ending styles (\\n, \\r\\n)
         """
         try:
             buffer = b""
             while self._connected:
                 try:
-                    chunk = await asyncio.wait_for(
-                        self._sse_iter.__anext__() if hasattr(self._sse_iter, '__anext__') else
-                        self._sse_response.aiter_bytes().__anext__(),
-                        timeout=5.0,
-                    )
+                    # Read raw bytes from the stream
+                    if hasattr(self._sse_response, 'aiter_bytes'):
+                        chunk = await asyncio.wait_for(
+                            self._sse_response.aiter_bytes().__anext__(),
+                            timeout=5.0,
+                        )
+                    elif hasattr(self._sse_response, 'aiter_raw'):
+                        chunk = await asyncio.wait_for(
+                            self._sse_response.aiter_raw().__anext__(),
+                            timeout=5.0,
+                        )
+                    else:
+                        logger.error(
+                            "SSE stream has no aiter_bytes or aiter_raw",
+                            extra={"category": "error", "component": "mcp"},
+                        )
+                        break
+
                     if not chunk:
                         break
                     buffer += chunk
 
-                    # Process complete SSE events (terminated by \n\n)
-                    while b"\n\n" in buffer:
-                        event_end = buffer.find(b"\n\n")
-                        event_bytes = buffer[:event_end]
-                        buffer = buffer[event_end + 2:]
+                    # Process complete SSE events (separated by \\n\\n or \\r\\n\\r\\n)
+                    while True:
+                        # Find the next event boundary (double newline)
+                        # Normalize: treat \r\n as \n for boundary detection
+                        boundary = buffer.find(b"\n\n")
+                        if boundary == -1:
+                            # Also try \r\n\r\n (Windows-style)
+                            boundary = buffer.find(b"\r\n\r\n")
+                            if boundary == -1:
+                                break
+                            # Found \r\n\r\n boundary
+                            event_bytes = buffer[:boundary]
+                            buffer = buffer[boundary + 4:]
+                        else:
+                            event_bytes = buffer[:boundary]
+                            buffer = buffer[boundary + 2:]
 
+                        # Parse and enqueue the event
                         message = self._parse_sse_event(event_bytes)
                         if message:
                             await self._receive_queue.put(message)
@@ -355,28 +371,59 @@ class SSETransport:
             pass
 
     def _parse_sse_event(self, event_bytes: bytes) -> bytes | None:
-        """Parse a single SSE event into bytes to return via receive().
+        """Parse a single SSE event into an MCP-framed message.
 
-        Reconstructs the JSON-RPC message from the SSE 'data' field.
-        The event type is currently ignored since MCP uses a single
-        message stream; the framing is handled by JSON-RPC ID matching.
+        Handles the full SSE spec (gap-19-05):
+        - event: field — event type
+        - id: field — event ID
+        - data: field — payload (multiple data: lines joined by \\n)
+        - : comment — ignored (line starts with colon)
+        - Empty lines within an event are part of the data field
+
+        Returns None for comment-only events (no data field) or parse errors.
+        Returns MCP Content-Length framed bytes on success.
         """
         text = event_bytes.decode("utf-8", errors="replace")
-        data_lines = []
-        for line in text.splitlines():
+        data_lines: list[str] = []
+        event_type = "message"  # default SSE event type
+
+        for line in text.split("\n"):
+            line = line.rstrip("\r")
+
+            # Skip empty lines (should not appear within a single event,
+            # but be safe)
+            if not line:
+                continue
+
+            # Comment line (starts with colon) — skip per SSE spec
+            if line.startswith(":"):
+                continue
+
             match = self._SSE_LINE_RE.match(line)
             if not match:
+                # Line without a colon is invalid per SSE spec — skip
                 continue
+
             field = match.group("field").strip()
-            value = match.group("value")
+            value = match.group("value") or ""
+
             if field == "data":
                 data_lines.append(value)
+            elif field == "event":
+                event_type = value
+            elif field == "id":
+                # Store event ID for potential reconnection, ignored for now
+                pass
+            # Other fields (retry, etc.) are ignored
 
+        # No data lines — this is a comment-only event or heartbeat
         if not data_lines:
             return None
 
-        # Join data lines (SSE spec allows multiple data: lines per event)
+        # Join multiple data lines with newline (SSE spec: data is the
+        # concatenation of data field values, separated by \\n if multiple)
         data = "\n".join(data_lines)
+
         try:
             # Wrap in MCP framing (Content-Length header + body)
             body = data.encode("utf-8")
@@ -478,18 +525,64 @@ class MCPClient:
         return result
 
     async def list_resources(self) -> list[dict]:
-        """Call resources/list."""
-        result = await self._send_request("resources/list", {})
-        return result.get("resources", [])
+        """Call resources/list.
+
+        Returns an empty list if the server does not support the resources
+        capability (JSON-RPC method-not-found error). Other errors are logged
+        and also result in an empty list — the server is still functional
+        for tools even if resource listing fails.
+        """
+        try:
+            result = await self._send_request("resources/list", {})
+            return result.get("resources", [])
+        except RuntimeError as e:
+            err_msg = str(e)
+            if "-32601" in err_msg or "Method not found" in err_msg:
+                logger.debug(
+                    "MCP server does not support resources/list: %s", self.command,
+                    extra={"category": "system"},
+                )
+            else:
+                logger.warning(
+                    "MCP server resources/list failed: %s", err_msg[:200],
+                    extra={"category": "error", "component": "mcp"},
+                )
+            return []
+        except Exception as e:
+            logger.debug(
+                "MCP server resources/list failed: %s", str(e)[:200],
+                extra={"category": "system"},
+            )
+            return []
 
     async def list_prompts(self) -> list[dict]:
-        """Call prompts/list and return prompt definitions (gap-2-03)."""
+        """Call prompts/list and return prompt definitions (gap-2-03).
+
+        Returns an empty list if the server does not support the prompts
+        capability (JSON-RPC method-not-found error). Other errors are logged
+        and also result in an empty list for graceful degradation.
+        """
         try:
             result = await self._send_request("prompts/list", {})
             return result.get("prompts", [])
-        except Exception:
-            logger.debug("MCP server does not support prompts/list: %s", self.command,
-                         extra={"category": "system"})
+        except RuntimeError as e:
+            err_msg = str(e)
+            if "-32601" in err_msg or "Method not found" in err_msg:
+                logger.debug(
+                    "MCP server does not support prompts/list: %s", self.command,
+                    extra={"category": "system"},
+                )
+            else:
+                logger.warning(
+                    "MCP server prompts/list failed: %s", err_msg[:200],
+                    extra={"category": "error", "component": "mcp"},
+                )
+            return []
+        except Exception as e:
+            logger.debug(
+                "MCP server prompts/list failed: %s", str(e)[:200],
+                extra={"category": "system"},
+            )
             return []
 
     async def read_resource(self, uri: str) -> dict:
