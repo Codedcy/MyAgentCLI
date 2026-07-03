@@ -165,6 +165,54 @@ class SubAgentPool:
     def active_count(self) -> int:
         return sum(1 for a in self._agents.values() if a.status == AgentStatus.RUNNING)
 
+    def set_session(self, session, session_store=None) -> None:
+        """Wire a session into the pool and scan for existing sub-agent IDs.
+
+        On session resume, existing sub-agent transcript directories may
+        already exist under subagents/sub-NNN/. This method scans those
+        directories and advances the pool's _counter past the highest
+        existing ID to prevent collisions (gap-r14-04).
+
+        Also sets the pool's session and session_store references so that
+        sub-agent transcripts are persisted correctly in resumed sessions.
+        """
+        self._session = session
+        if session_store is not None:
+            self._session_store = session_store
+
+        # Scan existing sub-agent directories and find the highest ID
+        if (session and hasattr(session, 'project_name')
+                and hasattr(session, 'project_hash') and hasattr(session, 'id')
+                and self._session_store):
+            try:
+                from pathlib import Path
+                sess_dir = self._session_store._session_dir(
+                    session.project_name, session.project_hash, session.id
+                )
+                sub_dir = sess_dir / "subagents"
+                if sub_dir.is_dir():
+                    max_id = 0
+                    for entry in sub_dir.iterdir():
+                        if entry.is_dir() and entry.name.startswith("sub-"):
+                            try:
+                                # Parse "sub-NNN" directory name
+                                num_str = entry.name[4:]  # strip "sub-"
+                                num = int(num_str)
+                                if num > max_id:
+                                    max_id = num
+                            except (ValueError, IndexError):
+                                pass
+                    if max_id >= self._counter:
+                        self._counter = max_id
+                        logger.debug(
+                            "Resumed session — sub-agent counter advanced to %d "
+                            "from existing subagent directories",
+                            self._counter,
+                            extra={"category": "subagent"},
+                        )
+            except Exception:
+                pass  # Best-effort scanning
+
     async def spawn(
         self,
         prompt: str,
