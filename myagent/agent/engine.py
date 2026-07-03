@@ -165,10 +165,58 @@ class AgentEngine:
 
         thinking_mode = self._get_thinking_mode()
         iteration = 0
+        context_notified_50 = False  # gap-25: only notify once
 
         while iteration < self.MAX_ITERATIONS:
             iteration += 1
             logger.info("ReAct iteration %d", iteration, extra={"category": "agent"})
+
+            # ── Context compression check (gap-01, gap-25) ──────
+            if self.compression:
+                usage_pct = self._estimate_context_usage(messages, tools_list)
+                if usage_pct >= 0.50 and not context_notified_50:
+                    context_notified_50 = True
+                    logger.info(
+                        "Context at %.0f%% — consider /clear or manual compact",
+                        usage_pct * 100,
+                        extra={"category": "agent", "event": "context_warning"},
+                    )
+                    yield TextChunk(
+                        content=(
+                            f"\n[Note: Context usage at {int(usage_pct * 100)}%. "
+                            f"Consider running /clear to free space.]\n"
+                        )
+                    )
+                if usage_pct >= 0.75:
+                    logger.info(
+                        "Auto-compacting context at %.0f%%", usage_pct * 100,
+                        extra={"category": "agent", "event": "auto_compact"},
+                    )
+                    from myagent.context.builder import Message as CtxMessage
+                    ctx_messages = [
+                        CtxMessage(
+                            role=m.get("role", "user"),
+                            content=m.get("content", ""),
+                        )
+                        for m in messages
+                    ]
+                    compact_result = await self.compression.compact(ctx_messages, usage_pct)
+                    # Rebuild messages from compact result
+                    messages = [
+                        {"role": m.role, "content": m.content}
+                        for m in compact_result.messages
+                    ]
+                    # Re-insert system message if it got removed
+                    if api_format.get("system") and messages[0].get("role") != "system":
+                        messages.insert(0, {"role": "system", "content": api_format["system"]})
+                    if compact_result.layers_applied:
+                        yield TextChunk(
+                            content=(
+                                f"\n[Auto-compacted: context from {int(usage_pct * 100)}% "
+                                f"to ~{int(compact_result.usage_after * 100)}% "
+                                f"(layers: {compact_result.layers_applied})]\n"
+                            )
+                        )
 
             text_buffer: list[str] = []
             tool_calls_in_turn: list = []
@@ -191,12 +239,25 @@ class AgentEngine:
                         tool_calls_in_turn.append(event)
                     # kind == "done": stream is concluding — fall through
             except Exception as e:
+                # gap-06: preserve partial content on stream interruption
+                partial_text = "".join(text_buffer)
                 logger.error(
                     "LLM error in iteration %d: %s",
                     iteration,
                     str(e),
                     extra={"category": "error", "component": "llm"},
                 )
+                if partial_text:
+                    yield TextChunk(
+                        content=(
+                            f"\n[Stream interrupted. Received {len(partial_text)} chars. "
+                            f"Error: {str(e)[:200]}]\n"
+                        )
+                    )
+                    # Append partial assistant message to history
+                    messages.append({"role": "assistant", "content": partial_text})
+                    yield IntentSignal(intent="continue")
+                    return
                 yield Error(message=str(e))
                 return
 
@@ -263,6 +324,26 @@ class AgentEngine:
                 if intent == "stop":
                     yield Done()
                     return
+                elif intent == "correct":
+                    # Inject correction feedback and continue
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "You indicated a direction correction. Please proceed with "
+                            "the corrected approach. What would you like to do differently?"
+                        ),
+                    })
+                    continue
+                elif intent == "insert":
+                    # Acknowledge new sub-task and continue
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "Acknowledged. Please proceed with the additional sub-task "
+                            "you mentioned, then continue with the original work."
+                        ),
+                    })
+                    continue
 
             # Detect AskUserQuestion — stop this turn; wait for user reply
             if self._is_question(full_text):
@@ -335,13 +416,19 @@ class AgentEngine:
     def _detect_intent(self, text: str) -> str | None:
         """Detect user intent signals in model response.
 
-        Returns one of: "stop", "continue", or None.
+        Design spec defines four intent types:
+          - stop: halt current operation
+          - correct: redirect approach (direction correction)
+          - insert: add new sub-task before continuing
+          - continue: resume after interruption
+
+        Returns one of: "stop", "correct", "insert", "continue", or None.
         """
         if not text:
             return None
         text_lower = text.lower().strip()
 
-        # Detect brief continue phrases (< 30 chars)
+        # Detect brief continue phrases (< 30 chars) — high priority
         if len(text) < 30:
             continue_phrases = [
                 "continue", "go on", "继续", "proceed", "resume",
@@ -350,15 +437,33 @@ class AgentEngine:
             if any(p in text_lower for p in continue_phrases):
                 return "continue"
 
+        # Detect stop
         stop_phrases = [
-            "i'll stop",
-            "stopping now",
-            "task complete",
-            "all done",
-            "i am done",
+            "i'll stop", "stopping now", "task complete",
+            "all done", "i am done", "已完成", "任务完成",
         ]
         if any(p in text_lower for p in stop_phrases):
             return "stop"
+
+        # Detect correct (direction correction)
+        correct_phrases = [
+            "let me correct", "i need to correct", "actually,",
+            "let me reconsider", "i should approach", "correction:",
+            "let me reconsider", "let's try a different",
+            "更正", "纠正", "改一下",
+        ]
+        if any(p in text_lower for p in correct_phrases):
+            return "correct"
+
+        # Detect insert (new sub-task)
+        insert_phrases = [
+            "let me add", "i should also", "additionally,",
+            "one more thing", "i need to insert", "before i continue",
+            "插入任务", "新任务", "额外任务",
+        ]
+        if any(p in text_lower for p in insert_phrases):
+            return "insert"
+
         return None
 
     def _is_question(self, text: str) -> bool:
@@ -408,6 +513,32 @@ class AgentEngine:
         if not tool:
             return ToolResult(error=f"Unknown tool: {tc.name}")
 
+        # Check permissions before executing
+        level = self._get_tool_level(tc.name)
+        if self.permissions:
+            perm_result = self.permissions.check(tc.name, level=level, params=tc.params)
+            if perm_result.name == "DENY":
+                logger.info(
+                    "Tool '%s' DENIED by permission controller", tc.name,
+                    extra={"category": "tool", "tool_name": tc.name, "permission_result": "denied"},
+                )
+                return ToolResult(
+                    error=f"Permission denied: {tc.name} requires level {level} access."
+                )
+            elif perm_result.name == "ASK":
+                try:
+                    allowed = await self.permissions.confirm(tc.name, tc.params)
+                except Exception:
+                    allowed = False
+                if not allowed:
+                    logger.info(
+                        "Tool '%s' DENIED by user", tc.name,
+                        extra={"category": "tool", "tool_name": tc.name, "permission_result": "denied"},
+                    )
+                    return ToolResult(
+                        error=f"User denied permission for '{tc.name}'."
+                    )
+
         try:
             ctx = ToolContext(
                 session_id=session.id if hasattr(session, "id") else "unknown",
@@ -441,6 +572,20 @@ class AgentEngine:
             # Summarize large results via sub-agent; fall back to truncation
             if len(result.output) > self.TOOL_RESULT_MAX_CHARS:
                 result = await self._summarize_via_subagent(result, tc.name)
+
+            # Persist tool call to session store (gap-14)
+            if self.session_store:
+                try:
+                    from myagent.context.builder import ToolCallRecord
+                    record = ToolCallRecord(
+                        call_id=tc.id,
+                        tool_name=tc.name,
+                        params=tc.params,
+                        result=result,
+                    )
+                    await self.session_store.save_tool_call(session, record)
+                except Exception:
+                    logger.debug("Failed to persist tool call record", exc_info=True)
 
             return result
         except Exception as e:
@@ -502,3 +647,19 @@ class AgentEngine:
     def _get_tool_level(self, tool_name: str) -> int:
         from myagent.permissions.controller import TOOL_LEVEL_MAP
         return TOOL_LEVEL_MAP.get(tool_name, 3)
+
+    def _estimate_context_usage(self, messages: list[dict], tools: list[dict] | None = None) -> float:
+        """Estimate context window usage as a fraction [0.0, 1.0].
+
+        Uses character count / estimated token ratio, compared against a
+        nominal 1M token context window. Adds tool definition overhead.
+        """
+        total_chars = sum(len(m.get("content", "")) for m in messages)
+        total_chars += sum(len(m.get("role", "")) for m in messages)
+        if tools:
+            import json
+            total_chars += len(json.dumps(tools, ensure_ascii=False))
+        # Rough estimate: ~3 chars per token for mixed Chinese/English
+        estimated_tokens = total_chars / 3
+        context_window = 1_000_000  # DeepSeek V4 Pro nominal context
+        return min(estimated_tokens / context_window, 1.0)

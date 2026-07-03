@@ -73,7 +73,21 @@ class REPLEngine:
             while self._running:
                 try:
                     user_input = await session.prompt_async("myagent> ")
-                except (EOFError, KeyboardInterrupt):
+                except KeyboardInterrupt:
+                    # Ctrl+C in idle: ask "Exit? (y/n)"
+                    self._console.print()
+                    try:
+                        confirm = await session.prompt_async(
+                            "Exit? (y/n) ", multiline=False
+                        )
+                        if confirm.strip().lower() in ("y", "yes"):
+                            self._console.print()
+                            break
+                        continue
+                    except (EOFError, KeyboardInterrupt):
+                        self._console.print()
+                        break
+                except EOFError:
                     self._console.print()
                     break
 
@@ -139,6 +153,7 @@ class REPLEngine:
 
         # Natural language → AgentEngine
         if self._engine and self._current_session:
+            has_pending_question = False
             async for event in self._engine.run(text, self._current_session):
                 if self._renderer:
                     rendered = self._renderer.render_event(event)
@@ -148,6 +163,9 @@ class REPLEngine:
                             self._console.print(rendered, end="")
                         elif event_type == "ThinkingChunk":
                             pass  # Thinking content is usually hidden
+                        elif event_type == "AskUserQuestion":
+                            has_pending_question = True
+                            self._console.print(rendered)
                         else:
                             self._console.print(rendered)
                 else:
@@ -156,11 +174,60 @@ class REPLEngine:
 
             if self._console:
                 self._console.print()  # trailing newline after streaming
+
+            # gap-13: 120s timeout for AskUserQuestion — agent auto-decides
+            if has_pending_question:
+                try:
+                    user_answer = await self._prompt_with_timeout(
+                        "Your answer (120s timeout, or agent auto-decides): ",
+                        timeout=120.0,
+                    )
+                    if user_answer:
+                        await self.process_input(user_answer)
+                    else:
+                        if self._console:
+                            self._console.print(
+                                "[dim]No response within 120s — agent will auto-decide.[/dim]"
+                            )
+                        # Send "continue" to let the agent auto-decide
+                        await self.process_input("continue")
+                except Exception:
+                    if self._console:
+                        self._console.print(
+                            "[dim]Timeout — agent will auto-decide.[/dim]"
+                        )
         else:
             if self._console:
                 self._console.print(f"Echo: {text}")
             else:
                 print(f"Echo: {text}")
+
+    async def _prompt_with_timeout(self, prompt_text: str, timeout: float) -> str | None:
+        """Prompt the user with a timeout. Returns the response or None if timed out.
+
+        Uses asyncio.wait_for with the event loop. Falls back to regular
+        input if prompt_toolkit is not available.
+        """
+        try:
+            from prompt_toolkit import PromptSession
+            from prompt_toolkit.shortcuts import prompt as pt_prompt
+            import asyncio as _asyncio
+
+            loop = _asyncio.get_event_loop()
+            try:
+                result = await _asyncio.wait_for(
+                    loop.run_in_executor(None, lambda: pt_prompt(prompt_text, multiline=False)),
+                    timeout=timeout,
+                )
+                return result
+            except _asyncio.TimeoutError:
+                return None
+        except ImportError:
+            # Fallback: standard input (blocks forever, ignore timeout)
+            try:
+                return input(prompt_text).strip()
+            except (EOFError, KeyboardInterrupt):
+                return None
 
     def _render_event_fallback(self, event) -> None:
         """Fallback renderer when no Rich Renderer is wired."""
