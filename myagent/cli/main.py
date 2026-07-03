@@ -137,8 +137,15 @@ async def async_main(argv: list[str] | None = None) -> int:
     )
     # Record session start time for hours-based dream trigger (gap-r12-06)
     dream_engine.touch_session_start()
-    # Check if dream should run
-    if dream_engine.should_run(session_mgr.estimate_total_rounds() if hasattr(session_mgr, 'estimate_total_rounds') else 0):
+    # Check if dream should run.
+    # gap-20-08: Pass last_run timestamp so estimate_total_rounds only counts
+    # sessions created since the last dream — not ALL historical rounds.
+    dream_state = dream_engine._load_state()
+    last_dream_ts = dream_state.get("last_run")
+    if dream_engine.should_run(
+        session_mgr.estimate_total_rounds(since_timestamp=last_dream_ts)
+        if hasattr(session_mgr, 'estimate_total_rounds') else 0
+    ):
         import logging as _logging
         _log_dream = _logging.getLogger("myagent.cli")
         _log_dream.info("Auto-triggering dream engine on startup")

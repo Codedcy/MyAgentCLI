@@ -51,12 +51,18 @@ class SessionManager:
                 return await self.session_store.load_session(project_name, project_hash, sessions[0].session_id)
         return None
 
-    def estimate_total_rounds(self, current_session=None) -> int:
+    def estimate_total_rounds(self, current_session=None, since_timestamp: float | None = None) -> int:
         """Estimate total conversation rounds from session history.
 
         Used for dream engine trigger check at startup and periodically
         during long-running sessions. When current_session is provided,
         its live turn_count is added to the persisted totals (gap-r6-07).
+
+        When since_timestamp is provided (epoch seconds), only sessions
+        whose created_at timestamp is AFTER since_timestamp are counted.
+        This ensures the dream engine's "> 50 rounds" trigger counts rounds
+        accumulated SINCE the last dream, not total historical rounds
+        (gap-20-08: fix for spec "累计对话轮数 > 50 轮" semantics).
 
         Returns 0 if no sessions exist or session_store is unavailable.
         """
@@ -80,6 +86,18 @@ class SessionManager:
                                 try:
                                     import json
                                     data = json.loads(ts_file.read_text(encoding="utf-8"))
+                                    # Filter by since_timestamp if provided (gap-20-08)
+                                    if since_timestamp is not None:
+                                        created_at_str = data.get("created_at")
+                                        if created_at_str:
+                                            try:
+                                                from datetime import datetime
+                                                created_dt = datetime.fromisoformat(created_at_str)
+                                                created_ts = created_dt.timestamp()
+                                                if created_ts <= since_timestamp:
+                                                    continue  # Skip pre-dream sessions
+                                            except (ValueError, OSError):
+                                                pass  # Unparseable date — include
                                     total += data.get("turn_count", 0)
                                 except Exception:
                                     pass
