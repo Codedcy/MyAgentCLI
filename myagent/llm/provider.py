@@ -99,7 +99,7 @@ class LLMProvider:
                 case Done(stop_reason, usage): ...
     """
 
-    def __init__(self, model_config=None, logging_config=None, retry_callback=None):
+    def __init__(self, model_config=None, logging_config=None, retry_callback=None, streaming: bool = True):
         """Initialize with ModelConfig (or None for defaults).
 
         Args:
@@ -108,6 +108,9 @@ class LLMProvider:
             logging_config: LoggingConfig for prompt logging (gap-10).
             retry_callback: Optional callable(attempt, max_retries, delay) for UI
                             retry progress updates (gap-33).
+            streaming: Whether to stream responses (default True). When False,
+                       the full response is collected and emitted as a single
+                       TextDelta (G5).
         """
         if model_config is None:
             self.provider = "deepseek"
@@ -123,6 +126,7 @@ class LLMProvider:
         self._retry_callback = retry_callback
         self._session_id: str | None = None
         self._prompt_counter: int = 0
+        self._streaming = streaming
 
     def set_session_id(self, session_id: str) -> None:
         """Set session ID for prompt log file naming."""
@@ -223,9 +227,10 @@ class LLMProvider:
                 kwargs = {
                     "model": model_name,
                     "messages": messages,
-                    "stream": True,
-                    "stream_options": {"include_usage": True},
+                    "stream": self._streaming,
                 }
+                if self._streaming:
+                    kwargs["stream_options"] = {"include_usage": True}
 
                 if tools:
                     kwargs["tools"] = tools
@@ -237,9 +242,9 @@ class LLMProvider:
                 # Log request + write prompt files (gap-10)
                 t0 = time.monotonic()
                 logger.info(
-                    "LLM request: model=%s attempt=%d messages=%d tokens_est=%d tools=%d",
+                    "LLM request: model=%s attempt=%d messages=%d tokens_est=%d tools=%d stream=%s",
                     model_name, attempt + 1, len(messages), estimated_tokens,
-                    len(tools) if tools else 0,
+                    len(tools) if tools else 0, self._streaming,
                     extra={
                         "category": "llm",
                         "event": "request",
@@ -248,7 +253,7 @@ class LLMProvider:
                         "messages_count": len(messages),
                         "estimated_tokens": estimated_tokens,
                         "tools_count": len(tools) if tools else 0,
-                        "stream": True,
+                        "stream": self._streaming,
                         "retry_count": attempt,
                     },
                 )
@@ -263,22 +268,57 @@ class LLMProvider:
                 tool_calls_count = 0
                 response_text_chunks: list[str] = []
                 response_tool_calls: list[dict] = []
-                async for event in self._stream_response(response):
-                    if isinstance(event, ToolCall):
+
+                if self._streaming:
+                    async for event in self._stream_response(response):
+                        if isinstance(event, ToolCall):
+                            tool_calls_count += 1
+                            response_tool_calls.append({
+                                "id": event.id,
+                                "name": event.name,
+                                "params": event.params,
+                            })
+                        if isinstance(event, TextDelta):
+                            response_text_chunks.append(event.content)
+                        yield event
+                        # Track token usage from Done events for logging
+                        if isinstance(event, Done) and event.usage:
+                            total_tokens = event.usage.total_tokens
+                            prompt_tokens = event.usage.prompt_tokens
+                            completion_tokens = event.usage.completion_tokens
+                else:
+                    # G5: Non-streaming path — collect full response then emit
+                    await self._process_non_streaming(
+                        response, response_text_chunks, response_tool_calls,
+                    )
+                    # Emit collected text as single TextDelta
+                    full_text = "".join(response_text_chunks)
+                    if full_text:
+                        yield TextDelta(content=full_text)
+                    # Emit collected tool calls
+                    for tc in response_tool_calls:
                         tool_calls_count += 1
-                        response_tool_calls.append({
-                            "id": event.id,
-                            "name": event.name,
-                            "params": event.params,
-                        })
-                    if isinstance(event, TextDelta):
-                        response_text_chunks.append(event.content)
-                    yield event
-                    # Track token usage from Done events for logging
-                    if isinstance(event, Done) and event.usage:
-                        total_tokens = event.usage.total_tokens
-                        prompt_tokens = event.usage.prompt_tokens
-                        completion_tokens = event.usage.completion_tokens
+                        yield ToolCall(
+                            id=tc.get("id", ""),
+                            name=tc.get("name", ""),
+                            params=tc.get("params", {}),
+                        )
+                    # Extract usage
+                    if hasattr(response, 'usage') and response.usage:
+                        usage = response.usage
+                        prompt_tokens = getattr(usage, 'prompt_tokens', 0) or 0
+                        completion_tokens = getattr(usage, 'completion_tokens', 0) or 0
+                        total_tokens = getattr(usage, 'total_tokens', 0) or 0
+                        yield Done(
+                            stop_reason="end_turn",
+                            usage=Usage(
+                                prompt_tokens=prompt_tokens,
+                                completion_tokens=completion_tokens,
+                                total_tokens=total_tokens,
+                            ),
+                        )
+                    else:
+                        yield Done(stop_reason="end_turn")
 
                 # Log successful response with individual token breakdown (gap-2-10)
                 latency_ms = (time.monotonic() - t0) * 1000
@@ -484,6 +524,52 @@ class LLMProvider:
                         total_tokens=getattr(usage, "total_tokens", 0) or 0,
                     ),
                 )
+
+    def _process_non_streaming(
+        self,
+        response,
+        text_chunks: list[str],
+        tool_calls: list[dict],
+    ) -> None:
+        """Process a non-streaming litellm response (G5).
+
+        Extracts text content and tool calls from the full response object
+        and populates the provided lists so the caller can emit the appropriate
+        events.
+
+        Non-streaming responses have a different structure:
+        - response.choices[0].message.content → full text
+        - response.choices[0].message.tool_calls → list of tool calls
+        - response.usage → token usage
+        """
+        if not response.choices:
+            return
+
+        choice = response.choices[0]
+        message = getattr(choice, "message", None)
+        if message is None:
+            return
+
+        # Extract text content
+        content = getattr(message, "content", None)
+        if content:
+            text_chunks.append(content)
+
+        # Extract tool calls
+        raw_tool_calls = getattr(message, "tool_calls", None)
+        if raw_tool_calls:
+            for tc in raw_tool_calls:
+                fn = getattr(tc, "function", None)
+                if fn:
+                    try:
+                        params = json.loads(getattr(fn, "arguments", "{}") or "{}")
+                    except json.JSONDecodeError:
+                        params = {}
+                    tool_calls.append({
+                        "id": getattr(tc, "id", "") or "",
+                        "name": getattr(fn, "name", "") or "",
+                        "params": params,
+                    })
 
     def _write_prompt_logs(
         self, model_name: str, messages: list[dict],

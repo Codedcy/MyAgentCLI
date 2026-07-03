@@ -88,6 +88,7 @@ async def async_main(argv: list[str] | None = None) -> int:
     llm = LLMProvider(
         config.model,
         logging_config=config.logging,
+        streaming=config.ui.streaming,
         retry_callback=(lambda attempt, max_r, delay:
             status_bar.update(retry_info=f"Retry {attempt}/{max_r} ({delay:.1f}s)")
             if status_bar else None

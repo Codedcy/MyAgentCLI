@@ -83,6 +83,7 @@ class TestLLMProvider:
         ]
 
         provider = LLMProvider.__new__(LLMProvider)
+        provider._streaming = True  # G5: default for bare instantiation in tests
         # Mock litellm.acompletion
         with patch("litellm.acompletion", return_value=mock_response):
             provider.model = "deepseek/deepseek-v4-pro"
@@ -134,6 +135,7 @@ class TestLLMProvider:
         ]
 
         provider = LLMProvider.__new__(LLMProvider)
+        provider._streaming = True
         with patch("litellm.acompletion", return_value=mock_response):
             provider.model = "deepseek/deepseek-v4-pro"
 
@@ -188,6 +190,7 @@ class TestLLMProvider:
         mock_response.__aiter__.return_value = [chunk_mock]
 
         provider = LLMProvider.__new__(LLMProvider)
+        provider._streaming = True
         with patch("litellm.acompletion", return_value=mock_response):
             provider.model = "deepseek/deepseek-v4-pro"
 
