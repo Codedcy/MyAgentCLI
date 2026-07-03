@@ -452,60 +452,74 @@ async def _start_single_mcp_server(name: str, cfg: dict, tool_registry):
 
 
 def _print_sessions_rich(sessions, project_dir) -> None:
-    """Rich-formatted session listing with status icons, duration, tokens (gap-22)."""
+    """Compact line-based session listing matching the design spec format.
+
+    Spec format (§十):
+      2026-07-02-abc123  ✅ "设计 MyAgentCLI 架构"    2.3h  238K tk  Goal ✓
+    """
     if not sessions:
         print(f"No sessions found for {project_dir.name}.")
         return
     try:
         from rich.console import Console
-        from rich.table import Table
+        from rich.text import Text
         console = Console()
-        table = Table(title=f"Sessions for {project_dir.name}")
-        table.add_column("Session ID", style="cyan", no_wrap=True)
-        table.add_column("Status", style="bold")
-        table.add_column("First Message")
-        table.add_column("Duration")
-        table.add_column("Tokens")
-        table.add_column("Goal")
-
-        for s in sessions:
-            # Status icon
-            if s.goal_achieved is True:
-                status = "[green]✓[/green]"
-            elif s.goal_achieved is False:
-                status = "[yellow]✗[/yellow]"
-            else:
-                status = "[dim]—[/dim]"
-
-            # Duration formatting
-            if s.duration > 0:
-                mins = int(s.duration // 60)
-                secs = int(s.duration % 60)
-                if mins > 0:
-                    dur = f"{mins}m {secs}s"
-                else:
-                    dur = f"{secs}s"
-            else:
-                dur = "—"
-
-            # Goal status
-            goal_text = "[green]achieved[/green]" if s.goal_achieved else ("[yellow]incomplete[/yellow]" if s.goal_achieved is False else "[dim]no goal[/dim]")
-
-            table.add_row(
-                s.session_id,
-                status,
-                s.first_message[:60] + ("..." if len(s.first_message) > 60 else ""),
-                dur,
-                str(s.total_tokens),
-                goal_text,
-            )
-        console.print(table)
     except ImportError:
-        # Fallback plain text
-        print(f"Sessions for {project_dir.name}:")
-        for s in sessions:
-            status_icon = "✓" if s.goal_achieved else ("✗" if s.goal_achieved is False else "-")
-            print(f"  {status_icon} {s.session_id} — {s.first_message[:50]}...")
+        console = None
+
+    print(f"\n{project_dir.name} ({project_dir}):")
+    for s in sessions:
+        # Status icon
+        if s.goal_achieved is True:
+            status_icon = "✅"
+        elif s.goal_achieved is False:
+            status_icon = "📋"
+        else:
+            status_icon = "—"
+
+        # Duration formatting
+        if s.duration > 0:
+            hours = s.duration / 3600
+            dur = f"{hours:.1f}h"
+        else:
+            dur = "—"
+
+        # Token count
+        if s.total_tokens > 0:
+            if s.total_tokens >= 1000:
+                tk = f"{s.total_tokens / 1000:.0f}K tk"
+            else:
+                tk = f"{s.total_tokens} tk"
+        else:
+            tk = "—"
+
+        # Goal status
+        if s.goal_achieved is True:
+            goal_str = "Goal ✓"
+        elif s.goal_achieved is False:
+            goal_str = "Goal ⏳"
+        else:
+            goal_str = "—"
+
+        # First message (quote-wrapped, truncated to 40 chars)
+        first_msg = f'"{s.first_message[:40]}{"..." if len(s.first_message) > 40 else ""}"'
+
+        # Build the line in spec format:
+        #   <session-id>  <status> <"first msg">    <duration>  <tokens>  <goal>
+        line = f"  {s.session_id}  {status_icon}  {first_msg:<44}  {dur:>6}  {tk:>8}  {goal_str}"
+
+        if console:
+            # Style with Rich: session_id in cyan, the rest in default
+            text = Text()
+            parts = line.split("  ", 1)
+            if len(parts) >= 2:
+                text.append(parts[0], style="cyan")
+                text.append("  " + parts[1])
+            else:
+                text.append(line)
+            console.print(text)
+        else:
+            print(line)
 
 
 async def _run_dream_background(dream_engine, session_store=None) -> None:
