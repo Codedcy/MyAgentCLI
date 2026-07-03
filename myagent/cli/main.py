@@ -45,7 +45,7 @@ async def async_main(argv: list[str] | None = None) -> int:
 
     # Load config
     from myagent.config.loader import ConfigLoader
-    loader = ConfigLoader(project_dir=project_dir)
+    loader = ConfigLoader(project_dir=project_dir, config_path=args.config)
     cli_overrides = {}
     if args.mode:
         cli_overrides["mode"] = args.mode

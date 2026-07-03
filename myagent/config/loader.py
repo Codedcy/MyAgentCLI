@@ -129,9 +129,11 @@ class ConfigLoader:
         self,
         project_dir: Path = DEFAULT_PROJECT_DIR,
         user_home: Path = DEFAULT_USER_HOME,
+        config_path: str | None = None,
     ):
         self.project_dir = Path(project_dir)
         self.user_home = Path(user_home)
+        self._config_path: str | None = config_path
         self._runtime_overrides: dict = {}
 
     # ── public API ─────────────────────────────────────────────
@@ -161,11 +163,23 @@ class ConfigLoader:
             self.project_dir / ".myagent" / "config.yaml"
         )
 
+        # Level 1.x: Custom config path (--config CLI arg)
+        # Loaded as a high-priority file layer between project config
+        # and runtime overrides. If the path contains ~, expand it.
+        custom_config = {}
+        if self._config_path:
+            resolved_path = Path(
+                re.sub(r"~(?=/)", lambda m: os.path.expanduser(m.group(0)),
+                       self._config_path)
+            )
+            custom_config = self._load_yaml(resolved_path)
+
         # Merge in priority order (low→high)
         merged = deep_merge(defaults_dict, user_agent_md)
         merged = deep_merge(merged, user_config)
         merged = deep_merge(merged, project_agent_md)
         merged = deep_merge(merged, project_config)
+        merged = deep_merge(merged, custom_config)
         merged = deep_merge(merged, self._runtime_overrides)
 
         # Level 7: CLI args
