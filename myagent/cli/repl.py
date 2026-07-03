@@ -148,11 +148,19 @@ class REPLEngine:
             history_file = Path.home() / ".myagent" / ".history"
             history_file.parent.mkdir(parents=True, exist_ok=True)
 
-            # Key bindings: Ctrl+C clears buffer, Ctrl+D on empty exits
+            # Key bindings: Ctrl+C interrupts running engine or clears buffer
             kb = KeyBindings()
 
             @kb.add("c-c")
             def _(event):
+                # If engine is running in background, interrupt it (gap-10)
+                engine_task = getattr(self, '_active_engine_task', None)
+                if engine_task and not engine_task.done():
+                    if hasattr(self._engine, 'interrupt_event'):
+                        self._engine.interrupt_event.set()
+                    engine_task.cancel()
+                    event.app.current_buffer.reset()
+                    return
                 buffer = event.app.current_buffer
                 buffer.reset()
 
@@ -255,26 +263,46 @@ class REPLEngine:
             active_skill = self._active_skill
             self._active_skill = None  # Clear after injecting
 
+            # Reset interrupt event before each run (gap-10)
+            if hasattr(self._engine, 'interrupt_event'):
+                self._engine.interrupt_event.clear()
+
+            # Run engine in a background task to allow interrupt (gap-10)
+            import asyncio as _asyncio
             has_pending_question = False
-            async for event in self._engine.run(
-                text, self._current_session, active_skill=active_skill
-            ):
-                if self._renderer:
-                    rendered = self._renderer.render_event(event)
-                    if rendered:
-                        event_type = type(event).__name__
-                        if event_type == "TextChunk":
-                            self._output_to_console(rendered, end="")
-                        elif event_type == "ThinkingChunk":
-                            pass  # Thinking content is usually hidden
-                        elif event_type == "AskUserQuestion":
-                            has_pending_question = True
-                            self._output_to_console(rendered)
-                        else:
-                            self._output_to_console(rendered)
-                else:
-                    # Fallback: simple print-based rendering
-                    self._render_event_fallback(event)
+
+            async def _run_engine():
+                nonlocal has_pending_question
+                async for event in self._engine.run(
+                    text, self._current_session, active_skill=active_skill
+                ):
+                    if self._renderer:
+                        rendered = self._renderer.render_event(event)
+                        if rendered:
+                            event_type = type(event).__name__
+                            if event_type == "TextChunk":
+                                self._output_to_console(rendered, end="")
+                            elif event_type == "ThinkingChunk":
+                                pass  # Thinking content is usually hidden
+                            elif event_type == "AskUserQuestion":
+                                has_pending_question = True
+                                self._output_to_console(rendered)
+                            elif event_type == "Interrupted":
+                                self._output_to_console("\n[Interrupted]")
+                            else:
+                                self._output_to_console(rendered)
+                    else:
+                        # Fallback: simple print-based rendering
+                        self._render_event_fallback(event)
+
+            engine_task = _asyncio.ensure_future(_run_engine())
+            self._active_engine_task = engine_task
+            try:
+                await engine_task
+            except _asyncio.CancelledError:
+                self._output_to_console("\n[Interrupted by user]")
+            finally:
+                self._active_engine_task = None
 
             self._output_to_console("")  # trailing newline after streaming
 

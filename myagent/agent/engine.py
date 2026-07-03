@@ -125,6 +125,7 @@ class AgentEngine:
         self.project_dir = project_dir or Path.cwd()
         self._config_loader = config_loader
         self._memory_store = memory_store
+        self.interrupt_event = asyncio.Event()
 
     async def run(
         self, user_input: str, session, active_skill: str | None = None
@@ -185,6 +186,17 @@ class AgentEngine:
 
         while iteration < self.MAX_ITERATIONS:
             iteration += 1
+
+            # Check for external interrupt signal (gap-10, gap-18)
+            if self.interrupt_event and self.interrupt_event.is_set():
+                logger.info(
+                    "ReAct loop interrupted at iteration %d", iteration,
+                    extra={"category": "agent", "event": "interrupted"},
+                )
+                self._persist_turn(session, messages)
+                yield Interrupted()
+                return
+
             tokens_this_turn = 0  # accumulated from LLM Done events this iteration
             logger.info(
                 "ReAct iteration %d", iteration,
