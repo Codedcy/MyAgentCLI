@@ -1,5 +1,6 @@
 """Tests for AgentEngine ReAct loop."""
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -193,3 +194,35 @@ async def test_goal_not_achieved_reenters_loop():
     texts = [e for e in events if isinstance(e, TextChunk)]
     assert len(texts) == 2
     assert goal_tracker.check_goal.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_tool_params_cannot_bypass_permission_checks():
+    """Model-provided params must not skip centralized permission checks."""
+    tool = MagicMock()
+    tool.execute = AsyncMock(return_value=ToolResult(output="should not run"))
+    registry = MagicMock()
+    registry.get = MagicMock(return_value=tool)
+
+    permissions = MagicMock()
+    permissions.check.return_value = SimpleNamespace(name="DENY")
+
+    engine = AgentEngine(
+        llm=None,
+        tool_registry=registry,
+        permissions=permissions,
+    )
+    session = MagicMock()
+    session.id = "test"
+
+    tc = FakeToolCall(
+        "bash",
+        "call-1",
+        {"command": "echo unsafe", "dangerouslyDisableSandbox": True},
+    )
+    result = await engine._execute_tool(tc, session)
+
+    permissions.check.assert_called_once()
+    tool.execute.assert_not_called()
+    assert result.error is not None
+    assert "Permission denied" in result.error

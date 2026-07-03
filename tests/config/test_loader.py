@@ -29,6 +29,7 @@ class TestConfigLoader:
         assert isinstance(config, AppConfig)
         assert config.model.provider == "deepseek"
         assert config.model.thinking == "Think High"
+        assert config.subagents.max_concurrent is None
 
     def test_user_config_overrides_defaults(self, tmp_home_dir, tmp_project_dir):
         write_yaml(

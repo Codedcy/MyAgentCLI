@@ -6,7 +6,11 @@ ToolContext. Both tools delegate to real implementations at runtime.
 
 from __future__ import annotations
 
+import logging
+
 from myagent.tools.base import ToolContext, ToolResult
+
+logger = logging.getLogger("myagent.tools.agent")
 
 
 class SpawnSubagentTool:
@@ -39,7 +43,11 @@ class SpawnSubagentTool:
             background = params.get("background", True)
             if context.config:
                 goal_tracker = getattr(context, 'goal_tracker', None)
-                goal = goal_tracker.get_goal() if goal_tracker and hasattr(goal_tracker, 'get_goal') else None
+                goal = (
+                    goal_tracker.get_goal()
+                    if goal_tracker and hasattr(goal_tracker, 'get_goal')
+                    else None
+                )
                 # Non-goal mode: force background=False unless explicitly allowed.
                 # gap-13-03: Always enforce the gate regardless of what the model
                 # passes in params. The model cannot bypass the config gate by
@@ -68,6 +76,14 @@ class SpawnSubagentTool:
                 metadata={"subagent_id": handle.id, "background": background},
             )
         except Exception as e:
+            logger.exception(
+                "Spawn sub-agent tool failed",
+                extra={
+                    "category": "error",
+                    "component": "tool",
+                    "context": "spawn_subagent.execute",
+                },
+            )
             return ToolResult(error=str(e))
 
 
@@ -83,7 +99,11 @@ class SendMessageTool:
             },
             "from": {
                 "type": "string",
-                "description": "Sender agent ID (populated automatically in sub-agent context). When calling from a sub-agent to 'main', the sub-agent's own ID is used if this field is omitted.",
+                "description": (
+                    "Sender agent ID (populated automatically in sub-agent "
+                    "context). When calling from a sub-agent to 'main', the "
+                    "sub-agent's own ID is used if this field is omitted."
+                ),
             },
             "summary": {
                 "type": "string",
@@ -112,9 +132,15 @@ class SendMessageTool:
         if target == "main":
             if hasattr(pool, 'send_to_main'):
                 # Called from a sub-agent context — use its own ID
-                subagent_id = params.get("from", "subagent")
+                subagent_id = params.get("from") or getattr(
+                    context, "current_subagent_id", None
+                )
+                if not subagent_id:
+                    return ToolResult(
+                        error="Cannot send to main: sender sub-agent ID unavailable"
+                    )
                 pool.send_to_main(subagent_id, params["message"])
-                return ToolResult(output=f"Message sent to main agent")
+                return ToolResult(output="Message sent to main agent")
             return ToolResult(error="Cannot send to main: pool not available")
 
         try:
@@ -123,4 +149,12 @@ class SendMessageTool:
                 output=f"Message sent to {target}",
             )
         except Exception as e:
+            logger.exception(
+                "Send message tool failed",
+                extra={
+                    "category": "error",
+                    "component": "tool",
+                    "context": "send_message.execute",
+                },
+            )
             return ToolResult(error=str(e))

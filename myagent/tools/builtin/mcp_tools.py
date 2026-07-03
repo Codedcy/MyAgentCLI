@@ -79,8 +79,15 @@ class MCPReadResourceTool:
                     errors.append(f"No content returned for URI '{uri}'")
             except Exception as e:
                 errors.append(f"{getattr(client, 'command', 'unknown')}: {e}")
-                logger.debug("MCP read_resource '%s' failed: %s", uri, e,
-                             extra={"category": "tool"})
+                logger.exception(
+                    "MCP read_resource '%s' failed",
+                    uri,
+                    extra={
+                        "category": "error",
+                        "component": "mcp",
+                        "context": f"mcp_read_resource:{uri}",
+                    },
+                )
 
         if errors:
             return ToolResult(
@@ -147,7 +154,7 @@ class MCPGetPromptTool:
         for client in clients:
             try:
                 result = await client.get_prompt(name, arguments)
-                # prompts/get returns {"messages": [...]} or {"description": "...", "messages": [...]}
+                # prompts/get returns messages and may include a description.
                 messages = result.get("messages", [])
                 desc = result.get("description", "")
                 if messages:
@@ -176,8 +183,15 @@ class MCPGetPromptTool:
                     errors.append(f"Server returned no messages for prompt '{name}'")
             except Exception as e:
                 errors.append(f"{getattr(client, 'command', 'unknown')}: {e}")
-                logger.debug("MCP get_prompt '%s' failed: %s", name, e,
-                             extra={"category": "tool"})
+                logger.exception(
+                    "MCP get_prompt '%s' failed",
+                    name,
+                    extra={
+                        "category": "error",
+                        "component": "mcp",
+                        "context": f"mcp_get_prompt:{name}",
+                    },
+                )
 
         if errors:
             return ToolResult(

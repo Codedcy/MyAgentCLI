@@ -70,8 +70,12 @@ class TestLoggingConfig:
 class TestSubagentsConfig:
     def test_defaults(self):
         c = SubagentsConfig()
-        assert c.max_concurrent == 10
+        assert c.max_concurrent is None
         assert c.speculative_exploration is False
+
+    def test_explicit_max_concurrent(self):
+        c = SubagentsConfig(max_concurrent=7)
+        assert c.max_concurrent == 7
 
 
 class TestDreamConfig:
@@ -113,7 +117,7 @@ class TestAppConfig:
         assert c.model.thinking == "Think High"
         assert c.context.compression.primary_threshold == 0.75
         assert c.permissions.default_mode == "ask"
-        assert c.subagents.max_concurrent == 10
+        assert c.subagents.max_concurrent is None
         assert c.dream.enabled is True
         assert c.tools.tool_result_max_chars == 5000
         assert c.ui.show_status_bar is True

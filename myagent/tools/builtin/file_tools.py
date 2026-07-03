@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-import mimetypes
+import logging
 from pathlib import Path
 
 from myagent.tools.base import ToolContext, ToolResult
+
+logger = logging.getLogger("myagent.tools.file")
 
 # ── Shared read tracking ──────────────────────────────────────────
 # All file-modifying tools (write, edit) refuse to operate on files
@@ -82,6 +84,14 @@ class ReadTool:
         except UnicodeDecodeError:
             return ToolResult(error=f"Cannot read binary file as text: {path}")
         except Exception as e:
+            logger.exception(
+                "Read tool failed",
+                extra={
+                    "category": "error",
+                    "component": "tool",
+                    "context": "read.execute",
+                },
+            )
             return ToolResult(error=str(e))
 
 
@@ -129,6 +139,14 @@ class WriteTool:
                 metadata={"file_path": str(path), "size_bytes": len(content)},
             )
         except Exception as e:
+            logger.exception(
+                "Write tool failed",
+                extra={
+                    "category": "error",
+                    "component": "tool",
+                    "context": "write.execute",
+                },
+            )
             return ToolResult(error=str(e))
 
 
@@ -189,7 +207,10 @@ class EditTool:
                     return ToolResult(error=f"old_string not found in {path}")
                 if count > 1:
                     return ToolResult(
-                        error=f"old_string found {count} times in {path}. Use replace_all=true to replace all occurrences."
+                        error=(
+                            f"old_string found {count} times in {path}. "
+                            "Use replace_all=true to replace all occurrences."
+                        )
                     )
             new_content = content.replace(old, new) if replace_all else content.replace(old, new, 1)
             path.write_text(new_content, encoding="utf-8")
@@ -199,6 +220,14 @@ class EditTool:
                 metadata={"file_path": str(path), "replacements": replacements},
             )
         except Exception as e:
+            logger.exception(
+                "Edit tool failed",
+                extra={
+                    "category": "error",
+                    "component": "tool",
+                    "context": "edit.execute",
+                },
+            )
             return ToolResult(error=str(e))
 
 
@@ -227,11 +256,23 @@ class GlobTool:
             search_path = context.project_dir / search_path
 
         try:
-            matches = sorted(search_path.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
+            matches = sorted(
+                search_path.glob(pattern),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
             output = "\n".join(str(m) for m in matches[:200])  # limit results
             return ToolResult(
                 output=output if output else "(no matches)",
                 metadata={"count": len(matches), "pattern": pattern},
             )
         except Exception as e:
+            logger.exception(
+                "Glob tool failed",
+                extra={
+                    "category": "error",
+                    "component": "tool",
+                    "context": "glob.execute",
+                },
+            )
             return ToolResult(error=str(e))

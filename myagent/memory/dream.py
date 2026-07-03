@@ -103,6 +103,90 @@ class DreamEngine:
         self._state_file.parent.mkdir(parents=True, exist_ok=True)
         self._state_file.write_text(json.dumps(state))
 
+    def _transcript_id(self, path: Path) -> str:
+        """Stable transcript identifier persisted in dream state."""
+        try:
+            return str(path.resolve())
+        except OSError:
+            return str(path)
+
+    def _processed_transcript_ids(self) -> set[str]:
+        state = self._load_state()
+        processed = state.get("processed_transcripts", [])
+        if not isinstance(processed, list):
+            return set()
+        return {str(item) for item in processed if isinstance(item, str)}
+
+    def _discover_transcript_files(self, session_store) -> list[Path]:
+        """Discover all persisted transcript files without age or count limits."""
+        if session_store is None:
+            return []
+
+        sessions_dir = Path(str(getattr(session_store, 'base_dir', '')))
+        if not sessions_dir or not sessions_dir.exists():
+            return []
+
+        transcripts: list[Path] = []
+        try:
+            for proj_dir in sessions_dir.iterdir():
+                if not proj_dir.is_dir():
+                    continue
+                for hash_dir in proj_dir.iterdir():
+                    if not hash_dir.is_dir():
+                        continue
+                    for sess_dir in hash_dir.iterdir():
+                        if not sess_dir.is_dir():
+                            continue
+                        ts_file = sess_dir / "transcript.json"
+                        if ts_file.exists():
+                            transcripts.append(ts_file)
+        except Exception:
+            logger.exception(
+                "Dream transcript discovery failed",
+                extra={
+                    "category": "error",
+                    "component": "agent",
+                    "context": "dream.discover_transcripts",
+                },
+            )
+            return []
+
+        transcripts.sort(
+            key=lambda p: p.stat().st_mtime if p.exists() else 0,
+            reverse=True,
+        )
+        return transcripts
+
+    def _unprocessed_transcript_files(self, session_store) -> list[Path]:
+        processed = self._processed_transcript_ids()
+        return [
+            path for path in self._discover_transcript_files(session_store)
+            if self._transcript_id(path) not in processed
+        ]
+
+    def _write_completed_state(
+        self,
+        session_store=None,
+        processed_files: list[Path] | None = None,
+    ) -> None:
+        state = self._load_state()
+        now = time.time()
+        processed = self._processed_transcript_ids()
+        files = (
+            processed_files
+            if processed_files is not None
+            else self._discover_transcript_files(session_store)
+        )
+        processed.update(self._transcript_id(path) for path in files)
+        state.update({
+            "last_run": now,
+            "round_count": 0,
+            "last_processed_at": now,
+            "processed_transcripts": sorted(processed),
+        })
+        self._state_file.parent.mkdir(parents=True, exist_ok=True)
+        self._state_file.write_text(json.dumps(state))
+
     async def _run_as_subagent(self, session_store=None) -> DreamResult:
         """G3: Run dream analysis via spawned sub-agent with LLM reasoning.
 
@@ -125,7 +209,11 @@ class DreamEngine:
 
         # ── Build the sub-agent prompt ──
         memory_summary = await self._build_memory_summary()
-        transcript_excerpts = await self._build_transcript_excerpts(session_store)
+        unprocessed_transcripts = self._unprocessed_transcript_files(session_store)
+        prompt_transcripts = unprocessed_transcripts[:3]
+        transcript_excerpts = await self._build_transcript_excerpts(
+            session_store, transcript_files=prompt_transcripts
+        )
 
         # ── Detect factual errors to pass to the sub-agent (gap-17-04) ──
         factual_errors_text = await self._build_factual_errors_section()
@@ -144,8 +232,16 @@ class DreamEngine:
             )
             sub_result = await handle.wait()
         except Exception as e:
-            logger.error("Dream sub-agent spawn/wait failed: %s", e, exc_info=True,
-                         extra={"category": "error", "component": "dream"})
+            logger.error(
+                "Dream sub-agent spawn/wait failed: %s",
+                e,
+                exc_info=True,
+                extra={
+                    "category": "error",
+                    "component": "agent",
+                    "context": "dream.subagent_spawn",
+                },
+            )
             raise
 
         # ── Parse sub-agent result ──
@@ -214,11 +310,10 @@ class DreamEngine:
         result.log_path = log_path
 
         # ── Update state ──
-        self._state_file.parent.mkdir(parents=True, exist_ok=True)
-        self._state_file.write_text(json.dumps({
-            "last_run": time.time(),
-            "round_count": 0,
-        }))
+        self._write_completed_state(
+            session_store=session_store,
+            processed_files=prompt_transcripts,
+        )
 
         return result
 
@@ -232,6 +327,14 @@ class DreamEngine:
             try:
                 entries = await self.memory_store.list_all(scope)
             except Exception:
+                logger.exception(
+                    "Dream memory listing failed",
+                    extra={
+                        "category": "error",
+                        "component": "agent",
+                        "context": f"dream.memory_summary.list:{scope}",
+                    },
+                )
                 continue
 
             if entries:
@@ -240,6 +343,14 @@ class DreamEngine:
                     try:
                         mf = await self.memory_store.read(entry.name)
                     except Exception:
+                        logger.exception(
+                            "Dream memory read failed",
+                            extra={
+                                "category": "error",
+                                "component": "agent",
+                                "context": f"dream.memory_summary.read:{entry.name}",
+                            },
+                        )
                         continue
                     if mf is None:
                         continue
@@ -253,36 +364,24 @@ class DreamEngine:
 
         return "\n".join(lines) if len(lines) > 1 else "(No memories found)"
 
-    async def _build_transcript_excerpts(self, session_store) -> str:
-        """Build excerpts from recent session transcripts for the sub-agent prompt."""
+    async def _build_transcript_excerpts(
+        self,
+        session_store,
+        transcript_files: list[Path] | None = None,
+    ) -> str:
+        """Build excerpts from unprocessed transcripts for the sub-agent prompt."""
         import json as _json
-        lines = ["## Recent Session Transcripts", ""]
+        lines = ["## Unprocessed Session Transcripts", ""]
 
         if session_store is None:
             return "\n".join(lines + ["(No session store available)"])
 
         try:
-            sessions_dir = Path(str(getattr(session_store, 'base_dir', '')))
-            if not sessions_dir or not sessions_dir.exists():
-                return "\n".join(lines + ["(No sessions found)"])
-
-            recent_cutoff = time.time() - 7 * 86400
-            recent_sessions = []
-            for proj_dir in sessions_dir.iterdir():
-                if not proj_dir.is_dir():
-                    continue
-                for hash_dir in proj_dir.iterdir():
-                    if not hash_dir.is_dir():
-                        continue
-                    for sess_dir in hash_dir.iterdir():
-                        if not sess_dir.is_dir():
-                            continue
-                        ts_file = sess_dir / "transcript.json"
-                        if ts_file.exists() and ts_file.stat().st_mtime > recent_cutoff:
-                            recent_sessions.append(ts_file)
-
-            recent_sessions.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-            sampled = recent_sessions[:3]
+            sampled = (
+                transcript_files
+                if transcript_files is not None
+                else self._unprocessed_transcript_files(session_store)[:3]
+            )
 
             for i, ts_file in enumerate(sampled):
                 try:
@@ -298,12 +397,28 @@ class DreamEngine:
                         lines.append(f"  [{role}] {content}")
                     lines.append("")
                 except Exception:
+                    logger.exception(
+                        "Dream transcript excerpt failed",
+                        extra={
+                            "category": "error",
+                            "component": "agent",
+                            "context": f"dream.transcript_excerpt:{ts_file}",
+                        },
+                    )
                     continue
 
             if not lines[1:]:
-                lines.append("(No recent session transcripts found)")
+                lines.append("(No unprocessed session transcripts found)")
 
         except Exception as e:
+            logger.exception(
+                "Dream transcript excerpt scanning failed",
+                extra={
+                    "category": "error",
+                    "component": "agent",
+                    "context": "dream.transcript_excerpts",
+                },
+            )
             lines.append(f"(Error scanning transcripts: {e})")
 
         return "\n".join(lines)
@@ -326,6 +441,14 @@ class DreamEngine:
             try:
                 entries = await self.memory_store.list_all(scope)
             except Exception:
+                logger.exception(
+                    "Dream factual error memory listing failed",
+                    extra={
+                        "category": "error",
+                        "component": "agent",
+                        "context": f"dream.factual_errors.list:{scope}",
+                    },
+                )
                 continue
             for entry in entries:
                 if entry.name in seen_names:
@@ -334,6 +457,14 @@ class DreamEngine:
                 try:
                     mf = await self.memory_store.read(entry.name)
                 except Exception:
+                    logger.exception(
+                        "Dream factual error memory read failed",
+                        extra={
+                            "category": "error",
+                            "component": "agent",
+                            "context": f"dream.factual_errors.read:{entry.name}",
+                        },
+                    )
                     continue
                 if mf is None:
                     continue
@@ -453,7 +584,11 @@ Do NOT interact with project code files — only memory files."""
                 logger.warning(
                     "Dream sub-agent failed: %s — falling back to inline analysis", e,
                     exc_info=True,
-                    extra={"category": "error", "component": "dream"},
+                    extra={
+                        "category": "error",
+                        "component": "agent",
+                        "context": "dream.run_as_subagent",
+                    },
                 )
 
         return await self._run_inline(session_store)
@@ -476,6 +611,7 @@ Do NOT interact with project code files — only memory files."""
         actions: list[str] = []
         analysis_sections: list[str] = []
         analysis_sections.append("## Dream Analysis")
+        unprocessed_transcripts = self._unprocessed_transcript_files(session_store)
 
         if self.memory_store is not None:
             # ── 1. Gather all memories from both scopes ──
@@ -486,9 +622,14 @@ Do NOT interact with project code files — only memory files."""
                 try:
                     entries = await self.memory_store.list_all(scope)
                 except Exception:
-                    logger.warning(
-                        "Dream: failed to list %s memories", scope, exc_info=True,
-                        extra={"category": "system"},
+                    logger.exception(
+                        "Dream: failed to list %s memories",
+                        scope,
+                        extra={
+                            "category": "error",
+                            "component": "agent",
+                            "context": f"dream.inline.list:{scope}",
+                        },
                     )
                     continue
 
@@ -500,9 +641,14 @@ Do NOT interact with project code files — only memory files."""
                     try:
                         mf = await self.memory_store.read(entry.name)
                     except Exception:
-                        logger.warning(
-                            "Dream: failed to read memory '%s'", entry.name, exc_info=True,
-                            extra={"category": "system"},
+                        logger.exception(
+                            "Dream: failed to read memory '%s'",
+                            entry.name,
+                            extra={
+                                "category": "error",
+                                "component": "agent",
+                                "context": f"dream.inline.read:{entry.name}",
+                            },
                         )
                         continue
 
@@ -528,9 +674,14 @@ Do NOT interact with project code files — only memory files."""
                         extra={"category": "system"},
                     )
                 except Exception:
-                    logger.warning(
-                        "Dream: failed to delete empty memory '%s'", name, exc_info=True,
-                        extra={"category": "system"},
+                    logger.exception(
+                        "Dream: failed to delete empty memory '%s'",
+                        name,
+                        extra={
+                            "category": "error",
+                            "component": "agent",
+                            "context": f"dream.inline.delete_empty:{name}",
+                        },
                     )
 
             all_memories = [(mf, mt) for mf, mt in all_memories if mf.name not in empty_names]
@@ -552,7 +703,8 @@ Do NOT interact with project code files — only memory files."""
                     try:
                         await self.memory_store.delete(mf.name)
                         actions.append(
-                            f"- Deleted duplicate memory: `{mf.name}` (duplicate of `{keeper.name}`)"
+                            f"- Deleted duplicate memory: `{mf.name}` "
+                            f"(duplicate of `{keeper.name}`)"
                         )
                         result.memories_deleted += 1
                         logger.info(
@@ -561,13 +713,21 @@ Do NOT interact with project code files — only memory files."""
                             extra={"category": "system"},
                         )
                     except Exception:
-                        logger.warning(
-                            "Dream: failed to delete duplicate '%s'", mf.name, exc_info=True,
-                            extra={"category": "system"},
+                        logger.exception(
+                            "Dream: failed to delete duplicate '%s'",
+                            mf.name,
+                            extra={
+                                "category": "error",
+                                "component": "agent",
+                                "context": f"dream.inline.delete_duplicate:{mf.name}",
+                            },
                         )
 
             # ── 4. Scan recent transcripts for patterns (gap-18) ──
-            transcript_findings = await self._scan_transcripts(session_store)
+            transcript_findings = await self._scan_transcripts(
+                session_store,
+                transcript_files=unprocessed_transcripts,
+            )
             if transcript_findings.text:
                 analysis_sections.append("")
                 analysis_sections.append("### Patterns from Recent Sessions")
@@ -632,9 +792,14 @@ Do NOT interact with project code files — only memory files."""
                         extra={"category": "system"},
                     )
                 except Exception:
-                    logger.warning(
-                        "Dream: failed to delete stale memory '%s'", name, exc_info=True,
-                        extra={"category": "system"},
+                    logger.exception(
+                        "Dream: failed to delete stale memory '%s'",
+                        name,
+                        extra={
+                            "category": "error",
+                            "component": "agent",
+                            "context": f"dream.inline.delete_stale:{name}",
+                        },
                     )
 
             if stale_count == 0:
@@ -666,23 +831,27 @@ Do NOT interact with project code files — only memory files."""
         log_lines.append(f"- Created: {result.memories_created}")
         log_lines.append(f"- Updated: {result.memories_updated}")
         log_lines.append(f"- Deleted: {result.memories_deleted}")
-        log_lines.append(f"- Total memories after dream: {len(all_memories) if self.memory_store else 'N/A'}")
+        total_memories = len(all_memories) if self.memory_store else "N/A"
+        log_lines.append(f"- Total memories after dream: {total_memories}")
         log_lines.append("")
 
         log_path.write_text("\n".join(log_lines), encoding="utf-8")
         result.log_path = log_path
 
         # ── 8. Update state ──
-        self._state_file.parent.mkdir(parents=True, exist_ok=True)
-        self._state_file.write_text(json.dumps({
-            "last_run": time.time(),
-            "round_count": 0,
-        }))
+        self._write_completed_state(
+            session_store=session_store,
+            processed_files=unprocessed_transcripts,
+        )
 
         return result
 
-    async def _scan_transcripts(self, session_store) -> TranscriptFindings:
-        """Scan recent unprocessed session transcripts for patterns (gap-18).
+    async def _scan_transcripts(
+        self,
+        session_store,
+        transcript_files: list[Path] | None = None,
+    ) -> TranscriptFindings:
+        """Scan unprocessed session transcripts for patterns (gap-18).
 
         Identifies repeated corrections, new conventions, and topic clusters
         by scanning transcript files from recent sessions.
@@ -694,33 +863,18 @@ Do NOT interact with project code files — only memory files."""
             return findings
 
         try:
-            sessions_dir = Path(str(getattr(session_store, 'base_dir', '')))
-            if not sessions_dir or not sessions_dir.exists():
-                return findings
-
-            # Find recent sessions (last 7 days)
-            recent_cutoff = time.time() - 7 * 86400
-            recent_sessions = []
-            for proj_dir in sessions_dir.iterdir():
-                if not proj_dir.is_dir():
-                    continue
-                for hash_dir in proj_dir.iterdir():
-                    if not hash_dir.is_dir():
-                        continue
-                    for sess_dir in hash_dir.iterdir():
-                        if not sess_dir.is_dir():
-                            continue
-                        ts_file = sess_dir / "transcript.json"
-                        if ts_file.exists() and ts_file.stat().st_mtime > recent_cutoff:
-                            recent_sessions.append(ts_file)
+            recent_sessions = (
+                transcript_files
+                if transcript_files is not None
+                else self._unprocessed_transcript_files(session_store)
+            )
 
             if not recent_sessions:
-                findings.text.append("No recent sessions found.")
+                findings.text.append("No unprocessed sessions found.")
                 return findings
 
-            # Sample up to 5 most recent sessions
             recent_sessions.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-            sampled = recent_sessions[:5]
+            sampled = recent_sessions
             findings.sessions_scanned = len(sampled)
 
             # Scan for patterns: repeated corrections, common topics, new conventions
@@ -760,6 +914,14 @@ Do NOT interact with project code files — only memory files."""
                             topic_keywords[kw] = topic_keywords.get(kw, 0) + 1
 
                 except Exception:
+                    logger.exception(
+                        "Dream transcript scan failed for file",
+                        extra={
+                            "category": "error",
+                            "component": "agent",
+                            "context": f"dream.scan_transcript:{ts_file}",
+                        },
+                    )
                     continue
 
             findings.correction_count = correction_count
@@ -790,8 +952,14 @@ Do NOT interact with project code files — only memory files."""
                 )
 
         except Exception as e:
-            logger.warning("Dream transcript scanning failed: %s", e,
-                           extra={"category": "system"})
+            logger.exception(
+                "Dream transcript scanning failed",
+                extra={
+                    "category": "error",
+                    "component": "agent",
+                    "context": "dream.scan_transcripts",
+                },
+            )
             findings.text.append(f"Transcript scanning encountered an error: {e}")
 
         return findings
@@ -1537,6 +1705,14 @@ Do NOT interact with project code files — only memory files."""
                 "deleted": len(session_writes.deleted),
             }
         except Exception:
+            logger.exception(
+                "Dream session write counting failed",
+                extra={
+                    "category": "error",
+                    "component": "agent",
+                    "context": "dream.count_session_writes",
+                },
+            )
             return None
 
     def _load_state(self) -> dict:

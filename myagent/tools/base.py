@@ -63,6 +63,7 @@ class ToolContext:
     goal_tracker: Any = None  # GoalTracker (for spawn_subagent goal-mode detection)
     tool_registry: Any = None  # ToolRegistry (G6: for MCP resource/prompt tools)
     mcp_clients: list | None = None  # MCPClient list (G6: for MCP resource/prompt tools)
+    current_subagent_id: str | None = None  # Real sender ID for sub-agent tools
 
 
 @runtime_checkable

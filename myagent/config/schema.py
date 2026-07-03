@@ -46,7 +46,7 @@ class PermissionsConfig:
 
 @dataclass
 class SubagentsConfig:
-    max_concurrent: int = 10
+    max_concurrent: int | None = None
     speculative_exploration: bool = False
 
 

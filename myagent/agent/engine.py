@@ -825,15 +825,9 @@ class AgentEngine:
             return ToolResult(error=f"Unknown tool: {tc.name}")
 
         # Check permissions before executing.
-        # If the tool call includes dangerouslyDisableSandbox=True, bypass the
-        # centralized permission check (per spec §五: "dangerouslyDisableSandbox
-        # flag should bypass the engine check"). The tool implementation itself
-        # does not re-check (gap-r14-03).
-        skip_perm_check = (
-            tc.params.get("dangerouslyDisableSandbox", False)
-            if isinstance(tc.params, dict) else False
-        )
-        if self.permissions and not skip_perm_check:
+        # Permission bypass is only allowed through PermissionController state,
+        # such as CLI-level skip_all().
+        if self.permissions:
             level = self._get_tool_level(tc.name)
             perm_result = self.permissions.check(tc.name, level=level, params=tc.params)
             if perm_result.name == "DENY":
@@ -848,6 +842,15 @@ class AgentEngine:
                 try:
                     allowed = await self.permissions.confirm(tc.name, tc.params)
                 except Exception:
+                    logger.exception(
+                        "Permission confirmation failed for tool '%s'",
+                        tc.name,
+                        extra={
+                            "category": "error",
+                            "component": "agent",
+                            "context": f"permission_confirm:{tc.name}",
+                        },
+                    )
                     allowed = False
                 if not allowed:
                     logger.info(

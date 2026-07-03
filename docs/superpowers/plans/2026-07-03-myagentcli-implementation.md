@@ -741,7 +741,7 @@ Expected: PASS
 - Consumes: Everything from Tasks 5, plus `SubAgentPool` (from Task 9, stub for now), `MemoryStore` (from Task 10, stub for now)
   - **Stub contract**: Define `SubAgentPoolStub` and `MemoryStoreStub` as Protocol classes matching the final public interfaces of Task 9 and Task 10. This ensures zero integration friction when replacing stubs with real implementations — the agent tools code compiles and passes tests against the stub, then works unchanged against the real thing. Stubs return fixed/predefined responses for tests; they do not simulate real behavior.
 - Produces:
-  - `BashTool` — `bash(command: str, timeout?: int, description?: str, run_in_background?: bool, dangerouslyDisableSandbox?: bool) -> ToolResult`
+  - `BashTool` — `bash(command: str, timeout?: int, description?: str, run_in_background?: bool) -> ToolResult`
   - `TaskCreateTool` — `task_create(subject: str, description: str, activeForm?: str) -> ToolResult`
   - `TaskUpdateTool` — `task_update(taskId: str, status?: str, subject?: str, ...) -> ToolResult`
   - `MemoryWriteTool` — `memory_write(file_path: str, content: str) -> ToolResult`
@@ -749,7 +749,7 @@ Expected: PASS
   - `SendMessageTool` — `send_message(to: str, summary?: str, message: str) -> ToolResult`
 
 **Key design:**
-- `bash`: executes via subprocess, respects timeout (default 120s), `run_in_background` uses asyncio.create_task, `dangerouslyDisableSandbox` bypasses permission checks
+- `bash`: executes via subprocess and respects timeout (default 120s). `run_in_background` uses asyncio.create_task. Permission checks are centralized in AgentEngine and PermissionController.
 - `task_create`/`task_update`: manage a task list in session state (in-memory dict, persisted with session)
 - `memory_write`: delegates to MemoryStore (stub → real in Task 10)
 - `spawn_subagent`: delegates to SubAgentPool (stub → real in Task 9). Parameters per design doc §四 table

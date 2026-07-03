@@ -79,7 +79,7 @@ async def async_main(argv: list[str] | None = None) -> int:
     _register_builtin_tools(tool_registry)
 
     # Start MCP servers and register their tools (gap-03)
-    mcp_clients = await _startup_mcp_servers(tool_registry)
+    mcp_clients = await _startup_mcp_servers(tool_registry, project_dir)
     # G6: Store MCP clients on the registry for mcp_read_resource/mcp_get_prompt tools
     tool_registry.mcp_clients = mcp_clients
 
@@ -395,7 +395,7 @@ def _register_builtin_tools(registry) -> None:
         registry.register(tool_cls())
 
 
-async def _startup_mcp_servers(tool_registry) -> list:
+async def _startup_mcp_servers(tool_registry, project_dir: Path) -> list:
     """Read mcp.json configs and start MCP servers.
 
     Checks user-level (~/.myagent/mcp.json) and project-level
@@ -406,13 +406,11 @@ async def _startup_mcp_servers(tool_registry) -> list:
     import logging
     _log = logging.getLogger("myagent.cli")
 
-    mcp_clients = []
-    # Priority: project-level overrides user-level for same-named servers
+    server_configs: dict[str, dict] = {}
     config_paths = [
         Path.home() / ".myagent" / "mcp.json",
-        Path.cwd() / ".myagent" / "mcp.json",
+        project_dir / ".myagent" / "mcp.json",
     ]
-    seen_servers: set[str] = set()
 
     for config_path in config_paths:
         if not config_path.exists():
@@ -426,29 +424,22 @@ async def _startup_mcp_servers(tool_registry) -> list:
         servers = data.get("servers", data) if isinstance(data, dict) else {}
         if isinstance(servers, dict):
             for name, server_cfg in servers.items():
-                if name in seen_servers:
-                    continue
-                seen_servers.add(name)
-                try:
-                    client = await _start_single_mcp_server(name, server_cfg, tool_registry)
-                    if client:
-                        mcp_clients.append(client)
-                except Exception as e:
-                    _log.error("Failed to start MCP server '%s': %s", name, e)
+                server_configs[name] = server_cfg
 
         # Also support top-level array format: [{"name": "...", "command": "..."}]
         if isinstance(data, list):
             for server_cfg in data:
                 name = server_cfg.get("name", server_cfg.get("command", "unknown"))
-                if name in seen_servers:
-                    continue
-                seen_servers.add(name)
-                try:
-                    client = await _start_single_mcp_server(name, server_cfg, tool_registry)
-                    if client:
-                        mcp_clients.append(client)
-                except Exception as e:
-                    _log.error("Failed to start MCP server '%s': %s", name, e)
+                server_configs[name] = server_cfg
+
+    mcp_clients = []
+    for name, server_cfg in server_configs.items():
+        try:
+            client = await _start_single_mcp_server(name, server_cfg, tool_registry)
+            if client:
+                mcp_clients.append(client)
+        except Exception as e:
+            _log.error("Failed to start MCP server '%s': %s", name, e)
 
     return mcp_clients
 

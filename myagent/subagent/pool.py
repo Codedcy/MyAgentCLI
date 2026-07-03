@@ -6,7 +6,7 @@ import asyncio
 import logging
 import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 
 from myagent.tools.base import ToolContext, ToolResult
@@ -264,6 +264,12 @@ class SubAgentPool:
         _llm = llm or self._llm
         _tool_registry = tool_registry or self._tool_registry
         _tool_context = tool_context or self._tool_context
+        if _tool_context is not None:
+            _tool_context = replace(
+                _tool_context,
+                current_subagent_id=agent_id,
+                subagent_pool=_tool_context.subagent_pool or self,
+            )
 
         project_ctx = getattr(_tool_context, 'project_context', None) if _tool_context else None
 

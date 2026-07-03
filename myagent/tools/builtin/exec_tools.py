@@ -32,10 +32,6 @@ class BashTool:
                 "type": "boolean",
                 "description": "Run the command in the background",
             },
-            "dangerouslyDisableSandbox": {
-                "type": "boolean",
-                "description": "Bypass permission checks",
-            },
         },
         "required": ["command"],
     }
@@ -50,8 +46,7 @@ class BashTool:
         run_in_background = params.get("run_in_background", False)
 
         # Permission checks are handled centrally by the engine's _execute_tool
-        # before calling tool.execute(). The dangerouslyDisableSandbox flag is
-        # also handled by the engine. Tool implementations trust the engine's
+        # before calling tool.execute(). Tool implementations trust the engine's
         # pre-check and do not re-prompt the user (per spec §五).
 
         try:
@@ -81,7 +76,15 @@ class BashTool:
                 output=output.strip() or "(no output)",
                 metadata={"exit_code": proc.returncode or 0},
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return ToolResult(error=f"Command timed out after {timeout_ms}ms")
         except Exception as e:
+            logger.exception(
+                "Bash tool failed",
+                extra={
+                    "category": "error",
+                    "component": "tool",
+                    "context": "bash.execute",
+                },
+            )
             return ToolResult(error=str(e))

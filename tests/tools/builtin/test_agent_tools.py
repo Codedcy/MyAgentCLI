@@ -73,3 +73,31 @@ class TestSendMessageTool:
         )
         assert result.error is None
         pool.send_message.assert_called_once_with("sub-001", "Focus on XSS")
+
+    @pytest.mark.asyncio
+    async def test_send_to_main_uses_current_subagent_id_when_from_omitted(self):
+        class Pool:
+            def __init__(self):
+                self.messages = []
+
+            def send_to_main(self, subagent_id, message):
+                self.messages.append((subagent_id, message))
+
+        pool = Pool()
+        tool = SendMessageTool()
+        ctx = ToolContext(
+            session_id="test",
+            project_dir=MagicMock(),
+            permissions=MagicMock(),
+            config=MagicMock(),
+            subagent_pool=pool,
+            current_subagent_id="sub-042",
+        )
+
+        result = await tool.execute(
+            {"to": "main", "message": "Need guidance"},
+            ctx,
+        )
+
+        assert result.error is None
+        assert pool.messages == [("sub-042", "Need guidance")]

@@ -829,7 +829,8 @@ permissions:
     commands: ["sudo", "rm -rf /"]
 
 subagents:
-  max_concurrent: 10
+  # null = auto: min(16, max(1, os.cpu_count() - 2))
+  max_concurrent: null
   speculative_exploration: false
 
 dream:

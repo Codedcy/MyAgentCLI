@@ -218,7 +218,10 @@ class ConfigLoader:
             )
 
         # Validate concurrency limits are positive
-        if config.subagents.max_concurrent < 1:
+        if (
+            config.subagents.max_concurrent is not None
+            and config.subagents.max_concurrent < 1
+        ):
             logger.warning(
                 "subagents.max_concurrent = %d is too low; minimum is 1",
                 config.subagents.max_concurrent,

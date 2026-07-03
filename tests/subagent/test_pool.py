@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from myagent.subagent.pool import AgentStatus, CapExceededError, SubAgentPool
+from myagent.tools.base import ToolContext
 
 
 # ── Fake stream events ──────────────────────────────────────────────
@@ -42,6 +43,49 @@ def _make_llm(text="Task completed"):
 
 
 class TestSubAgentPool:
+    def test_auto_max_concurrent_uses_cpu_formula(self, monkeypatch):
+        monkeypatch.setattr("myagent.subagent.pool.os.cpu_count", lambda: 6)
+        pool = SubAgentPool(max_concurrent=None, llm=_make_llm())
+        assert pool.max_concurrent == 4
+
+    def test_explicit_max_concurrent_is_preserved(self):
+        pool = SubAgentPool(max_concurrent=7, llm=_make_llm())
+        assert pool.max_concurrent == 7
+
+    @pytest.mark.asyncio
+    async def test_worker_tool_context_gets_current_subagent_id(
+        self, tmp_path, monkeypatch
+    ):
+        captured = {}
+
+        class FakeWorker:
+            def __init__(self, *args, tool_context=None, **kwargs):
+                captured["current_subagent_id"] = getattr(
+                    tool_context, "current_subagent_id", None
+                )
+
+            async def run(self):
+                return "ok"
+
+        monkeypatch.setattr("myagent.subagent.worker.SubAgentWorker", FakeWorker)
+
+        pool = SubAgentPool(max_concurrent=2)
+        ctx = ToolContext(
+            session_id="parent",
+            project_dir=tmp_path,
+            permissions=None,
+            config=None,
+            subagent_pool=pool,
+        )
+
+        await pool.spawn(
+            prompt="Report progress",
+            background=False,
+            tool_context=ctx,
+        )
+
+        assert captured["current_subagent_id"] == "sub-001"
+
     @pytest.mark.asyncio
     async def test_spawn_foreground(self):
         """Foreground spawn should block until completion and return result."""
