@@ -772,7 +772,7 @@ class AgentEngine:
 
             # Summarize large results via sub-agent; fall back to truncation
             if len(result.output) > self.TOOL_RESULT_MAX_CHARS:
-                result = await self._summarize_via_subagent(result, tc.name)
+                result = await self._summarize_via_subagent(result, tc.name, call_id=tc.id)
 
             # Persist tool call to session store (gap-14)
             if self.session_store:
@@ -797,15 +797,23 @@ class AgentEngine:
             return ToolResult(error=str(e))
 
     async def _summarize_via_subagent(
-        self, result: ToolResult, tool_name: str
+        self, result: ToolResult, tool_name: str, call_id: str | None = None
     ) -> ToolResult:
         """Summarize a large tool result using a sub-agent.
 
         Falls back to truncation if the sub-agent pool is unavailable or
         summarization fails.
+
+        When call_id is provided, includes a reference to the persisted
+        full result file (tools/call-{call_id}.json) in the summary output.
         """
         if not self.subagent_pool:
             return self._truncate_result(result)
+
+        # Compute the file reference for the persisted full result
+        file_ref = ""
+        if call_id:
+            file_ref = f" Full result: tools/call-{call_id}.json"
 
         try:
             prompt = (
@@ -824,7 +832,7 @@ class AgentEngine:
                 raise Exception(summary_result.error)
             return ToolResult(
                 output=(
-                    f"[Summarized from {len(result.output)} chars]\n"
+                    f"[Summarized from {len(result.output)} chars.{file_ref}]\n"
                     f"{summary_result.output}"
                 ),
                 error=result.error,
