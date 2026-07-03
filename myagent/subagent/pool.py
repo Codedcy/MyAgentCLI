@@ -83,7 +83,6 @@ def _retry_notify(handle, attempt: int, max_retries: int, pool) -> None:
 async def _persist_subagent_transcript(session_store, session, handle, worker, duration_ms, output):
     """Persist sub-agent transcript to session's subagents/ directory (gap-07)."""
     import json
-    from pathlib import Path
 
     try:
         if hasattr(session, 'project_name') and hasattr(session, 'project_hash'):
@@ -132,7 +131,15 @@ async def _persist_subagent_transcript(session_store, session, handle, worker, d
             "\n".join(md_lines), encoding="utf-8",
         )
     except Exception:
-        pass  # Best-effort persistence
+        logger.exception(
+            "Failed to persist sub-agent transcript",
+            extra={
+                "category": "error",
+                "component": "subagent",
+                "context": "subagent_transcript_persist",
+                "subagent_id": getattr(handle, "id", "unknown"),
+            },
+        )
 
 
 class CapExceededError(Exception):
@@ -207,7 +214,6 @@ class SubAgentPool:
                 and hasattr(session, 'project_hash') and hasattr(session, 'id')
                 and self._session_store):
             try:
-                from pathlib import Path
                 sess_dir = self._session_store._session_dir(
                     session.project_name, session.project_hash, session.id
                 )
@@ -233,7 +239,14 @@ class SubAgentPool:
                             extra={"category": "subagent"},
                         )
             except Exception:
-                pass  # Best-effort scanning
+                logger.exception(
+                    "Failed to scan existing sub-agent directories",
+                    extra={
+                        "category": "error",
+                        "component": "subagent",
+                        "context": "subagent_resume_scan",
+                    },
+                )
 
     async def spawn(
         self,
@@ -344,10 +357,14 @@ class SubAgentPool:
             try:
                 await cb(agent_id, status, handle, self)
             except Exception:
-                logger.debug(
+                logger.exception(
                     "Status callback failed for %s → %s", agent_id, status.value,
-                    exc_info=True,
-                    extra={"category": "subagent"},
+                    extra={
+                        "category": "error",
+                        "component": "subagent",
+                        "context": "subagent_status_callback",
+                        "subagent_id": agent_id,
+                    },
                 )
 
     async def shutdown(self) -> None:
@@ -362,7 +379,15 @@ class SubAgentPool:
                         hid, AgentStatus.INTERRUPTED, handle
                     )
                 except Exception:
-                    pass
+                    logger.exception(
+                        "Failed to notify sub-agent interruption",
+                        extra={
+                            "category": "error",
+                            "component": "subagent",
+                            "context": "subagent_shutdown_notify",
+                            "subagent_id": hid,
+                        },
+                    )
 
     async def _remove_handle_after_delay(self, agent_id: str, delay: float = 3.0) -> None:
         """Remove a handle from _agents dict after a configurable delay.
@@ -379,7 +404,15 @@ class SubAgentPool:
             try:
                 await self._notify_status_callbacks(agent_id, AgentStatus.RESULT_CONSUMED, None)
             except Exception:
-                pass
+                logger.exception(
+                    "Failed to notify sub-agent result consumption",
+                    extra={
+                        "category": "error",
+                        "component": "subagent",
+                        "context": "subagent_result_consumed_notify",
+                        "subagent_id": agent_id,
+                    },
+                )
 
     # ── internal ──────────────────────────────────────────────────
 

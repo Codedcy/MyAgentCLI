@@ -9,7 +9,7 @@ Layer 4 — Hard truncation: drop oldest blocks to stay under hard_limit
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from myagent.context.builder import Message
@@ -61,7 +61,11 @@ class CompressionEngine:
     ) -> CompactResult:
         conv_count = self._count_conversation_messages(messages)
         if self.config and conv_count < self.config.minimum_messages:
-            return CompactResult(messages=messages, usage_after=current_usage_pct, layers_applied=[])
+            return CompactResult(
+                messages=messages,
+                usage_after=current_usage_pct,
+                layers_applied=[],
+            )
 
         # ── Save original state for debounce rollback ──────────
         original_messages = list(messages)
@@ -120,6 +124,14 @@ class CompressionEngine:
                         )
                     self._layer3_failures = 0
                 except Exception:
+                    logger.exception(
+                        "Layer 3 conversation summarization failed",
+                        extra={
+                            "category": "error",
+                            "component": "agent",
+                            "context": "context_compact_layer3",
+                        },
+                    )
                     self._layer3_failures += 1
                     if self._layer3_failures >= 3:
                         degradation_notice = (
@@ -137,7 +149,7 @@ class CompressionEngine:
             total_savings = (original_size - post_size) / original_size
             if total_savings < min_savings:
                 # Only roll back if Layers 2 or 3 were applied (Layer 1 alone is always kept).
-                has_costly_layers = any(l in layers_applied for l in (2, 3))
+                has_costly_layers = any(layer in layers_applied for layer in (2, 3))
                 if has_costly_layers:
                     logger.debug(
                         "Overall compression savings (%.1f%%) below minimum_savings (%.1f%%); "
@@ -281,8 +293,19 @@ class CompressionEngine:
             self._persist_summary(summary_text, len(old))
             return [summary_msg] + recent
         except Exception:
+            logger.exception(
+                "Conversation summary generation failed; using placeholder",
+                extra={
+                    "category": "error",
+                    "component": "agent",
+                    "context": "context_layer3_summarize",
+                },
+            )
             # Fallback to placeholder
-            summary_text = f"[Conversation summary: {len(old)} messages covering {old[0].role} → {old[-1].role} exchanges]"
+            summary_text = (
+                f"[Conversation summary: {len(old)} messages covering "
+                f"{old[0].role} → {old[-1].role} exchanges]"
+            )
             summary_msg = Message(role="system", content=summary_text)
             self._persist_summary(summary_text, len(old))
             return [summary_msg] + recent
@@ -303,7 +326,14 @@ class CompressionEngine:
                     encoding="utf-8",
                 )
             except Exception:
-                pass  # Best-effort persistence
+                logger.exception(
+                    "Failed to persist conversation summary",
+                    extra={
+                        "category": "error",
+                        "component": "agent",
+                        "context": "context_persist_conversation_summary",
+                    },
+                )
 
     def _messages_to_text(self, messages: list[Message]) -> str:
         """Convert a list of messages to a compact text representation."""
@@ -376,12 +406,15 @@ class CompressionEngine:
                 f"{summary_text}"
             )
         except Exception:
-            logger.debug(
+            logger.exception(
                 "Layer 2 LLM summarization failed for tool '%s', "
                 "falling back to raw truncation",
                 tool_name,
-                exc_info=True,
-                extra={"category": "agent"},
+                extra={
+                    "category": "error",
+                    "component": "agent",
+                    "context": "context_layer2_tool_summary",
+                },
             )
             return None
 
@@ -408,7 +441,14 @@ class CompressionEngine:
                     encoding="utf-8",
                 )
             except Exception:
-                pass  # Best-effort persistence
+                logger.exception(
+                    "Failed to persist tool result summary",
+                    extra={
+                        "category": "error",
+                        "component": "agent",
+                        "context": "context_persist_tool_summary",
+                    },
+                )
 
     async def _summarize_with_llm(self, conversation_text: str, message_count: int) -> str:
         """Use the LLM to produce a concise summary of the conversation."""

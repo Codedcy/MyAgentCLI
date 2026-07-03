@@ -7,7 +7,7 @@ import logging
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 logger = logging.getLogger("myagent.memory.dream")
@@ -77,9 +77,10 @@ class DreamEngine:
         # This ensures the hours counter resets on each fresh session — even if
         # a previous session ended without triggering a dream (gap-r12-06).
         effective_last = last_run
-        if session_started_at is not None:
-            if effective_last is None or session_started_at > effective_last:
-                effective_last = session_started_at
+        if session_started_at is not None and (
+            effective_last is None or session_started_at > effective_last
+        ):
+            effective_last = session_started_at
 
         if effective_last:
             elapsed = time.time() - effective_last
@@ -204,7 +205,7 @@ class DreamEngine:
         # ── Create dream log directory ──
         log_dir = self.state_dir / "dreams"
         log_dir.mkdir(parents=True, exist_ok=True)
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        today = datetime.now(UTC).strftime("%Y-%m-%d")
         log_path = log_dir / f"{today}.md"
 
         # ── Build the sub-agent prompt ──
@@ -605,7 +606,7 @@ Do NOT interact with project code files — only memory files."""
         # ── Create dream log directory ──
         log_dir = self.state_dir / "dreams"
         log_dir.mkdir(parents=True, exist_ok=True)
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        today = datetime.now(UTC).strftime("%Y-%m-%d")
         log_path = log_dir / f"{today}.md"
 
         actions: list[str] = []
@@ -694,7 +695,7 @@ Do NOT interact with project code files — only memory files."""
                     continue
                 by_desc[desc_key].append((mf, mtime))
 
-            for desc_key, items in by_desc.items():
+            for items in by_desc.values():
                 if len(items) < 2:
                     continue
                 items.sort(key=lambda x: x[1], reverse=True)
@@ -1136,8 +1137,17 @@ Do NOT interact with project code files — only memory files."""
 
                 # ── Layer 2: Sentence-level negation analysis ──
                 # Split each memory into sentences
-                sentences1 = [s.strip() for s in re.split(r'[.!?\n。！？\n]+', mf1.content) if len(s.strip()) > 10]
-                sentences2 = [s.strip() for s in re.split(r'[.!?\n。！？\n]+', mf2.content) if len(s.strip()) > 10]
+                sentence_split_re = r'[.!?\n。！？\n]+'
+                sentences1 = [
+                    s.strip()
+                    for s in re.split(sentence_split_re, mf1.content)
+                    if len(s.strip()) > 10
+                ]
+                sentences2 = [
+                    s.strip()
+                    for s in re.split(sentence_split_re, mf2.content)
+                    if len(s.strip()) > 10
+                ]
 
                 # Check for negation patterns in one memory's sentences against
                 # key assertions in the other memory's sentences.
@@ -1244,13 +1254,18 @@ Do NOT interact with project code files — only memory files."""
                 alternatives = pm_alternatives.get(detected_pm, [])
                 for alt in alternatives:
                     # Match the alternative as a whole word (not part of another word)
-                    if re.search(r'\b' + re.escape(alt) + r'\b', content_lower):
-                        if f"use {alt}" in content_lower or f"using {alt}" in content_lower or f"with {alt}" in content_lower:
-                            errors.append(
-                                f"`{mf.name}` references `{alt}` as package manager, "
-                                f"but the project uses `{detected_pm}`"
-                            )
-                            break
+                    alt_referenced = re.search(r'\b' + re.escape(alt) + r'\b', content_lower)
+                    alt_is_preferred = (
+                        f"use {alt}" in content_lower
+                        or f"using {alt}" in content_lower
+                        or f"with {alt}" in content_lower
+                    )
+                    if alt_referenced and alt_is_preferred:
+                        errors.append(
+                            f"`{mf.name}` references `{alt}` as package manager, "
+                            f"but the project uses `{detected_pm}`"
+                        )
+                        break
 
             # ── Linter check ──
             if detected_facts.get("linter"):
@@ -1262,16 +1277,20 @@ Do NOT interact with project code files — only memory files."""
                 }
                 alternatives = linter_alternatives.get(detected_linter, [])
                 for alt in alternatives:
-                    if re.search(r'\b' + re.escape(alt) + r'\b', content_lower):
-                        if any(phrase in content_lower for phrase in [
+                    alt_referenced = re.search(r'\b' + re.escape(alt) + r'\b', content_lower)
+                    alt_is_preferred = any(
+                        phrase in content_lower
+                        for phrase in [
                             f"use {alt}", f"using {alt}", f"run {alt}",
                             f"with {alt}", f"linter is {alt}",
-                        ]):
-                            errors.append(
-                                f"`{mf.name}` references `{alt}` as linter, "
-                                f"but the project uses `{detected_linter}`"
-                            )
-                            break
+                        ]
+                    )
+                    if alt_referenced and alt_is_preferred:
+                        errors.append(
+                            f"`{mf.name}` references `{alt}` as linter, "
+                            f"but the project uses `{detected_linter}`"
+                        )
+                        break
 
             # ── Test framework check ──
             if detected_facts.get("test_framework"):
@@ -1283,16 +1302,20 @@ Do NOT interact with project code files — only memory files."""
                 }
                 alternatives = tf_alternatives.get(detected_tf, [])
                 for alt in alternatives:
-                    if re.search(r'\b' + re.escape(alt) + r'\b', content_lower):
-                        if any(phrase in content_lower for phrase in [
+                    alt_referenced = re.search(r'\b' + re.escape(alt) + r'\b', content_lower)
+                    alt_is_preferred = any(
+                        phrase in content_lower
+                        for phrase in [
                             f"use {alt}", f"using {alt}", f"run {alt}",
                             f"with {alt}", f"tests? with {alt}",
-                        ]):
-                            errors.append(
-                                f"`{mf.name}` references `{alt}` as test framework, "
-                                f"but the project uses `{detected_tf}`"
-                            )
-                            break
+                        ]
+                    )
+                    if alt_referenced and alt_is_preferred:
+                        errors.append(
+                            f"`{mf.name}` references `{alt}` as test framework, "
+                            f"but the project uses `{detected_tf}`"
+                        )
+                        break
 
             # ── Build system check ──
             if detected_facts.get("build_system"):
@@ -1304,15 +1327,19 @@ Do NOT interact with project code files — only memory files."""
                 }
                 alternatives = bs_alternatives.get(detected_bs, [])
                 for alt in alternatives:
-                    if re.search(r'\b' + re.escape(alt) + r'\b', content_lower):
-                        if any(phrase in content_lower for phrase in [
+                    alt_referenced = re.search(r'\b' + re.escape(alt) + r'\b', content_lower)
+                    alt_is_preferred = any(
+                        phrase in content_lower
+                        for phrase in [
                             f"use {alt}", f"using {alt}", f"build with {alt}",
-                        ]):
-                            errors.append(
-                                f"`{mf.name}` references `{alt}` as build system, "
-                                f"but the project uses `{detected_bs}`"
-                            )
-                            break
+                        ]
+                    )
+                    if alt_referenced and alt_is_preferred:
+                        errors.append(
+                            f"`{mf.name}` references `{alt}` as build system, "
+                            f"but the project uses `{detected_bs}`"
+                        )
+                        break
 
         return errors[:10]  # Limit to top 10
 
@@ -1387,7 +1414,11 @@ Do NOT interact with project code files — only memory files."""
             # Package manager / Linter / Test framework / Build system:
             # "references `X` as <category>, but the project uses `Z`"
             ref_match = re.search(
-                r'references `([^`]+)` as (package manager|linter|test framework|build system), but the project uses `([^`]+)`',
+                (
+                    r'references `([^`]+)` as '
+                    r'(package manager|linter|test framework|build system), '
+                    r'but the project uses `([^`]+)`'
+                ),
                 fe_text,
             )
             if ref_match:

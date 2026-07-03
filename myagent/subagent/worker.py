@@ -17,11 +17,11 @@ import time
 from pathlib import Path
 
 from myagent.llm.provider import Done as LLMDone
+from myagent.llm.provider import LLMError
 from myagent.llm.provider import TextDelta as LLMTextDelta
 from myagent.llm.provider import ThinkingDelta as LLMThinkingDelta
 from myagent.llm.provider import ToolCall as LLMToolCall
-from myagent.llm.provider import LLMError
-from myagent.tools.base import ToolContext, ToolResult
+from myagent.tools.base import ToolContext
 
 # Retry constants for sub-agent LLM calls (gap-8-01)
 # Same strategy as LLMProvider: exponential backoff, max 3 retries, 2s-30s
@@ -186,7 +186,14 @@ class SubAgentWorker:
                 try:
                     self._progress_callback(iteration, self.MAX_ITERATIONS)
                 except Exception:
-                    pass
+                    logger.exception(
+                        "Sub-agent progress callback failed",
+                        extra={
+                            "category": "error",
+                            "component": "subagent",
+                            "context": "subagent_progress_callback",
+                        },
+                    )
 
             # Check for pending messages from the parent (gap-20)
             if self._message_store and self._message_store:
@@ -285,7 +292,11 @@ class SubAgentWorker:
                                 tc.name,
                                 str(e),
                                 exc_info=True,
-                                extra={"category": "error", "component": "tool", "context": f"subagent_tool:{tc.name}"},
+                                extra={
+                                    "category": "error",
+                                    "component": "tool",
+                                    "context": f"subagent_tool:{tc.name}",
+                                },
                             )
                             result_text = f"Error executing {tc.name}: {e}"
                     else:
@@ -381,7 +392,14 @@ class SubAgentWorker:
                         try:
                             self._retry_callback(attempt + 1, _SUBAGENT_MAX_RETRIES, delay)
                         except Exception:
-                            pass
+                            logger.exception(
+                                "Sub-agent retry callback failed",
+                                extra={
+                                    "category": "error",
+                                    "component": "subagent",
+                                    "context": "subagent_retry_callback",
+                                },
+                            )
                     await asyncio.sleep(delay)
                 # else: max retries exhausted, will raise below
             except Exception as e:
@@ -440,9 +458,15 @@ class SubAgentWorker:
             # jsonschema not available — do basic structural check
             schema_type = self.schema.get("type", "object")
             if schema_type == "object" and not isinstance(data, dict):
-                return f"{_json.dumps(data)}\n\n[Schema validation: expected object, got {type(data).__name__}]"
+                return (
+                    f"{_json.dumps(data)}\n\n"
+                    f"[Schema validation: expected object, got {type(data).__name__}]"
+                )
             if schema_type == "array" and not isinstance(data, list):
-                return f"{_json.dumps(data)}\n\n[Schema validation: expected array, got {type(data).__name__}]"
+                return (
+                    f"{_json.dumps(data)}\n\n"
+                    f"[Schema validation: expected array, got {type(data).__name__}]"
+                )
             return _json.dumps(data, ensure_ascii=False, indent=2)
         except jsonschema.ValidationError as e:
             return f"{_json.dumps(data)}\n\n[Schema validation failed: {e.message}]"
@@ -492,9 +516,15 @@ class SubAgentWorker:
                 extra={"category": "subagent", "event": "worktree_created"},
             )
             return worktree_path
-        except Exception as e:
-            logger.warning("Failed to create worktree: %s", e,
-                           extra={"category": "subagent"})
+        except Exception:
+            logger.exception(
+                "Failed to create worktree",
+                extra={
+                    "category": "error",
+                    "component": "subagent",
+                    "context": "subagent_worktree_create",
+                },
+            )
             return None
 
     async def _cleanup_worktree(self) -> None:
@@ -512,9 +542,16 @@ class SubAgentWorker:
             await proc.communicate()
             logger.debug("Cleaned up worktree: %s", self._worktree_path,
                          extra={"category": "subagent"})
-        except Exception as e:
-            logger.warning("Failed to cleanup worktree %s: %s", self._worktree_path, e,
-                           extra={"category": "subagent"})
+        except Exception:
+            logger.exception(
+                "Failed to cleanup worktree %s",
+                self._worktree_path,
+                extra={
+                    "category": "error",
+                    "component": "subagent",
+                    "context": "subagent_worktree_cleanup",
+                },
+            )
 
     @staticmethod
     def _filter_project_context(prompt: str, project_context) -> list[str]:
@@ -540,7 +577,7 @@ class SubAgentWorker:
              lambda: f"Git branch: {getattr(pc, 'git_branch', 'unknown')}",
              {"git", "branch", "commit", "merge", "rebase", "pull",
               "push", "checkout", "diff", "log", "stash", "tag",
-              "版本", "分支", "提交", "合并", "git"},
+              "版本", "分支", "提交", "合并"},
              False),
             ("git_status",
              lambda: f"Git status: {getattr(pc, 'git_status', '')}",
@@ -587,12 +624,14 @@ class SubAgentWorker:
             if field_name in ("git_branch", "git_status") and not is_git:
                 continue
             # Skip fields with no value
-            if field_name == "project_type":
-                if getattr(pc, 'project_type', 'unknown') == "unknown":
-                    continue
-            if field_name == "structure_summary":
-                if not getattr(pc, 'structure_summary', ''):
-                    continue
+            if field_name == "project_type" and getattr(
+                pc, 'project_type', 'unknown'
+            ) == "unknown":
+                continue
+            if field_name == "structure_summary" and not getattr(
+                pc, 'structure_summary', ''
+            ):
+                continue
             # Universal fields always included
             if universal:
                 lines.append(getter())
@@ -635,10 +674,18 @@ class SubAgentWorker:
                 extra={"category": "subagent", "event": "context_hard_truncation"},
             )
             # Keep: system (index 0) + first 2 + last 5
-            system_msg = messages[:1] if messages and messages[0].get("role") == "system" else []
+            system_msg = (
+                messages[:1]
+                if messages and messages[0].get("role") == "system"
+                else []
+            )
             non_system = messages[1:] if system_msg else messages
             head = non_system[:self._CONTEXT_KEEP_HEAD]
-            tail = non_system[-5:] if len(non_system) > 5 + self._CONTEXT_KEEP_HEAD else non_system[self._CONTEXT_KEEP_HEAD:]
+            tail = (
+                non_system[-5:]
+                if len(non_system) > 5 + self._CONTEXT_KEEP_HEAD
+                else non_system[self._CONTEXT_KEEP_HEAD:]
+            )
             messages[:] = system_msg + head + tail
 
             # Inject truncation notice as a user message so the sub-agent knows
@@ -658,10 +705,19 @@ class SubAgentWorker:
                 total_chars, self._CONTEXT_SOFT_LIMIT_CHARS, iteration,
                 extra={"category": "subagent", "event": "context_compression"},
             )
-            system_msg = messages[:1] if messages and messages[0].get("role") == "system" else []
+            system_msg = (
+                messages[:1]
+                if messages and messages[0].get("role") == "system"
+                else []
+            )
             non_system = messages[1:] if system_msg else messages
             head = non_system[:self._CONTEXT_KEEP_HEAD]
-            tail = non_system[-self._CONTEXT_KEEP_TAIL:] if len(non_system) > self._CONTEXT_KEEP_TAIL + self._CONTEXT_KEEP_HEAD else non_system[self._CONTEXT_KEEP_HEAD:]
+            tail = (
+                non_system[-self._CONTEXT_KEEP_TAIL:]
+                if len(non_system)
+                > self._CONTEXT_KEEP_TAIL + self._CONTEXT_KEEP_HEAD
+                else non_system[self._CONTEXT_KEEP_HEAD:]
+            )
             messages[:] = system_msg + head + tail
 
             after_chars = sum(len(str(m.get("content", ""))) for m in messages)

@@ -76,7 +76,11 @@ class GoalTracker:
         except Exception:
             logger.exception(
                 "Goal evaluation via LLM failed",
-                extra={"category": "error", "component": "agent"},
+                extra={
+                    "category": "error",
+                    "component": "agent",
+                    "context": "goal_evaluation_llm",
+                },
             )
             return GoalCheckResult(
                 achieved=False,

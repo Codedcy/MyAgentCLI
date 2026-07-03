@@ -10,15 +10,16 @@ Directory structure:
 
 from __future__ import annotations
 
-import hashlib
 import json
-import os
+import logging
 import secrets
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
 from myagent.context.builder import Message, ToolCallRecord
+
+logger = logging.getLogger("myagent.context.persistence")
 
 
 @dataclass
@@ -151,7 +152,7 @@ class SessionStore:
                                 data.get("created_at", "2026-01-01T00:00:00")
                             )
                             duration = (datetime.now() - created_at).total_seconds()
-                        except Exception:
+                        except (TypeError, ValueError):
                             duration = 0
                     summaries.append(
                         SessionSummary(
@@ -271,7 +272,14 @@ class SessionStore:
                             lines.append(f"  Result: {str(tc.get('result', ''))[:500]}")
                             lines.append("")
                         except Exception:
-                            pass
+                            logger.exception(
+                                "Failed to include tool call in markdown export",
+                                extra={
+                                    "category": "error",
+                                    "component": "agent",
+                                    "context": "session_export_markdown_tool_call",
+                                },
+                            )
 
             # Include summaries
             summaries_dir = sess_dir / "summaries"
@@ -304,7 +312,14 @@ class SessionStore:
                             json.loads(tf.read_text(encoding="utf-8"))
                         )
                     except Exception:
-                        pass
+                        logger.exception(
+                            "Failed to include tool call in JSON export",
+                            extra={
+                                "category": "error",
+                                "component": "agent",
+                                "context": "session_export_json_tool_call",
+                            },
+                        )
             export_path.write_text(
                 json.dumps(export_data, ensure_ascii=False, indent=2),
                 encoding="utf-8",
@@ -324,8 +339,11 @@ class SessionStore:
         if not self._should_save_transcripts():
             return
 
-        import time
-        closed_at = session.updated_at.isoformat() if hasattr(session, 'updated_at') else datetime.now().isoformat()
+        closed_at = (
+            session.updated_at.isoformat()
+            if hasattr(session, "updated_at")
+            else datetime.now().isoformat()
+        )
 
         # G2: Only write JSON if configured
         if self._should_write_format("json"):
@@ -336,6 +354,14 @@ class SessionStore:
                 try:
                     existing = json.loads(ts.read_text(encoding="utf-8"))
                 except (json.JSONDecodeError, OSError):
+                    logger.exception(
+                        "Failed to read existing transcript before closing session",
+                        extra={
+                            "category": "error",
+                            "component": "agent",
+                            "context": "session_close_read_transcript",
+                        },
+                    )
                     existing = {}
 
             # Write updated transcript with closed marker
@@ -362,7 +388,7 @@ class SessionStore:
                         updated["duration"] = (
                             dt.fromisoformat(closed_at) - created
                         ).total_seconds()
-                    except Exception:
+                    except (KeyError, TypeError, ValueError):
                         updated["duration"] = existing.get("duration", 0)
 
             ts.write_text(
@@ -512,7 +538,11 @@ class SessionStore:
                         "goal_achieved": session.goal_achieved,
                         "total_tokens": session.total_tokens,
                         "turn_count": session.turn_count,
-                        "first_message": session._messages[0].content[:100] if session._messages else "",
+                        "first_message": (
+                            session._messages[0].content[:100]
+                            if session._messages
+                            else ""
+                        ),
                         # Compute live duration on every save so crash-recovery
                         # yields a reasonable estimate (gap-r12-08).
                         "duration": (datetime.now() - session.created_at).total_seconds(),

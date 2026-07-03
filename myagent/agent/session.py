@@ -2,8 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
+import logging
+import secrets
 import sys
+from datetime import datetime
 from pathlib import Path
+
+logger = logging.getLogger("myagent.agent.session")
 
 
 class SessionManager:
@@ -23,35 +29,46 @@ class SessionManager:
 
     async def start_new(self, project_dir: Path, goal: str | None = None) -> object:
         project_name = project_dir.name
-        import hashlib
-        project_hash = hashlib.sha256(str(project_dir.resolve()).encode()).hexdigest()[:7]
+        project_hash = hashlib.sha256(
+            str(project_dir.resolve()).encode()
+        ).hexdigest()[:7]
 
         if self.session_store:
             return await self.session_store.create_session(project_name, project_hash, goal)
 
         # Fallback
-        from datetime import datetime
-        import secrets
         date_prefix = datetime.now().strftime("%Y-%m-%d")
         session_id = f"{date_prefix}-{secrets.token_hex(3)}"
         from myagent.context.persistence import Session
-        return Session(id=session_id, project_name=project_name, project_hash=project_hash, goal=goal)
+        return Session(
+            id=session_id,
+            project_name=project_name,
+            project_hash=project_hash,
+            goal=goal,
+        )
 
     async def resume(self, session_id: str | None, project_dir: Path) -> object | None:
         project_name = project_dir.name
-        import hashlib
-        project_hash = hashlib.sha256(str(project_dir.resolve()).encode()).hexdigest()[:7]
+        project_hash = hashlib.sha256(
+            str(project_dir.resolve()).encode()
+        ).hexdigest()[:7]
 
         if self.session_store:
             if session_id:
-                return await self.session_store.load_session(project_name, project_hash, session_id)
+                return await self.session_store.load_session(
+                    project_name, project_hash, session_id
+                )
             # Resume latest
             sessions = await self.session_store.list_sessions(project_name, project_hash)
             if sessions:
-                return await self.session_store.load_session(project_name, project_hash, sessions[0].session_id)
+                return await self.session_store.load_session(
+                    project_name, project_hash, sessions[0].session_id
+                )
         return None
 
-    def estimate_total_rounds(self, current_session=None, since_timestamp: float | None = None) -> int:
+    def estimate_total_rounds(
+        self, current_session=None, since_timestamp: float | None = None
+    ) -> int:
         """Estimate total conversation rounds from session history.
 
         Used for dream engine trigger check at startup and periodically
@@ -100,12 +117,27 @@ class SessionManager:
                                                 pass  # Unparseable date — include
                                     total += data.get("turn_count", 0)
                                 except Exception:
-                                    pass
+                                    logger.exception(
+                                        "Failed to read session transcript while estimating rounds",
+                                        extra={
+                                            "category": "error",
+                                            "component": "agent",
+                                            "context": "session_estimate_rounds_read",
+                                        },
+                                    )
             # Add current session's live (unsaved) rounds (gap-r6-07)
             if current_session is not None and hasattr(current_session, 'turn_count'):
                 total += current_session.turn_count
             return total
         except Exception:
+            logger.exception(
+                "Failed to estimate total session rounds",
+                extra={
+                    "category": "error",
+                    "component": "agent",
+                    "context": "session_estimate_rounds",
+                },
+            )
             return 0
 
     async def list_sessions(self, project_dir: Path) -> list:
@@ -119,34 +151,44 @@ class SessionManager:
 
     async def end_session(self, session) -> None:
         """Finalize session: mark closed, prompt for permission persistence, summarize memories."""
-        import logging
-        import time
-        _log = logging.getLogger("myagent.session")
 
         # Mark session as closed in transcript
         # Only default to False if goal was set but never explicitly resolved.
         # G2: If the engine set goal_achieved = True, preserve it.
-        if hasattr(session, 'goal_achieved'):
-            if session.goal and session.goal_achieved is None:
-                session.goal_achieved = False
+        if (
+            hasattr(session, "goal_achieved")
+            and getattr(session, "goal", None)
+            and session.goal_achieved is None
+        ):
+            session.goal_achieved = False
 
         # G3: Write final transcript state with closed marker
-        if self.session_store and hasattr(session, 'project_name') and hasattr(session, 'project_hash'):
+        if (
+            self.session_store
+            and hasattr(session, "project_name")
+            and hasattr(session, "project_hash")
+        ):
             try:
                 sess_dir = self.session_store._session_dir(
                     session.project_name, session.project_hash, session.id
                 )
                 # Update session timestamp
-                from datetime import datetime
                 session.updated_at = datetime.now()
                 # Write final transcripts with closed marker
                 self.session_store._write_closed_session(sess_dir, session)
-                _log.info(
+                logger.info(
                     "Session %s finalized — transcript written with closed marker",
                     getattr(session, 'id', 'unknown'),
                 )
-            except Exception as e:
-                _log.warning("Failed to write final transcript for session: %s", e)
+            except Exception:
+                logger.exception(
+                    "Failed to write final transcript for session",
+                    extra={
+                        "category": "error",
+                        "component": "agent",
+                        "context": "session_end_write_transcript",
+                    },
+                )
 
         # Prompt for permission persistence (gap-2-04)
         # gap-13-04: Use Console.print() instead of Prompt.ask() because
@@ -162,7 +204,10 @@ class SessionManager:
                         f"{len(changes)} 条权限规则:"
                     )
                     for c in changes:
-                        console.print(f"  - {c.get('rule', 'unknown')} ({c.get('action', 'unknown')})")
+                        console.print(
+                            f"  - {c.get('rule', 'unknown')} "
+                            f"({c.get('action', 'unknown')})"
+                        )
                     console.print("是否持久化到配置文件？[Y/n]")
                     answer = sys.stdin.readline().strip()
                     if answer.lower() in ("y", "yes", ""):
@@ -181,7 +226,10 @@ class SessionManager:
                 try:
                     from rich.console import Console
                     console = Console()
-                    console.print(f"\n[bold]记忆变更[/bold]: 本次对话中新写入/更新了 {total} 条记忆:")
+                    console.print(
+                        f"\n[bold]记忆变更[/bold]: 本次对话中新写入/更新了 "
+                        f"{total} 条记忆:"
+                    )
                     for name in session_writes.created:
                         console.print(f"  [green]+ 新建[/green] {name}")
                     for name in session_writes.updated:
@@ -198,7 +246,7 @@ class SessionManager:
                     for name in session_writes.deleted:
                         print(f"  - Deleted: {name}")
 
-        _log.info("Session ended: %s", getattr(session, 'id', 'unknown'))
+        logger.info("Session ended: %s", getattr(session, 'id', 'unknown'))
 
     def _persist_permission_changes(self, changes: list[dict], console=None) -> None:
         """Write permission changes to the appropriate YAML config file (gap-2-04).
@@ -208,16 +256,12 @@ class SessionManager:
         Creates the config file if it doesn't exist.
         """
         import yaml
-        from pathlib import Path
 
         # Determine target config file
         project_config = Path.cwd() / ".myagent" / "config.yaml"
         user_config = Path.home() / ".myagent" / "config.yaml"
 
-        if project_config.exists():
-            config_path = project_config
-        else:
-            config_path = user_config
+        config_path = project_config if project_config.exists() else user_config
 
         config_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -227,6 +271,14 @@ class SessionManager:
             try:
                 existing = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
             except Exception:
+                logger.exception(
+                    "Failed to read permission config before persistence",
+                    extra={
+                        "category": "error",
+                        "component": "agent",
+                        "context": "session_permission_config_read",
+                    },
+                )
                 existing = {}
 
         # Ensure permissions section exists
@@ -265,16 +317,29 @@ class SessionManager:
             else:
                 print(f"Permission changes saved to {config_path}")
         except Exception as e:
+            logger.exception(
+                "Failed to persist permission config changes",
+                extra={
+                    "category": "error",
+                    "component": "agent",
+                    "context": "session_permission_config_write",
+                },
+            )
             if console:
                 console.print(f"[red]持久化失败: {e}[/red]")
             else:
                 print(f"Failed to save permission changes: {e}")
 
-    async def export_session(self, session_id: str, fmt: str, project_dir: Path) -> Path | None:
+    async def export_session(
+        self, session_id: str, fmt: str, project_dir: Path
+    ) -> Path | None:
         project_name = project_dir.name
-        import hashlib
-        project_hash = hashlib.sha256(str(project_dir.resolve()).encode()).hexdigest()[:7]
+        project_hash = hashlib.sha256(
+            str(project_dir.resolve()).encode()
+        ).hexdigest()[:7]
 
         if self.session_store:
-            return await self.session_store.export_session(project_name, project_hash, session_id, fmt)
+            return await self.session_store.export_session(
+                project_name, project_hash, session_id, fmt
+            )
         return None

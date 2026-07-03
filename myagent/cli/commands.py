@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any
+
+logger = logging.getLogger("myagent.cli.commands")
 
 
 @dataclass
@@ -94,7 +97,7 @@ class CommandDispatcher:
             if ctx.config:
                 ctx.config.model.thinking = mode
             return CommandResult(output=f"Thinking mode: {mode}")
-        return CommandResult(output=f"Usage: /mode think-high|think-max|non-think")
+        return CommandResult(output="Usage: /mode think-high|think-max|non-think")
 
     async def _cmd_goal(self, args: str, ctx: CommandContext) -> CommandResult:
         if not args:
@@ -169,6 +172,14 @@ class CommandDispatcher:
                 success=False,
             )
         except Exception as e:
+            logger.exception(
+                "Session export command failed",
+                extra={
+                    "category": "error",
+                    "component": "agent",
+                    "context": "cli_command_export",
+                },
+            )
             return CommandResult(
                 output=f"Export failed: {e}",
                 success=False,
@@ -183,8 +194,14 @@ class CommandDispatcher:
             "  /goal [text|clear]                    — Set, view, or clear current goal",
             "  /skills                               — List available skills",
             "  /dream                                — Run memory consolidation dream cycle",
-            "  /compact                              — Non-destructively compress conversation context",
-            "  /clear                                — Clear in-memory conversation (preserves transcripts)",
+            (
+                "  /compact                              — Non-destructively "
+                "compress conversation context"
+            ),
+            (
+                "  /clear                                — Clear in-memory "
+                "conversation (preserves transcripts)"
+            ),
             "  /export [markdown|json]               — Export current session transcript",
             "  /history [N]                          — Show recent conversation history",
             "  /help                                 — Show this help message",
@@ -235,7 +252,11 @@ class CommandDispatcher:
             after_count = len(result.messages)
             after_chars = sum(len(m.content) for m in result.messages)
 
-            layers_desc = ", ".join(f"L{layer}" for layer in result.layers_applied) if result.layers_applied else "none"
+            layers_desc = (
+                ", ".join(f"L{layer}" for layer in result.layers_applied)
+                if result.layers_applied
+                else "none"
+            )
             reduction_pct = (
                 ((before_chars - after_chars) / before_chars * 100)
                 if before_chars > 0 else 0
@@ -250,6 +271,14 @@ class CommandDispatcher:
                 )
             )
         except Exception as e:
+            logger.exception(
+                "Manual compaction command failed",
+                extra={
+                    "category": "error",
+                    "component": "agent",
+                    "context": "cli_command_compact",
+                },
+            )
             return CommandResult(
                 output=f"Compaction failed: {e}",
                 success=False,

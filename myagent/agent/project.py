@@ -10,8 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -182,10 +181,10 @@ class ProjectDetector:
                 cwd=project_dir,
             )
             stdout, _ = await proc.communicate()
-            lines = [l for l in stdout.decode().strip().split("\n") if l]
+            lines = [line for line in stdout.decode().strip().split("\n") if line]
             if lines:
-                modified = sum(1 for l in lines if l[1] in "MARC")
-                untracked = sum(1 for l in lines if l.startswith("??"))
+                modified = sum(1 for line in lines if line[1] in "MARC")
+                untracked = sum(1 for line in lines if line.startswith("??"))
                 parts = []
                 if modified:
                     parts.append(f"{modified} files modified")

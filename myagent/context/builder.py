@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Literal
 
 from myagent.agent.project import ProjectContext
+
+logger = logging.getLogger("myagent.context.builder")
 
 
 @dataclass
@@ -145,7 +148,14 @@ tool usage limit."""
                         else:
                             model_desc = f"{provider}/{model}"
             except Exception:
-                pass
+                logger.exception(
+                    "Failed to build dynamic model description",
+                    extra={
+                        "category": "error",
+                        "component": "agent",
+                        "context": "context_l0_model_description",
+                    },
+                )
         return self._L0_TEMPLATE.format(model_description=model_desc)
 
     # Number of turns after which the cache auto-refreshes regardless of drift
@@ -235,17 +245,12 @@ tool usage limit."""
                     self._recent_inputs = self._recent_inputs[-5:]
 
                 self._turn_count_since_refresh += 1
-                should_refresh = False
-
                 # Condition 1: No cache yet — initial load
-                if self._cache_key is None:
-                    should_refresh = True
-                # Condition 2: Turn limit exceeded — force refresh
-                elif self._turn_count_since_refresh >= self._CACHE_TURN_LIMIT:
-                    should_refresh = True
-                # Condition 3: Topic drift detected — keyword overlap too low
-                elif self._detect_topic_drift(current_input):
-                    should_refresh = True
+                should_refresh = (
+                    self._cache_key is None
+                    or self._turn_count_since_refresh >= self._CACHE_TURN_LIMIT
+                    or self._detect_topic_drift(current_input)
+                )
 
                 if should_refresh:
                     query = current_input[:200]
@@ -264,7 +269,14 @@ tool usage limit."""
 
                 l4 = self._format_memories(memories)
             except Exception:
-                pass
+                logger.exception(
+                    "Failed to load memory context layer",
+                    extra={
+                        "category": "error",
+                        "component": "memory",
+                        "context": "context_l4_memory_layer",
+                    },
+                )
 
         # Active skill content — full skill instructions injected into system prompt
         # when a skill is invoked (not a context layer; injected alongside L2)
@@ -284,7 +296,11 @@ tool usage limit."""
         # (not a context layer; injected into system prompt alongside L0)
         goal_context = ""
         if goal:
-            goal_context = f"## Current Goal\n{goal}\n\nWork toward this goal. When you believe it is achieved, indicate completion."
+            goal_context = (
+                f"## Current Goal\n{goal}\n\n"
+                "Work toward this goal. When you believe it is achieved, "
+                "indicate completion."
+            )
 
         # Assemble system prompt: L0 + L3 + L4 + skill_content + L2 + goal_context
         # (spec §三: L0=system prompt, L3=project, L4=memory, L2=skills index;
@@ -420,7 +436,7 @@ tool usage limit."""
             return ""
 
         lines = ["## MCP Reference"]
-        MAX_LEN = 2000
+        max_len = 2000
         current_len = len(lines[0]) + 2  # +2 for newline
 
         if resources:
@@ -431,7 +447,7 @@ tool usage limit."""
                 name = r.get("name", uri)
                 desc = r.get("description", "")[:100]
                 entry = f"- `{name}`: {desc}" if desc else f"- `{name}`"
-                if current_len + len(entry) > MAX_LEN:
+                if current_len + len(entry) > max_len:
                     lines.append(f"- ... and {len(resources) - resources.index(r)} more")
                     break
                 lines.append(entry)
@@ -444,7 +460,7 @@ tool usage limit."""
                 name = p.get("name", "unknown")
                 desc = p.get("description", "")[:100]
                 entry = f"- `{name}`: {desc}" if desc else f"- `{name}`"
-                if current_len + len(entry) > MAX_LEN:
+                if current_len + len(entry) > max_len:
                     lines.append(f"- ... and {len(prompts) - prompts.index(p)} more")
                     break
                 lines.append(entry)

@@ -11,6 +11,7 @@ Design doc reference: §四 工具系统 — MCP 集成
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import re
@@ -96,15 +97,13 @@ class StdioTransport:
     async def close(self) -> None:
         if self._stderr_task:
             self._stderr_task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._stderr_task
-            except asyncio.CancelledError:
-                pass
         if self._process:
             try:
                 self._process.terminate()
                 await asyncio.wait_for(self._process.wait(), timeout=5.0)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 self._process.kill()
                 await self._process.wait()
             except ProcessLookupError:
@@ -274,7 +273,7 @@ class SSETransport:
             return None
         try:
             return await asyncio.wait_for(self._receive_queue.get(), timeout=30.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return None
 
     async def close(self) -> None:
@@ -283,10 +282,8 @@ class SSETransport:
 
         if self._reader_task:
             self._reader_task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._reader_task
-            except asyncio.CancelledError:
-                pass
 
         if self._sse_response:
             try:
@@ -392,7 +389,7 @@ class SSETransport:
                         if message:
                             await self._receive_queue.put(message)
 
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     continue
                 except StopAsyncIteration:
                     break
@@ -424,7 +421,6 @@ class SSETransport:
         """
         text = event_bytes.decode("utf-8", errors="replace")
         data_lines: list[str] = []
-        event_type = "message"  # default SSE event type
 
         for line in text.split("\n"):
             line = line.rstrip("\r")
@@ -449,7 +445,7 @@ class SSETransport:
             if field == "data":
                 data_lines.append(value)
             elif field == "event":
-                event_type = value
+                pass
             elif field == "id":
                 # Store event ID for potential reconnection, ignored for now
                 pass
@@ -486,7 +482,7 @@ class RawToolDef:
 
     name: str
     description: str
-    inputSchema: dict
+    inputSchema: dict  # noqa: N815 - MCP protocol field name.
 
 
 class MCPClient:
@@ -686,10 +682,8 @@ class MCPClient:
 
         if self._reader_task:
             self._reader_task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._reader_task
-            except asyncio.CancelledError:
-                pass
 
         await self._transport.close()
 

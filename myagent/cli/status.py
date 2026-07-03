@@ -8,7 +8,7 @@ Design doc reference: §一 CLI Layer (Status Bar), §八 Context 状态栏展�
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -46,7 +46,7 @@ class StatusBar:
     def update(self, **kwargs) -> None:
         self._data.update(kwargs)
 
-    def get_renderable(self) -> "Panel | None":
+    def get_renderable(self) -> Panel | None:
         """Return a Rich Panel renderable for the shared layout (gap-2-07)."""
         try:
             from rich.panel import Panel

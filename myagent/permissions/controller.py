@@ -104,7 +104,6 @@ class PermissionController:
             "allow all except X" → allow_all + auto_deny: [X]
             "allow everything except X and Y" → allow_all + auto_deny: [X, Y]
         """
-        import re
 
         rule_stripped = rule.strip()
         change: dict = {"rule": rule_stripped, "timestamp": time.time(), "action": "unknown"}

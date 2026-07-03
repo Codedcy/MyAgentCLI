@@ -6,7 +6,6 @@ Design doc reference: §九 — 配置系统
 from dataclasses import dataclass, field
 from typing import Literal
 
-
 # ── Nested config types ──────────────────────────────────────────
 
 

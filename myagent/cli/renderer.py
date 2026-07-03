@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any
+
+logger = logging.getLogger("myagent.cli.renderer")
 
 
 class Renderer:
@@ -51,9 +54,8 @@ class Renderer:
 
     def _render_with_code_highlight(self, content: str):
         """Render text with code blocks syntax-highlighted via Rich Syntax."""
-        from rich.console import RenderableType
-        from rich.text import Text
         from rich.syntax import Syntax
+        from rich.text import Text
 
         # Split by fenced code blocks: ```lang\ncode\n```
         pattern = re.compile(r'```(\w*)\n(.*?)```', re.DOTALL)
@@ -71,6 +73,14 @@ class Renderer:
             try:
                 parts.append(Syntax(code, lang, theme="monokai", word_wrap=True))
             except Exception:
+                logger.exception(
+                    "Syntax highlighting failed; rendering plain code block",
+                    extra={
+                        "category": "error",
+                        "component": "agent",
+                        "context": "cli_render_syntax_highlight",
+                    },
+                )
                 # Fall back to plain text for unsupported languages
                 parts.append(Text(f"```{lang}\n{code}\n```"))
             last_end = m.end()

@@ -10,7 +10,7 @@
 
 ## Current Status
 
-This plan is now a historical implementation plan, not the live task tracker. Tasks 1-24 have been implemented across the initial build and subsequent gap-fix rounds; unchecked boxes below are preserved as the original execution checklist. As of round 22, pytest collects 234 tests, built-in skills package all resources under `myagent/skills/builtin/`, and MCP is implemented as a hand-written JSON-RPC client over stdio/SSE transport abstractions rather than direct `mcp` SDK client API usage.
+This plan is now a historical implementation plan, not the live task tracker. Tasks 1-24 have been implemented across the initial build and subsequent gap-fix rounds; unchecked boxes below are preserved as the original execution checklist. As of round 23, pytest collects 236 tests, `ruff check myagent/` passes, built-in skills package all resources under `myagent/skills/builtin/`, and MCP is implemented as a hand-written JSON-RPC client over stdio/SSE transport abstractions rather than direct `mcp` SDK client API usage.
 
 ## Global Constraints
 
@@ -132,7 +132,7 @@ myagent/
 
 - [ ] **Step 1: Write pyproject.toml**
 
-Key dependencies: `litellm>=1.50.0`, `rich>=13.0.0`, `prompt-toolkit>=3.0.0`, `pyyaml>=6.0`, `mcp>=1.0.0`, `pydantic>=2.0.0`. Dev: `pytest>=8.0.0`, `pytest-asyncio>=0.24.0`, `ruff>=0.4.0`. Entry point: `myagent = "myagent.cli.main:main"`. Python >= 3.12.
+Key dependencies: `litellm>=1.50.0`, `rich>=13.0.0`, `prompt-toolkit>=3.0.0`, `pyyaml>=6.0`, `pydantic>=2.0.0`, `httpx>=0.27.0`. MCP uses the in-repo hand-written JSON-RPC client rather than a runtime `mcp` SDK dependency. Dev: `pytest>=8.0.0`, `pytest-asyncio>=0.24.0`, `ruff>=0.4.0`. Entry point: `myagent = "myagent.cli.main:main"`. Python >= 3.12.
 
 - [ ] **Step 2: Create all `__init__.py` files**
 
@@ -1978,7 +1978,7 @@ Expected: `myagent --help` works
 - [x] **Step 4: Run full test suite**
 
 Run: `pytest tests/ -v --cov=myagent --cov-report=term-missing`
-Current status: pytest collects 234 tests; latest pass/fail evidence is recorded in gap-fix reports.
+Current status: pytest collects 236 tests; latest pass/fail evidence is recorded in gap-fix reports.
 
 - [x] **Step 5: Run lint**
 

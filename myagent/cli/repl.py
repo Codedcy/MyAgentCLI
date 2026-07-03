@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import logging
 from pathlib import Path
 
 from prompt_toolkit.completion import Completer
+
+logger = logging.getLogger("myagent.cli.repl")
 
 
 class SlashCompleter(Completer):
@@ -36,7 +40,6 @@ class SlashCompleter(Completer):
         Provides slash-command completions when input starts with /,
         and file-path completions for path-like natural language input.
         """
-        from prompt_toolkit.completion import Completion
 
         text = document.text_before_cursor
 
@@ -101,7 +104,8 @@ class SlashCompleter(Completer):
         """
         import os
         from pathlib import Path
-        from prompt_toolkit.completion import Completion, PathCompleter
+
+        from prompt_toolkit.completion import Completion
 
         try:
             # Extract the last "word" that looks like a path
@@ -144,7 +148,14 @@ class SlashCompleter(Completer):
                 except (PermissionError, OSError):
                     pass
         except Exception:
-            pass  # Best-effort path completion
+            logger.exception(
+                "Path completion failed",
+                extra={
+                    "category": "error",
+                    "component": "agent",
+                    "context": "cli_path_completion",
+                },
+            )
 
 
 class REPLEngine:
@@ -177,7 +188,8 @@ class REPLEngine:
         self._console = None
         self._live = None
         self._output_lines: list[str] = []
-        self._active_skill: str | None = None  # skill name to inject into next engine run (gap-2-01)
+        # Skill name to inject into the next engine run (gap-2-01).
+        self._active_skill: str | None = None
 
     async def run(self) -> None:
         """Start the REPL loop."""
@@ -197,8 +209,8 @@ class REPLEngine:
                 project_name=self._project_dir.name,
             )
             # Emit startup event now that session_id is known (gap-18-04)
-            from myagent.logging.logger import LogManager as _LM
-            _LM.log_startup(
+            from myagent.logging.logger import LogManager
+            LogManager.log_startup(
                 config=getattr(self._config, 'logging', None),
                 session_id=self._current_session.id,
             )
@@ -237,7 +249,14 @@ class REPLEngine:
                     self._console.print(status_renderable)
                 self._console.print()  # blank line before prompt
             except Exception:
-                pass
+                logger.exception(
+                    "Initial status render failed",
+                    extra={
+                        "category": "error",
+                        "component": "agent",
+                        "context": "cli_initial_status_render",
+                    },
+                )
 
         try:
             from prompt_toolkit import PromptSession
@@ -420,9 +439,8 @@ class REPLEngine:
                     # G5: Update status bar with live token count from Done events
                     if type(event).__name__ == "Done":
                         usage = getattr(event, 'usage', None)
-                        if usage and hasattr(usage, 'total_tokens'):
-                            if self._status_bar:
-                                self._status_bar.update(tokens=usage.total_tokens)
+                        if usage and hasattr(usage, 'total_tokens') and self._status_bar:
+                            self._status_bar.update(tokens=usage.total_tokens)
                     if self._renderer:
                         rendered = self._renderer.render_event(event)
                         if rendered:
@@ -468,7 +486,14 @@ class REPLEngine:
                     if confirm and confirm.strip().lower() in ("y", "yes", ""):
                         await self.process_input("continue")
                 except Exception:
-                    pass
+                    logger.exception(
+                        "Stream interruption follow-up prompt failed",
+                        extra={
+                            "category": "error",
+                            "component": "agent",
+                            "context": "cli_stream_interruption_prompt",
+                        },
+                    )
 
             # gap-13: 120s timeout for AskUserQuestion — agent auto-decides
             if has_pending_question:
@@ -487,6 +512,14 @@ class REPLEngine:
                         # Send "continue" to let the agent auto-decide
                         await self.process_input("continue")
                 except Exception:
+                    logger.exception(
+                        "Ask-user prompt failed; auto-deciding",
+                        extra={
+                            "category": "error",
+                            "component": "agent",
+                            "context": "cli_ask_user_prompt",
+                        },
+                    )
                     if self._console:
                         self._console.print(
                             "[dim]Timeout — agent will auto-decide.[/dim]"
@@ -504,18 +537,21 @@ class REPLEngine:
         input if prompt_toolkit is not available.
         """
         try:
-            from prompt_toolkit import PromptSession
-            from prompt_toolkit.shortcuts import prompt as pt_prompt
             import asyncio as _asyncio
+
+            from prompt_toolkit.shortcuts import prompt as pt_prompt
 
             loop = _asyncio.get_event_loop()
             try:
                 result = await _asyncio.wait_for(
-                    loop.run_in_executor(None, lambda: pt_prompt(prompt_text, multiline=False)),
+                    loop.run_in_executor(
+                        None,
+                        lambda: pt_prompt(prompt_text, multiline=False),
+                    ),
                     timeout=timeout,
                 )
                 return result
-            except _asyncio.TimeoutError:
+            except TimeoutError:
                 return None
         except ImportError:
             # Fallback: standard input (blocks forever, ignore timeout)
@@ -527,9 +563,7 @@ class REPLEngine:
     def _output_to_console(self, text: str, end: str = "\n") -> None:
         """Route output through the shared Live layout or plain console (gap-2-07)."""
         if self._live:
-            from rich.layout import Layout
             from rich.panel import Panel
-            from rich.live import Live
             try:
                 if text:
                     self._output_lines.append(text)
@@ -544,6 +578,14 @@ class REPLEngine:
                 output_text = "\n".join(self._output_lines)
                 self._live._layout["output"].update(Panel(output_text, title="Output"))
             except Exception:
+                logger.exception(
+                    "Live output update failed; falling back to console",
+                    extra={
+                        "category": "error",
+                        "component": "agent",
+                        "context": "cli_live_output_update",
+                    },
+                )
                 if self._console:
                     self._console.print(text, end=end)
         elif self._console:
@@ -582,13 +624,10 @@ class REPLEngine:
         conditions become true mid-session, spawn a dream cycle in
         the background without blocking the REPL.
         """
-        import logging as _logging
-        _log = _logging.getLogger("myagent.cli")
-
-        DREAM_CHECK_INTERVAL = 1800  # 30 minutes in seconds
+        dream_check_interval = 1800  # 30 minutes in seconds
 
         while self._running:
-            await asyncio.sleep(DREAM_CHECK_INTERVAL)
+            await asyncio.sleep(dream_check_interval)
             if not self._running:
                 break
             try:
@@ -599,22 +638,42 @@ class REPLEngine:
                         current_session=self._current_session
                     )
                 if self._dream_engine and self._dream_engine.should_run(total_rounds):
-                    _log.info("Mid-session dream trigger fired (interval check)")
-                    session_store = getattr(self._engine, 'session_store', None) if self._engine else None
+                    logger.info("Mid-session dream trigger fired (interval check)")
+                    session_store = (
+                        getattr(self._engine, "session_store", None)
+                        if self._engine
+                        else None
+                    )
 
-                    async def _run_dream_bg():
+                    async def _run_dream_bg(session_store=session_store):
                         try:
-                            result = await self._dream_engine.run(session_store=session_store)
-                            _log.info(
+                            result = await self._dream_engine.run(
+                                session_store=session_store
+                            )
+                            logger.info(
                                 "Dream completed: created=%d updated=%d deleted=%d log=%s",
                                 result.memories_created, result.memories_updated,
                                 result.memories_deleted, result.log_path,
                             )
-                        except Exception as exc:
-                            _log.error("Background dream failed: %s", exc)
+                        except Exception:
+                            logger.exception(
+                                "Background dream failed",
+                                extra={
+                                    "category": "error",
+                                    "component": "agent",
+                                    "context": "cli_background_dream",
+                                },
+                            )
                     asyncio.create_task(_run_dream_bg())
-            except Exception as e:
-                _log.warning("Periodic dream check failed: %s", e)
+            except Exception:
+                logger.exception(
+                    "Periodic dream check failed",
+                    extra={
+                        "category": "error",
+                        "component": "agent",
+                        "context": "cli_periodic_dream_check",
+                    },
+                )
 
     async def _shutdown(self) -> None:
         """Graceful shutdown: stop status bar, end session, clean up."""
@@ -623,10 +682,8 @@ class REPLEngine:
         # G4: Cancel periodic dream checker
         if self._dream_checker_task and not self._dream_checker_task.done():
             self._dream_checker_task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._dream_checker_task
-            except asyncio.CancelledError:
-                pass
 
         # Stop shared Live layout (gap-2-07)
         if self._live:

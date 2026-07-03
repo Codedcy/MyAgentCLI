@@ -30,7 +30,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--list-sessions", action="store_true", help="List all sessions")
     parser.add_argument("--session", help="Session ID for export")
-    parser.add_argument("--export", choices=["markdown", "json"], help="Export format (markdown or json)", default="markdown")
+    parser.add_argument(
+        "--export",
+        choices=["markdown", "json"],
+        help="Export format (markdown or json)",
+        default="markdown",
+    )
     parser.add_argument(
         "--mode",
         choices=["think-high", "think-max", "non-think"],
@@ -133,7 +138,11 @@ async def async_main(argv: list[str] | None = None) -> int:
     context_builder = ContextBuilder(tool_registry, memory_store, skill_registry, config.context)
 
     from myagent.context.compression import CompressionEngine
-    compression = CompressionEngine(config=config.context.compression, llm=llm, tools_config=config.tools)
+    compression = CompressionEngine(
+        config=config.context.compression,
+        llm=llm,
+        tools_config=config.tools,
+    )
 
     from myagent.agent.session import SessionManager
     session_mgr = SessionManager(session_store, project_ctx, memory_store, permissions)
@@ -258,10 +267,7 @@ async def async_main(argv: list[str] | None = None) -> int:
                     summary = ""
                     if result and result.output:
                         output = result.output
-                        if len(output) > 30:
-                            summary = output[:28] + ".."
-                        else:
-                            summary = output
+                        summary = output[:28] + ".." if len(output) > 30 else output
                     details.append(SubAgentInfo(
                         agent_id=hid,
                         task_name=task_name,
@@ -330,8 +336,8 @@ async def async_main(argv: list[str] | None = None) -> int:
             from myagent.logging.context import set_context
             set_context(session_id=session.id, project_name=project_dir.name)
             # Emit startup event now that session_id is known (gap-18-04)
-            from myagent.logging.logger import LogManager as _LM
-            _LM.log_startup(config=config.logging, session_id=session.id)
+            from myagent.logging.logger import LogManager
+            LogManager.log_startup(config=config.logging, session_id=session.id)
             # Wire session into sub-agent pool so transcripts are persisted
             # and the counter is advanced past existing sub-agent IDs (gap-r14-04)
             subagent_pool.set_session(session, session_store)
@@ -374,15 +380,15 @@ async def async_main(argv: list[str] | None = None) -> int:
 
 
 def _register_builtin_tools(registry) -> None:
-    from myagent.tools.builtin.file_tools import EditTool, GlobTool, ReadTool, WriteTool
-    from myagent.tools.builtin.search_tools import GrepTool
-    from myagent.tools.builtin.exec_tools import BashTool
     from myagent.tools.builtin.agent_tools import SendMessageTool, SpawnSubagentTool
-    from myagent.tools.builtin.session_tools import TaskCreateTool, TaskUpdateTool
-    from myagent.tools.builtin.memory_tools import MemoryWriteTool
-    from myagent.tools.builtin.web_tools import WebFetchTool, WebSearchTool
     from myagent.tools.builtin.config_tools import ConfigSetTool
+    from myagent.tools.builtin.exec_tools import BashTool
+    from myagent.tools.builtin.file_tools import EditTool, GlobTool, ReadTool, WriteTool
     from myagent.tools.builtin.mcp_tools import MCPGetPromptTool, MCPReadResourceTool
+    from myagent.tools.builtin.memory_tools import MemoryWriteTool
+    from myagent.tools.builtin.search_tools import GrepTool
+    from myagent.tools.builtin.session_tools import TaskCreateTool, TaskUpdateTool
+    from myagent.tools.builtin.web_tools import WebFetchTool, WebSearchTool
     for tool_cls in [
         ReadTool, WriteTool, EditTool, GlobTool,
         GrepTool, BashTool,
@@ -418,7 +424,17 @@ async def _startup_mcp_servers(tool_registry, project_dir: Path) -> list:
         try:
             data = json.loads(config_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError) as e:
-            _log.warning("Failed to read MCP config %s: %s", config_path, e)
+            _log.warning(
+                "Failed to read MCP config %s: %s",
+                config_path,
+                e,
+                exc_info=True,
+                extra={
+                    "category": "error",
+                    "component": "mcp",
+                    "context": "mcp_config_load",
+                },
+            )
             continue
 
         servers = data.get("servers", data) if isinstance(data, dict) else {}
@@ -438,8 +454,16 @@ async def _startup_mcp_servers(tool_registry, project_dir: Path) -> list:
             client = await _start_single_mcp_server(name, server_cfg, tool_registry)
             if client:
                 mcp_clients.append(client)
-        except Exception as e:
-            _log.error("Failed to start MCP server '%s': %s", name, e)
+        except Exception:
+            _log.exception(
+                "Failed to start MCP server '%s'",
+                name,
+                extra={
+                    "category": "error",
+                    "component": "mcp",
+                    "context": "mcp_start_all",
+                },
+            )
 
     return mcp_clients
 
@@ -449,8 +473,8 @@ async def _start_single_mcp_server(name: str, cfg: dict, tool_registry):
     import logging
     _log = logging.getLogger("myagent.cli")
 
-    from myagent.tools.mcp.client import MCPClient
     from myagent.tools.mcp.adapter import MCPToolAdapter
+    from myagent.tools.mcp.client import MCPClient
 
     command = cfg.get("command")
     if not command:
@@ -467,8 +491,16 @@ async def _start_single_mcp_server(name: str, cfg: dict, tool_registry):
     client = MCPClient(command=command, args=args, env=env)
     try:
         await client.start()
-    except Exception as e:
-        _log.error("MCP server '%s' failed to start: %s", name, e)
+    except Exception:
+        _log.exception(
+            "MCP server '%s' failed to start",
+            name,
+            extra={
+                "category": "error",
+                "component": "mcp",
+                "context": "mcp_server_start",
+            },
+        )
         return None
 
     try:
@@ -502,12 +534,28 @@ async def _start_single_mcp_server(name: str, cfg: dict, tool_registry):
             _log.debug("MCP server '%s' provides no prompts", name)
 
         _log.info("MCP server '%s' started with %d tools", name, len(raw_tools))
-    except Exception as e:
-        _log.error("MCP server '%s' failed to list tools: %s", name, e)
+    except Exception:
+        _log.exception(
+            "MCP server '%s' failed during discovery",
+            name,
+            extra={
+                "category": "error",
+                "component": "mcp",
+                "context": "mcp_server_discovery",
+            },
+        )
         try:
             await client.shutdown()
         except Exception:
-            pass
+            _log.exception(
+                "MCP server '%s' failed during cleanup after discovery error",
+                name,
+                extra={
+                    "category": "error",
+                    "component": "mcp",
+                    "context": "mcp_server_discovery_cleanup",
+                },
+            )
         return None
 
     return client
@@ -595,8 +643,15 @@ async def _run_dream_background(dream_engine, session_store=None) -> None:
             result.memories_created, result.memories_updated,
             result.memories_deleted, result.log_path,
         )
-    except Exception as e:
-        _log.error("Background dream failed: %s", e)
+    except Exception:
+        _log.exception(
+            "Background dream failed",
+            extra={
+                "category": "error",
+                "component": "agent",
+                "context": "startup_background_dream",
+            },
+        )
 
 
 def main() -> None:

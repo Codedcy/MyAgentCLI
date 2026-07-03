@@ -9,10 +9,13 @@ Design doc reference: §四 工具系统 — MCP Tool Adapter
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 from myagent.tools.base import ToolContext, ToolResult
 from myagent.tools.mcp.client import MCPClient
+
+logger = logging.getLogger("myagent.tools.mcp.adapter")
 
 
 class MCPToolAdapter:
@@ -71,6 +74,15 @@ class MCPToolAdapter:
             output = "\n".join(output_parts) if output_parts else json.dumps(result)
             return ToolResult(output=output, metadata={"mcp_raw": result})
         except Exception as e:
+            logger.exception(
+                "MCP tool adapter execution failed for %s",
+                self.name,
+                extra={
+                    "category": "error",
+                    "component": "mcp",
+                    "context": "mcp_tool_adapter_execute",
+                },
+            )
             return ToolResult(output="", error=str(e))
 
     # ── internal ────────────────────────────────────────────────
@@ -173,4 +185,3 @@ class MCPToolAdapter:
             resolved = self._resolve_schema(alt, root)
             flattened.append(resolved)
         return flattened
-

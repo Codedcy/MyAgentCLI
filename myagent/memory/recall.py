@@ -9,12 +9,8 @@ Fixes audit #31.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
 
 from myagent.memory.store import MemoryFile, MemoryStore
-
-if TYPE_CHECKING:
-    import numpy as np
 
 logger = logging.getLogger("myagent.memory")
 
@@ -49,10 +45,16 @@ def _get_embedding_model():
         logger.debug("sentence-transformers not available — using keyword recall",
                      extra={"category": "system"})
         return None
-    except Exception as e:
+    except Exception:
         _EMBEDDING_UNAVAILABLE = True
-        logger.warning("Failed to load sentence-transformers: %s", e,
-                       extra={"category": "system"})
+        logger.exception(
+            "Failed to load sentence-transformers; using keyword recall",
+            extra={
+                "category": "error",
+                "component": "memory",
+                "context": "memory_embedding_model_load",
+            },
+        )
         return None
 
 
@@ -112,10 +114,14 @@ async def recall(
     if model is not None:
         try:
             results = await _semantic_recall(model, query, store, all_entries, limit)
-        except Exception as e:
-            logger.warning(
-                "Semantic recall failed, falling back to keyword: %s", e,
-                extra={"category": "memory", "exception_type": type(e).__name__},
+        except Exception:
+            logger.exception(
+                "Semantic recall failed; falling back to keyword",
+                extra={
+                    "category": "error",
+                    "component": "memory",
+                    "context": "memory_semantic_recall",
+                },
             )
             results = await _keyword_recall(query_tokens, store, all_entries, limit)
     else:
@@ -137,7 +143,6 @@ async def _semantic_recall(
     limit: int,
 ) -> list[MemoryFile]:
     """Semantic embedding-based recall using cosine similarity."""
-    import numpy as np
 
     # Build corpus: read all memory content
     memory_files: list[MemoryFile] = []

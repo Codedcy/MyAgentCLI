@@ -11,9 +11,9 @@ import asyncio
 import json
 import logging
 import time
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import AsyncIterator
 
 from myagent.llm.provider import Done as LLMDone
 from myagent.llm.provider import TextDelta as LLMTextDelta
@@ -164,7 +164,9 @@ class AgentEngine:
 
     MAX_ITERATIONS = 50
 
-    async def _react_loop(self, request, session, user_input: str = "") -> AsyncIterator[AgentEvent]:
+    async def _react_loop(
+        self, request, session, user_input: str = ""
+    ) -> AsyncIterator[AgentEvent]:
         """Core ReAct loop with true iterative execution and tool result feedback.
 
         Each iteration:
@@ -182,12 +184,16 @@ class AgentEngine:
             messages.insert(0, {"role": "system", "content": api_format["system"]})
 
         # Wire session directory for compression summary persistence (gap-03)
-        if self.compression and self.session_store:
-            if hasattr(session, 'project_name') and hasattr(session, 'project_hash'):
-                sess_dir = self.session_store._session_dir(
-                    session.project_name, session.project_hash, session.id
-                )
-                self.compression.set_session_dir(sess_dir)
+        if (
+            self.compression
+            and self.session_store
+            and hasattr(session, "project_name")
+            and hasattr(session, "project_hash")
+        ):
+            sess_dir = self.session_store._session_dir(
+                session.project_name, session.project_hash, session.id
+            )
+            self.compression.set_session_dir(sess_dir)
 
         thinking_mode = self._get_thinking_mode()
         iteration = 0
@@ -303,8 +309,15 @@ class AgentEngine:
                 # L1-L3 are applied first, potentially reducing context enough
                 # to avoid hard truncation. compact() already handles L4 as a
                 # safety net (compression.py lines 170-175).
-                HARD_LIMIT = self.config.context.compression.hard_limit if self.config and getattr(self.config, 'context', None) and getattr(self.config.context, 'compression', None) else 0.90
-                if usage_pct >= HARD_LIMIT:
+                compression_config = (
+                    self.config.context.compression
+                    if self.config
+                    and getattr(self.config, "context", None)
+                    and getattr(self.config.context, "compression", None)
+                    else None
+                )
+                hard_limit = compression_config.hard_limit if compression_config else 0.90
+                if usage_pct >= hard_limit:
                     if not compact_was_called:
                         # compact was skipped at 75% (e.g. minimum_messages guard) —
                         # call it now with all layers including L4 safety net
@@ -321,18 +334,27 @@ class AgentEngine:
                             )
                             for m in messages
                         ]
-                        compact_result_l4 = await self.compression.compact(ctx_messages_hard, usage_pct)
+                        compact_result_l4 = await self.compression.compact(
+                            ctx_messages_hard, usage_pct
+                        )
                         messages = [
                             {"role": m.role, "content": m.content}
                             for m in compact_result_l4.messages
                         ]
                         # Re-insert system message if it got removed
                         if api_format.get("system") and messages[0].get("role") != "system":
-                            messages.insert(0, {"role": "system", "content": api_format["system"]})
+                            messages.insert(
+                                0,
+                                {
+                                    "role": "system",
+                                    "content": api_format["system"],
+                                },
+                            )
                         yield TextChunk(
                             content=(
-                                f"\n[Hard truncation applied: context exceeded {int(HARD_LIMIT * 100)}%. "
-                                f"Messages reduced from {len(ctx_messages_hard)} to {len(messages)}. "
+                                "\n[Hard truncation applied: context exceeded "
+                                f"{int(hard_limit * 100)}%. Messages reduced "
+                                f"from {len(ctx_messages_hard)} to {len(messages)}. "
                                 f"Consider running /clear to free more space.]\n"
                             )
                         )
@@ -350,8 +372,9 @@ class AgentEngine:
                         )
                         yield TextChunk(
                             content=(
-                                f"\n[Warning: Context at {int(usage_pct * 100)}% after compression. "
-                                f"All layers exhausted. Consider running /clear to free space.]\n"
+                                f"\n[Warning: Context at {int(usage_pct * 100)}% "
+                                "after compression. All layers exhausted. "
+                                "Consider running /clear to free space.]\n"
                             )
                         )
 
@@ -448,7 +471,11 @@ class AgentEngine:
                             )
                             # Rebuild context with skill content injected (gap-32)
                             if self.context_builder and user_input:
-                                history = session.get_recent_messages() if hasattr(session, 'get_recent_messages') else []
+                                history = (
+                                    session.get_recent_messages()
+                                    if hasattr(session, "get_recent_messages")
+                                    else []
+                                )
                                 new_request = await self.context_builder.build(
                                     current_input=user_input,
                                     history=history,
@@ -456,15 +483,14 @@ class AgentEngine:
                                     active_skill=active_skill,
                                 )
                                 new_api = new_request.to_api_format()
-                                # Rebuild messages: keep existing tool results, update system
-                                new_messages = new_api["messages"]
-                                # Preserve existing assistant + tool result messages
-                                existing_count = len(messages)
                                 # Replace system message
                                 if new_api.get("system"):
                                     for i, m in enumerate(messages):
                                         if m.get("role") == "system":
-                                            messages[i] = {"role": "system", "content": new_api["system"]}
+                                            messages[i] = {
+                                                "role": "system",
+                                                "content": new_api["system"],
+                                            }
                                             break
                                 # Add skill tool result
                                 skill_result = ToolResult(
@@ -806,10 +832,7 @@ class AgentEngine:
             "is it",
             "are you",
         )
-        for starter in question_starters:
-            if text_lower.startswith(starter):
-                return True
-        return False
+        return any(text_lower.startswith(starter) for starter in question_starters)
 
     def _continue_with_feedback(
         self, goal_check, messages: list[dict]
@@ -883,7 +906,11 @@ class AgentEngine:
                 memory_store=getattr(self, '_memory_store', None),
                 goal_tracker=self.goal_tracker,
                 tool_registry=self.tool_registry,
-                mcp_clients=getattr(self.tool_registry, 'mcp_clients', []) if self.tool_registry else [],
+                mcp_clients=(
+                    getattr(self.tool_registry, "mcp_clients", [])
+                    if self.tool_registry
+                    else []
+                ),
             )
 
             t0 = time.monotonic()
@@ -969,14 +996,14 @@ class AgentEngine:
 
         # Size guard: results exceeding 1M chars cannot fit in any
         # sub-agent context window — fall back to truncation immediately
-        MAX_PROMPT_CHARS = 200_000
-        HARD_LIMIT_CHARS = 1_000_000
+        max_prompt_chars = 200_000
+        hard_limit_chars = 1_000_000
 
-        if len(result.output) > HARD_LIMIT_CHARS:
+        if len(result.output) > hard_limit_chars:
             logger.warning(
                 "Tool result (%d chars) exceeds sub-agent context limit "
                 "(%d chars) — falling back to truncation",
-                len(result.output), HARD_LIMIT_CHARS,
+                len(result.output), hard_limit_chars,
                 extra={"category": "tool"},
             )
             return self._truncate_result(result)
@@ -986,9 +1013,9 @@ class AgentEngine:
             truncated_for_prompt = False
 
             # Apply 200K ceiling for the sub-agent prompt (gap-19-06)
-            if len(full_output) > MAX_PROMPT_CHARS:
+            if len(full_output) > max_prompt_chars:
                 truncated_for_prompt = True
-                prompt_output = full_output[:MAX_PROMPT_CHARS]
+                prompt_output = full_output[:max_prompt_chars]
             else:
                 prompt_output = full_output
 
@@ -998,14 +1025,14 @@ class AgentEngine:
             )
             if truncated_for_prompt and file_ref:
                 prompt += (
-                    f" Note: the result was truncated to {MAX_PROMPT_CHARS} "
+                    f" Note: the result was truncated to {max_prompt_chars} "
                     f"chars for this prompt. The full result ({len(result.output)} "
                     f"chars) is available at {file_ref} — use the read tool to "
                     f"access it if you need details beyond what is shown here."
                 )
             elif truncated_for_prompt:
                 prompt += (
-                    f" Note: the result was truncated to {MAX_PROMPT_CHARS} "
+                    f" Note: the result was truncated to {max_prompt_chars} "
                     f"chars for this prompt (original: {len(result.output)} chars)."
                 )
             prompt += f"\n\n{prompt_output}"
@@ -1021,7 +1048,9 @@ class AgentEngine:
                 raise Exception(summary_result.error)
             return ToolResult(
                 output=(
-                    f"[Summarized from {len(result.output)} chars.{' ' + file_ref if file_ref else ''}]\n"
+                    "[Summarized from "
+                    f"{len(result.output)} chars."
+                    f"{' ' + file_ref if file_ref else ''}]\n"
                     f"{summary_result.output}"
                 ),
                 error=result.error,
@@ -1101,17 +1130,23 @@ class AgentEngine:
             # LiteLLM is optional for this best-effort discovery path.
             pass
         except (TypeError, ValueError):
-            logger.debug(
+            logger.warning(
                 "Dynamic context-window discovery failed; using static fallback",
                 exc_info=True,
-                extra={"category": "system", "context": "agent.context_window_lookup"},
+                extra={
+                    "category": "error",
+                    "component": "agent",
+                    "context": "agent_context_window_lookup",
+                },
             )
 
         # ── Fallback: static map with litellm prefix stripped ─────
         short_name = model_name.split("/")[-1] if "/" in model_name else model_name
         return AgentEngine._CONTEXT_WINDOW_MAP.get(short_name, 1_000_000)
 
-    def _estimate_context_usage(self, messages: list[dict], tools: list[dict] | None = None) -> float:
+    def _estimate_context_usage(
+        self, messages: list[dict], tools: list[dict] | None = None
+    ) -> float:
         """Estimate context window usage as a fraction [0.0, 1.0].
 
         Derives the context window from the active model configuration
@@ -1145,7 +1180,9 @@ class AgentEngine:
 
         return min(estimated_tokens / context_window, 1.0)
 
-    def _char_based_token_estimate(self, messages: list[dict], tools: list[dict] | None = None) -> int:
+    def _char_based_token_estimate(
+        self, messages: list[dict], tools: list[dict] | None = None
+    ) -> int:
         """Character-based token estimate as a fallback when litellm is unavailable.
 
         Uses a weighted ratio: Chinese characters ~1.5 chars/token,
@@ -1161,7 +1198,11 @@ class AgentEngine:
                 total_chars += 1
                 cp = ord(ch)
                 # CJK Unified Ideographs (U+4E00–U+9FFF) and common extensions
-                if 0x4E00 <= cp <= 0x9FFF or 0x3400 <= cp <= 0x4DBF or 0x20000 <= cp <= 0x2A6DF:
+                if (
+                    0x4E00 <= cp <= 0x9FFF
+                    or 0x3400 <= cp <= 0x4DBF
+                    or 0x20000 <= cp <= 0x2A6DF
+                ):
                     total_cjk += 1
                 elif cp < 128:
                     total_ascii += 1
@@ -1191,9 +1232,10 @@ class AgentEngine:
         if not self.session_store or not session:
             return
         try:
+            from datetime import datetime as _dt
+
             from myagent.context.builder import Message as CtxMessage
             from myagent.context.builder import ToolCallRecord
-            from datetime import datetime as _dt
             # Persist only the new messages since last save: track a _persist_idx
             persist_idx = getattr(session, '_persist_idx', 0)
             new_msgs = messages[persist_idx:]

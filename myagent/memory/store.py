@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
+
+logger = logging.getLogger("myagent.memory.store")
 
 
 @dataclass
@@ -217,7 +220,14 @@ class MemoryStore:
                                 if overlap_ratio > 0.60:
                                     return existing_path
         except Exception:
-            pass  # Embedding model unavailable; fall through to keyword fallback
+            logger.exception(
+                "Semantic memory dedup failed; falling back to keyword overlap",
+                extra={
+                    "category": "error",
+                    "component": "memory",
+                    "context": "memory_semantic_dedup",
+                },
+            )
 
         # Fallback: keyword overlap with all existing memories
         return await self._find_by_keyword_overlap(body)
@@ -267,6 +277,14 @@ class MemoryStore:
                         best_ratio = ratio
                         best_path = f
                 except Exception:
+                    logger.exception(
+                        "Failed to inspect memory file for keyword overlap",
+                        extra={
+                            "category": "error",
+                            "component": "memory",
+                            "context": "memory_keyword_overlap_read",
+                        },
+                    )
                     continue
 
         return best_path
@@ -338,7 +356,10 @@ class MemoryStore:
         index_path.write_text("\n".join(lines), encoding="utf-8")
 
     def _read_index(self, mem_dir: Path) -> list[MemoryEntry]:
-        """Read MEMORY.md index, supporting both new table format and legacy list format (gap-8-09)."""
+        """Read MEMORY.md index.
+
+        Supports both the new table format and legacy list format (gap-8-09).
+        """
         index_path = mem_dir / "MEMORY.md"
         if not index_path.exists():
             return []

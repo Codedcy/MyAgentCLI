@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING
 from myagent.logging.formatter import JsonLineFormatter
 
 if TYPE_CHECKING:
-    from myagent.config.schema import LoggingConfig
+    pass
 
 # Log category constants
 LOG_SYSTEM = "system"
@@ -260,7 +260,10 @@ class LogManager:
     @staticmethod
     def _emit_startup_event(root: logging.Logger, config: object) -> None:
         """Emit a single startup event with metadata (gap-2-12, gap-18-04)."""
-        import hashlib, json, platform, sys
+        import hashlib
+        import json
+        import platform
+        import sys
         config_hash = ""
         python_version = sys.version
         platform_info = platform.platform()
@@ -273,7 +276,7 @@ class LogManager:
                 config_hash = hashlib.sha256(
                     json.dumps(config_dict, sort_keys=True, default=str).encode()
                 ).hexdigest()[:12]
-        except Exception:
+        except (TypeError, ValueError, AttributeError):
             config_hash = "unknown"
 
         root.info(
@@ -299,13 +302,13 @@ class LogManager:
             for f in log_dir.glob("myagent*.*"):
                 if f.stat().st_mtime < cutoff:
                     f.unlink()
-        except Exception:
+        except OSError:
             pass  # cleanup is best-effort
 
     @staticmethod
     def _make_rotating_handler(
         filename: str, max_bytes: int, backup_count: int
-    ) -> "TimedSizeRotatingFileHandler":
+    ) -> TimedSizeRotatingFileHandler:
         """Create a TimedSizeRotatingFileHandler with time + size rotation.
 
         Subclasses TimedRotatingFileHandler (daily midnight rotation) and
@@ -318,4 +321,3 @@ class LogManager:
             max_bytes=max_bytes,
             backup_count=backup_count,
         )
-

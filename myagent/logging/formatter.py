@@ -9,7 +9,7 @@ import json
 import logging
 import os
 import traceback
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 
 class JsonLineFormatter(logging.Formatter):
@@ -39,7 +39,7 @@ class JsonLineFormatter(logging.Formatter):
         from myagent.logging.context import get_context
 
         log_dict = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),

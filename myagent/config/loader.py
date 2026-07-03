@@ -23,23 +23,12 @@ from typing import Any
 
 import yaml
 
-logger = logging.getLogger("myagent.config")
-
 from myagent.config.schema import (
     AppConfig,
-    AutoAllowConfig,
-    AutoDenyConfig,
-    CompressionConfig,
-    ContextConfig,
-    DreamConfig,
-    LoggingConfig,
-    ModelConfig,
-    PermissionsConfig,
-    SessionConfig,
-    SubagentsConfig,
-    ToolsConfig,
-    UIConfig,
 )
+
+logger = logging.getLogger("myagent.config")
+
 
 # CLI arg → (config_path, transform function or None for identity)
 def _transform_mode(value: str) -> str:
@@ -87,7 +76,11 @@ def _dict_to_dataclass(data: dict, cls: type) -> object:
             raw = data[f.name]
             if is_dataclass(f.type) and isinstance(raw, dict):
                 kwargs[f.name] = _dict_to_dataclass(raw, f.type)
-            elif hasattr(f.type, "__origin__") and f.type.__origin__ is list and isinstance(raw, list):
+            elif (
+                hasattr(f.type, "__origin__")
+                and f.type.__origin__ is list
+                and isinstance(raw, list)
+            ):
                 kwargs[f.name] = raw
             else:
                 kwargs[f.name] = raw

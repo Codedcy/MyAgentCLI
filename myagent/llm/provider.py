@@ -13,10 +13,11 @@ import asyncio
 import json
 import logging
 import time
+from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from dataclasses import dataclass, field
-from typing import AsyncIterator, Any
+from typing import Any
 
 import litellm
 
@@ -103,7 +104,13 @@ class LLMProvider:
                 case Done(stop_reason, usage): ...
     """
 
-    def __init__(self, model_config=None, logging_config=None, retry_callback=None, streaming: bool = True):
+    def __init__(
+        self,
+        model_config=None,
+        logging_config=None,
+        retry_callback=None,
+        streaming: bool = True,
+    ):
         """Initialize with ModelConfig (or None for defaults).
 
         Args:
@@ -218,7 +225,12 @@ class LLMProvider:
                     logger.warning(
                         "Non-retryable error on model %s: %s — trying fallback",
                         model_name, str(e),
-                        extra={"category": "error", "component": "llm"},
+                        exc_info=True,
+                        extra={
+                            "category": "error",
+                            "component": "llm",
+                            "context": "llm_model_fallback_non_retryable",
+                        },
                     )
                     continue
                 else:
@@ -227,7 +239,12 @@ class LLMProvider:
                     logger.warning(
                         "Retryable error exhausted on model %s: %s — trying fallback",
                         model_name, str(e),
-                        extra={"category": "error", "component": "llm"},
+                        exc_info=True,
+                        extra={
+                            "category": "error",
+                            "component": "llm",
+                            "context": "llm_model_fallback_retryable",
+                        },
                     )
                     continue
 
@@ -260,7 +277,14 @@ class LLMProvider:
                 if provider_self._retry_callback:
                     provider_self._retry_callback(count, MAX_RETRIES, 0)
             except Exception:
-                pass
+                logger.exception(
+                    "LiteLLM retry callback failed",
+                    extra={
+                        "category": "error",
+                        "component": "llm",
+                        "context": "llm_litellm_failure_callback",
+                    },
+                )
 
         # Initialize the litellm failure_callback list if needed
         if not hasattr(litellm, 'failure_callback') or litellm.failure_callback is None:
@@ -343,9 +367,9 @@ class LLMProvider:
                 response = await litellm.acompletion(**kwargs)
                 break  # Success — exit retry loop
             except litellm.exceptions.AuthenticationError as e:
-                raise LLMError(code="auth_error", message=str(e), retryable=False)
+                raise LLMError(code="auth_error", message=str(e), retryable=False) from e
             except litellm.exceptions.BadRequestError as e:
-                raise LLMError(code="bad_request", message=str(e), retryable=False)
+                raise LLMError(code="bad_request", message=str(e), retryable=False) from e
             except (
                 litellm.exceptions.RateLimitError,
                 litellm.exceptions.APIConnectionError,
@@ -371,26 +395,37 @@ class LLMProvider:
                         try:
                             self._retry_callback(attempt + 1, MAX_RETRIES, delay)
                         except Exception:
-                            pass
+                            logger.exception(
+                                "LLM retry callback failed",
+                                extra={
+                                    "category": "error",
+                                    "component": "llm",
+                                    "context": "llm_retry_callback",
+                                },
+                            )
                     await asyncio.sleep(delay)
                     # Update failure count for the hook
                     continue
                 else:
                     # All retries exhausted — classify and raise
                     if isinstance(e, litellm.exceptions.RateLimitError):
-                        raise LLMError(code="rate_limit", message=str(e), retryable=True)
+                        raise LLMError(code="rate_limit", message=str(e), retryable=True) from e
                     elif isinstance(e, litellm.exceptions.APIConnectionError):
-                        raise LLMError(code="connection_error", message=str(e), retryable=True)
+                        raise LLMError(
+                            code="connection_error", message=str(e), retryable=True
+                        ) from e
                     elif isinstance(e, litellm.exceptions.InternalServerError):
-                        raise LLMError(code="server_error", message=str(e), retryable=True)
+                        raise LLMError(code="server_error", message=str(e), retryable=True) from e
                     elif isinstance(e, TimeoutError):
-                        raise LLMError(code="timeout", message=str(e), retryable=True)
+                        raise LLMError(code="timeout", message=str(e), retryable=True) from e
                     else:
-                        raise LLMError(code="max_retries", message=str(e), retryable=True)
+                        raise LLMError(code="max_retries", message=str(e), retryable=True) from e
             except litellm.exceptions.APIError as e:
                 last_error = e
                 status = getattr(e, "status_code", None)
-                is_retryable = status is not None and (status in RETRYABLE_HTTP_CODES or status >= 500)
+                is_retryable = status is not None and (
+                    status in RETRYABLE_HTTP_CODES or status >= 500
+                )
                 if is_retryable and attempt < MAX_RETRIES:
                     delay = min(RETRY_BASE_DELAY * (2 ** attempt), RETRY_MAX_DELAY)
                     self._failure_count = attempt + 1
@@ -408,14 +443,30 @@ class LLMProvider:
                         try:
                             self._retry_callback(attempt + 1, MAX_RETRIES, delay)
                         except Exception:
-                            pass
+                            logger.exception(
+                                "LLM retry callback failed",
+                                extra={
+                                    "category": "error",
+                                    "component": "llm",
+                                    "context": "llm_api_retry_callback",
+                                },
+                            )
                     await asyncio.sleep(delay)
                     continue
                 else:
-                    raise LLMError(code=f"api_error_{status}", message=str(e),
-                                   retryable=is_retryable)
+                    raise LLMError(
+                        code=f"api_error_{status}", message=str(e), retryable=is_retryable
+                    ) from e
             except Exception as e:
-                raise LLMError(code="unknown", message=str(e), retryable=False)
+                logger.exception(
+                    "Unexpected LiteLLM completion error",
+                    extra={
+                        "category": "error",
+                        "component": "llm",
+                        "context": "llm_completion_unknown",
+                    },
+                )
+                raise LLMError(code="unknown", message=str(e), retryable=False) from e
 
         # If we exhausted all retries without success
         if last_error is not None and 'response' not in dir():
@@ -513,6 +564,14 @@ class LLMProvider:
         try:
             return litellm.token_counter(model=self.model, messages=messages)
         except Exception:
+            logger.exception(
+                "Token counting failed; using character estimate",
+                extra={
+                    "category": "error",
+                    "component": "llm",
+                    "context": "llm_token_count",
+                },
+            )
             # Fallback: ~4 chars per token (rough estimate)
             text = json.dumps(messages, ensure_ascii=False)
             return len(text) // 4
@@ -675,7 +734,11 @@ class LLMProvider:
             return
 
         try:
-            log_dir = Path(getattr(self._logging_config, "dir", "~/.myagent/logs/")).expanduser().resolve()
+            log_dir = (
+                Path(getattr(self._logging_config, "dir", "~/.myagent/logs/"))
+                .expanduser()
+                .resolve()
+            )
             prompts_dir = log_dir / ".prompts"
             prompts_dir.mkdir(parents=True, exist_ok=True)
 
@@ -684,7 +747,10 @@ class LLMProvider:
             session_part = self._session_id or "nosession"
 
             # Write request file
-            request_file = prompts_dir / f"{ts}-{session_part}-request-{self._prompt_counter:04d}.json"
+            request_file = (
+                prompts_dir
+                / f"{ts}-{session_part}-request-{self._prompt_counter:04d}.json"
+            )
             request_data = {
                 "model": model_name,
                 "attempt": attempt + 1,
@@ -696,7 +762,14 @@ class LLMProvider:
                 encoding="utf-8",
             )
         except Exception:
-            pass  # Prompt logging is best-effort
+            logger.exception(
+                "Failed to write LLM prompt log",
+                extra={
+                    "category": "error",
+                    "component": "llm",
+                    "context": "llm_prompt_log_write",
+                },
+            )
 
     def _write_response_log(
         self, model_name: str, text_chunks: list[str],
@@ -721,14 +794,21 @@ class LLMProvider:
             return
 
         try:
-            log_dir = Path(getattr(self._logging_config, "dir", "~/.myagent/logs/")).expanduser().resolve()
+            log_dir = (
+                Path(getattr(self._logging_config, "dir", "~/.myagent/logs/"))
+                .expanduser()
+                .resolve()
+            )
             prompts_dir = log_dir / ".prompts"
             prompts_dir.mkdir(parents=True, exist_ok=True)
 
             ts = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
             session_part = self._session_id or "nosession"
 
-            response_file = prompts_dir / f"{ts}-{session_part}-response-{self._prompt_counter:04d}.json"
+            response_file = (
+                prompts_dir
+                / f"{ts}-{session_part}-response-{self._prompt_counter:04d}.json"
+            )
             response_data = {
                 "model": model_name,
                 "attempt": attempt + 1,
@@ -746,7 +826,14 @@ class LLMProvider:
                 encoding="utf-8",
             )
         except Exception:
-            pass  # Prompt logging is best-effort
+            logger.exception(
+                "Failed to write LLM response log",
+                extra={
+                    "category": "error",
+                    "component": "llm",
+                    "context": "llm_response_log_write",
+                },
+            )
 
     # Allow setting model manually (for testing)
     def _set_test_model(self, model: str):
