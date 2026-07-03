@@ -95,7 +95,12 @@ async def async_main(argv: list[str] | None = None) -> int:
     )
 
     from myagent.context.persistence import SessionStore
-    session_store = SessionStore()
+    # G4: respect config.session.sessions_dir; resolve ~ and expand env vars
+    sessions_dir_raw = config.session.sessions_dir
+    sessions_dir = Path(
+        sessions_dir_raw.replace("~", str(Path.home()))
+    ) if sessions_dir_raw else None
+    session_store = SessionStore(base_dir=sessions_dir)
     from myagent.subagent.pool import SubAgentPool
     subagent_pool = SubAgentPool(
         config.subagents.max_concurrent, llm=llm, tool_registry=tool_registry,
