@@ -42,8 +42,7 @@ TOOL_LEVEL_MAP: dict[str, int] = {
     "memory_write": 1,
     "bash": 2,
     "spawn_subagent": 2,
-    # send_message: not listed in design spec §五 level table;
-    # defaults to level 3 (fallback for unknown tools via _get_level()).
+    "send_message": 0,  # read-only communication, no filesystem/network side effects
 }
 
 
