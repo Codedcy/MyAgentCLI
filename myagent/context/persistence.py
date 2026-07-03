@@ -187,6 +187,10 @@ class SessionStore:
                 timestamp=datetime.fromisoformat(msg_data.get("timestamp", "2026-01-01T00:00:00")),
             )
             session._messages.append(msg)
+        # Restore incremental persistence index so that subsequent
+        # _persist_turn calls only persist newly added messages,
+        # not the full history on every turn after resume (gap-16-05).
+        session._persist_idx = len(session._messages)
         return session
 
     async def export_session(
