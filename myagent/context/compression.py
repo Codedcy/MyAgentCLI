@@ -102,12 +102,22 @@ class CompressionEngine:
                 )
             else:
                 try:
+                    # Capture pre-Layer-3 character count for actual reduction measurement
+                    pre_l3_chars = sum(len(m.content) for m in messages)
                     messages = await self._layer3_summarize(messages)
                     layers_applied.append(3)
                     changed = True
-                    current_usage_pct = (
-                        self.config.target_after if self.config else 0.30
-                    )
+                    # Re-estimate actual usage by measuring character reduction
+                    # rather than assuming it always reaches the target (gap-16-02).
+                    # Per spec: "达不到30%就接受实际结果"
+                    post_l3_chars = sum(len(m.content) for m in messages)
+                    if pre_l3_chars > 0:
+                        reduction_ratio = post_l3_chars / pre_l3_chars
+                        current_usage_pct = current_usage_pct * reduction_ratio
+                    else:
+                        current_usage_pct = (
+                            self.config.target_after if self.config else 0.30
+                        )
                     self._layer3_failures = 0
                 except Exception:
                     self._layer3_failures += 1
