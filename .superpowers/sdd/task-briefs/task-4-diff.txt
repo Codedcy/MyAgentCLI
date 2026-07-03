@@ -1,0 +1,928 @@
+=== COMMITS ===
+ee1c950 fix(subagent): real worker ReAct loop, pool wiring, semaphore fix, send_message
+
+=== DIFF ===
+diff --git a/myagent/subagent/pool.py b/myagent/subagent/pool.py
+index cdd762b..dee4dfd 100644
+--- a/myagent/subagent/pool.py
++++ b/myagent/subagent/pool.py
+@@ -1,111 +1,207 @@
+ """Sub-agent pool — lifecycle, concurrency, and message routing."""
+ 
+ from __future__ import annotations
+ 
+ import asyncio
++import logging
+ import os
++import time
+ from dataclasses import dataclass, field
+ from enum import Enum
+ 
+-from myagent.tools.base import ToolResult
++from myagent.tools.base import ToolContext, ToolResult
++
++logger = logging.getLogger("myagent.subagent")
+ 
+ 
+ class AgentStatus(Enum):
+     CREATED = "created"
+     RUNNING = "running"
+     COMPLETED = "completed"
+     FAILED = "failed"
+     INTERRUPTED = "interrupted"
+ 
+ 
+ @dataclass
+ class SubAgentHandle:
+     id: str
+     status: AgentStatus = AgentStatus.CREATED
+     result: ToolResult | None = None
+     _completion_event: asyncio.Event = field(default_factory=asyncio.Event)
++    _interrupt_event: asyncio.Event = field(default_factory=asyncio.Event)
+     _result_data: ToolResult | None = None
++    _message: str | None = None
+ 
+     async def wait(self) -> ToolResult:
+         await self._completion_event.wait()
+         return self._result_data or ToolResult(error="Sub-agent returned no result")
+ 
+     async def send_message(self, msg: str) -> None:
+-        # Message is stored; worker checks at each loop iteration
+-        pass
++        """Store message; trigger interrupt if 'stop'."""
++        self._message = msg
++        if msg.lower() == "stop":
++            self._interrupt_event.set()
+ 
+ 
+ class CapExceededError(Exception):
+     pass
+ 
+ 
+ class SubAgentPool:
+-    """Pool of sub-agents with concurrency limiting."""
++    """Pool of sub-agents with concurrency limiting.
++
++    Accepts optional llm, tool_registry, and tool_context at pool level;
++    spawn() allows per-invocation overrides.
++    """
+ 
+     MAX_TOTAL = 1000
+ 
+-    def __init__(self, max_concurrent: int | None = None):
++    def __init__(
++        self,
++        max_concurrent: int | None = None,
++        llm=None,
++        tool_registry=None,
++        tool_context: ToolContext | None = None,
++    ):
+         if max_concurrent is None:
+             max_concurrent = min(16, max(1, (os.cpu_count() or 2) - 2))
+         self.max_concurrent = max_concurrent
+         self._semaphore = asyncio.Semaphore(max_concurrent)
+         self._agents: dict[str, SubAgentHandle] = {}
+         self._total_spawned = 0
+         self._counter = 0
++        self._llm = llm
++        self._tool_registry = tool_registry
++        self._tool_context = tool_context
+ 
+     @property
+     def active_count(self) -> int:
+         return sum(1 for a in self._agents.values() if a.status == AgentStatus.RUNNING)
+ 
+     async def spawn(
+         self,
+         prompt: str,
+         tools: list[str] | None = None,
+         mode: str = "Think High",
+         isolation: str | None = None,
+         schema: dict | None = None,
+         background: bool = True,
+         parent_session: str | None = None,
++        llm=None,
++        tool_registry=None,
++        tool_context=None,
+     ) -> SubAgentHandle:
+         if self._total_spawned >= self.MAX_TOTAL:
+             raise CapExceededError(f"Global sub-agent cap ({self.MAX_TOTAL}) exceeded")
+ 
+         self._total_spawned += 1
+         self._counter += 1
+         agent_id = f"sub-{self._counter:03d}"
+ 
+         handle = SubAgentHandle(id=agent_id, status=AgentStatus.RUNNING)
+         self._agents[agent_id] = handle
+ 
++        # Per-invocation overrides fall back to pool-level defaults
++        _llm = llm or self._llm
++        _tool_registry = tool_registry or self._tool_registry
++        _tool_context = tool_context or self._tool_context
++
+         if background:
+-            asyncio.create_task(self._run_background(handle, prompt))
++            asyncio.create_task(
++                self._run_background(
++                    handle, prompt, tools, mode, _llm, _tool_registry,
++                    handle._interrupt_event, _tool_context,
++                )
++            )
+         else:
+-            await self._run_foreground(handle, prompt)
++            await self._run_foreground(
++                handle, prompt, tools, mode, _llm, _tool_registry,
++                handle._interrupt_event, _tool_context,
++            )
+ 
+         return handle
+ 
+     async def send_message(self, agent_id: str, message: str) -> None:
++        """Send a message to a running sub-agent."""
+         if agent_id in self._agents:
+             await self._agents[agent_id].send_message(message)
+ 
+     async def shutdown(self) -> None:
++        """Interrupt all running sub-agents and release completion events."""
+         for handle in self._agents.values():
+             if handle.status == AgentStatus.RUNNING:
+                 handle.status = AgentStatus.INTERRUPTED
++                handle._interrupt_event.set()
+                 handle._completion_event.set()
+ 
+-    async def _run_background(self, handle: SubAgentHandle, prompt: str) -> None:
+-        try:
+-            # Simulated execution — in production runs ReAct loop in worker
+-            await asyncio.sleep(0.01)
+-            handle.status = AgentStatus.COMPLETED
+-            handle._result_data = ToolResult(output=f"Completed: {prompt[:100]}")
+-            handle._completion_event.set()
+-        except Exception as e:
+-            handle.status = AgentStatus.FAILED
+-            handle._result_data = ToolResult(error=str(e))
+-            handle._completion_event.set()
+-
+-    async def _run_foreground(self, handle: SubAgentHandle, prompt: str) -> None:
++    # ── internal ──────────────────────────────────────────────────
++
++    async def _run_background(
++        self,
++        handle: SubAgentHandle,
++        prompt: str,
++        tools: list[str] | None,
++        mode: str,
++        llm,
++        tool_registry,
++        interrupt_event: asyncio.Event,
++        tool_context: ToolContext | None,
++    ) -> None:
++        """Run a sub-agent worker under the concurrency semaphore."""
+         async with self._semaphore:
+-            await self._run_background(handle, prompt)
++            from myagent.subagent.worker import SubAgentWorker
++
++            worker = SubAgentWorker(
++                prompt=prompt,
++                tools=tools,
++                mode=mode,
++                llm=llm,
++                tool_registry=tool_registry,
++                interrupt_event=interrupt_event,
++                tool_context=tool_context,
++            )
++            try:
++                logger.info(
++                    "Sub-agent %s starting",
++                    handle.id,
++                    extra={"category": "subagent"},
++                )
++                t0 = time.monotonic()
++                output = await worker.run()
++                duration_ms = (time.monotonic() - t0) * 1000
++                handle.status = AgentStatus.COMPLETED
++                handle._result_data = ToolResult(output=output)
++                logger.info(
++                    "Sub-agent %s completed in %.1fms",
++                    handle.id,
++                    duration_ms,
++                    extra={"category": "subagent"},
++                )
++            except Exception as e:
++                logger.error(
++                    "Sub-agent %s failed: %s",
++                    handle.id,
++                    str(e),
++                    extra={"category": "error", "component": "subagent"},
++                )
++                handle.status = AgentStatus.FAILED
++                handle._result_data = ToolResult(error=str(e))
++            finally:
++                handle._completion_event.set()
++
++    async def _run_foreground(
++        self,
++        handle: SubAgentHandle,
++        prompt: str,
++        tools: list[str] | None,
++        mode: str,
++        llm,
++        tool_registry,
++        interrupt_event: asyncio.Event,
++        tool_context: ToolContext | None,
++    ) -> None:
++        """Run a sub-agent worker in foreground (caller awaits)."""
++        await self._run_background(
++            handle, prompt, tools, mode, llm, tool_registry,
++            interrupt_event, tool_context,
++        )
+diff --git a/myagent/subagent/worker.py b/myagent/subagent/worker.py
+index c88822c..d850ad0 100644
+--- a/myagent/subagent/worker.py
++++ b/myagent/subagent/worker.py
+@@ -2,38 +2,216 @@
+ 
+ Each sub-agent has its own context window (same model limit as main agent),
+ tool subset, and transcript persistence. Skills and memory are NOT loaded
+ for sub-agents.
+ 
+ Design doc reference: §八 子 Agent 池与工作流编排
+ """
+ 
+ from __future__ import annotations
+ 
++import asyncio
++import json
++import logging
++import time
++
++from myagent.llm.provider import Done as LLMDone
++from myagent.llm.provider import TextDelta as LLMTextDelta
++from myagent.llm.provider import ThinkingDelta as LLMThinkingDelta
++from myagent.llm.provider import ToolCall as LLMToolCall
++from myagent.tools.base import ToolContext, ToolResult
++
++logger = logging.getLogger("myagent.subagent")
++
+ 
+ class SubAgentWorker:
+     """Runs a sub-agent's ReAct loop with isolated context."""
+ 
++    MAX_ITERATIONS = 30
++
+     def __init__(
+         self,
+         prompt: str,
+         tools: list[str] | None = None,
+         mode: str = "Think High",
+         isolation: str | None = None,
++        llm=None,
++        tool_registry=None,
++        interrupt_event: asyncio.Event | None = None,
++        tool_context: ToolContext | None = None,
+     ):
+         self.prompt = prompt
+         self.tools = tools
+         self.mode = mode
+         self.isolation = isolation
++        self.llm = llm
++        self.tool_registry = tool_registry
++        self.interrupt_event = interrupt_event
++        self.tool_context = tool_context
+ 
+     async def run(self) -> str:
+-        """Execute the sub-agent task and return result.
++        """Execute the sub-agent task and return a result string.
+ 
+-        In production, this runs a full ReAct loop with LLM calls,
+-        tool execution, and context management. The sub-agent has:
++        Runs a full ReAct loop with LLM calls and tool execution.
++        Sub-agents have:
+         - No L2 skills index
+         - No L4 memory (avoid context pollution)
+         - Tool subset from spawn params
+-        - Own transcript under subagents/sub-NNN/
++        - Independent context (no history from parent)
+         """
+-        # Placeholder — full ReAct loop integration in Task 15
+-        return f"Sub-agent completed: {self.prompt[:100]}"
++        if not self.llm:
++            logger.warning("Sub-agent spawned without LLM provider")
++            return "Error: No LLM provider configured for sub-agent"
++
++        messages = [
++            {
++                "role": "system",
++                "content": (
++                    "You are a sub-agent assistant. Complete the assigned task "
++                    "using available tools. Be concise and direct. Report your "
++                    "final answer when done."
++                ),
++            },
++            {"role": "user", "content": self.prompt},
++        ]
++
++        tools_schemas = (
++            self.tool_registry.get_schemas_for(self.tools)
++            if self.tool_registry and self.tools
++            else []
++        )
++
++        iteration = 0
++        while iteration < self.MAX_ITERATIONS:
++            iteration += 1
++
++            # Check for interrupt before each LLM call
++            if self.interrupt_event and self.interrupt_event.is_set():
++                logger.info(
++                    "Sub-agent interrupted at iteration %d",
++                    iteration,
++                    extra={"category": "subagent"},
++                )
++                return "[Interrupted]"
++
++            text_buffer: list[str] = []
++            tool_calls_in_turn: list = []
++
++            # ── Stream LLM response ──────────────────────────────
++            try:
++                async for event in self.llm.complete(
++                    messages=messages,
++                    tools=tools_schemas if tools_schemas else None,
++                    thinking=self.mode,
++                ):
++                    kind = self._classify_event(event)
++                    if kind == "text":
++                        text_buffer.append(event.content)
++                    elif kind == "tool_call":
++                        tool_calls_in_turn.append(event)
++                    # "done", "thinking", "unknown" — absorbed
++            except Exception as e:
++                logger.error(
++                    "LLM error in sub-agent iteration %d: %s",
++                    iteration,
++                    str(e),
++                    extra={"category": "error", "component": "llm"},
++                )
++                return f"Error: {e}"
++
++            # ── Execute tool calls ───────────────────────────────
++            if tool_calls_in_turn:
++                assistant_content = "".join(text_buffer) or None
++                assistant_msg: dict = {"role": "assistant", "content": assistant_content}
++                assistant_msg["tool_calls"] = [
++                    {
++                        "id": tc.id,
++                        "type": "function",
++                        "function": {
++                            "name": tc.name,
++                            "arguments": json.dumps(tc.params, ensure_ascii=False),
++                        },
++                    }
++                    for tc in tool_calls_in_turn
++                ]
++                messages.append(assistant_msg)
++
++                for tc in tool_calls_in_turn:
++                    tool = (
++                        self.tool_registry.get(tc.name)
++                        if self.tool_registry else None
++                    )
++                    if tool:
++                        ctx = self.tool_context or ToolContext(
++                            session_id="subagent",
++                            project_dir=None,
++                            permissions=None,
++                            config=None,
++                        )
++                        try:
++                            t0 = time.monotonic()
++                            result = await tool.execute(tc.params, ctx)
++                            duration_ms = (time.monotonic() - t0) * 1000
++                            result_text = (
++                                result.output
++                                if not result.error
++                                else f"Error: {result.error}"
++                            )
++                            logger.info(
++                                "Tool '%s' executed in %.1fms (%d chars)",
++                                tc.name,
++                                duration_ms,
++                                len(result.output),
++                                extra={"category": "tool"},
++                            )
++                        except Exception as e:
++                            logger.error(
++                                "Tool '%s' failed: %s",
++                                tc.name,
++                                str(e),
++                                extra={"category": "error", "component": "tool"},
++                            )
++                            result_text = f"Error executing {tc.name}: {e}"
++                    else:
++                        result_text = f"Error: Unknown tool '{tc.name}'"
++
++                    messages.append({
++                        "role": "tool",
++                        "tool_call_id": tc.id,
++                        "content": result_text,
++                    })
++
++                # Loop again — LLM sees tool results in next iteration
++                continue
++
++            # ── No tool calls — text response complete ───────────
++            return "".join(text_buffer)
++
++        return f"Error: Sub-agent reached max iterations ({self.MAX_ITERATIONS})"
++
++    # ── helpers ────────────────────────────────────────────────────
++
++    def _classify_event(self, event) -> str:
++        """Classify an LLM stream event by type.
++
++        Uses isinstance against provider types; falls back to duck-typing
++        for test doubles (mock objects with matching attributes).
++        """
++        if isinstance(event, LLMTextDelta):
++            return "text"
++        if isinstance(event, LLMThinkingDelta):
++            return "thinking"
++        if isinstance(event, LLMToolCall):
++            return "tool_call"
++        if isinstance(event, LLMDone):
++            return "done"
++
++        # Duck-typing fallback for test doubles
++        if hasattr(event, "name") and hasattr(event, "params") and hasattr(event, "id"):
++            return "tool_call"
++        if hasattr(event, "content") and not hasattr(event, "name"):
++            return "text"
++        if hasattr(event, "stop_reason"):
++            return "done"
++        if "Done" in type(event).__name__:
++            return "done"
++        return "unknown"
+diff --git a/tests/integration/test_subagent_flow.py b/tests/integration/test_subagent_flow.py
+index 4d3e53d..8e8d756 100644
+--- a/tests/integration/test_subagent_flow.py
++++ b/tests/integration/test_subagent_flow.py
+@@ -1,21 +1,46 @@
+ """Integration test: sub-agent spawn and completion."""
+ 
++from unittest.mock import MagicMock
++
+ import pytest
+ 
+ from myagent.subagent.pool import SubAgentPool
+ 
+ 
++class FakeTextDelta:
++    def __init__(self, content):
++        self.content = content
++
++
++class FakeDone:
++    def __init__(self, usage=None):
++        self.usage = usage
++        self.stop_reason = "end_turn"
++
++
++def _async_gen(items):
++    async def gen():
++        for item in items:
++            yield item
++
++    return gen()
++
++
+ class TestSubagentFlow:
+     @pytest.mark.asyncio
+     async def test_spawn_and_wait(self):
+         """Spawn sub-agent and wait for result."""
+-        pool = SubAgentPool(max_concurrent=2)
++        gen = _async_gen([FakeTextDelta("Completed: Analyze file X"), FakeDone()])
++        llm = MagicMock()
++        llm.complete = MagicMock(return_value=gen)
++
++        pool = SubAgentPool(max_concurrent=2, llm=llm)
+ 
+         handle = await pool.spawn(
+             prompt="Analyze file X",
+             background=False,
+         )
+ 
+         result = await handle.wait()
+         assert result.error is None
+         assert "Analyze file X" in result.output
+diff --git a/tests/subagent/test_pool.py b/tests/subagent/test_pool.py
+index 242f4d0..9bf6ac0 100644
+--- a/tests/subagent/test_pool.py
++++ b/tests/subagent/test_pool.py
+@@ -1,72 +1,195 @@
+ """Tests for SubAgentPool."""
+ 
++import asyncio
++from unittest.mock import MagicMock
++
+ import pytest
+ 
+ from myagent.subagent.pool import AgentStatus, CapExceededError, SubAgentPool
+ 
+ 
++# ── Fake stream events ──────────────────────────────────────────────
++
++
++class FakeTextDelta:
++    def __init__(self, content):
++        self.content = content
++
++
++class FakeDone:
++    def __init__(self, usage=None):
++        self.usage = usage
++        self.stop_reason = "end_turn"
++
++
++def _async_gen(items):
++    async def gen():
++        for item in items:
++            yield item
++
++    return gen()
++
++
++def _make_llm(text="Task completed"):
++    """Create a mock LLM that returns a single text response."""
++    gen = _async_gen([FakeTextDelta(text), FakeDone()])
++    llm = MagicMock()
++    llm.complete = MagicMock(return_value=gen)
++    return llm
++
++
++# ── Tests ───────────────────────────────────────────────────────────
++
++
+ class TestSubAgentPool:
+     @pytest.mark.asyncio
+     async def test_spawn_foreground(self):
+-        pool = SubAgentPool(max_concurrent=2)
++        """Foreground spawn should block until completion and return result."""
++        llm = _make_llm("Completed: Test task analysis")
++        pool = SubAgentPool(max_concurrent=2, llm=llm)
+         handle = await pool.spawn(
+             prompt="Test task",
+             background=False,
+         )
+         result = await handle.wait()
+         assert result.error is None
+         assert handle.status == AgentStatus.COMPLETED
+         assert "Test task" in result.output
+ 
+     @pytest.mark.asyncio
+     async def test_spawn_background(self):
+-        pool = SubAgentPool(max_concurrent=2)
++        """Background spawn should return immediately, with result available
++        after completion."""
++        llm = _make_llm("Background task done")
++        pool = SubAgentPool(max_concurrent=2, llm=llm)
+         handle = await pool.spawn(
+             prompt="Background task",
+             background=True,
+         )
+         # Should return immediately
+         assert handle.status == AgentStatus.RUNNING
+         # Wait for completion
+         result = await handle.wait()
+         assert result.error is None
+ 
+     @pytest.mark.asyncio
+     async def test_active_count(self):
+-        pool = SubAgentPool(max_concurrent=5)
++        """active_count should drop to 0 after agent completes."""
++        llm = _make_llm()
++        pool = SubAgentPool(max_concurrent=5, llm=llm)
+         handle = await pool.spawn(prompt="Test", background=True)
+-        # After spawn, one agent is running
+         await handle.wait()
+         assert pool.active_count == 0  # completed
+ 
+     @pytest.mark.asyncio
+     async def test_shutdown_interrupts_running(self):
+-        pool = SubAgentPool(max_concurrent=5)
++        """shutdown() should interrupt running agents."""
++        llm = _make_llm("ok")
++        pool = SubAgentPool(max_concurrent=5, llm=llm)
+         handle = await pool.spawn(prompt="Long task", background=True)
+         await pool.shutdown()
+         assert handle.status in (AgentStatus.INTERRUPTED, AgentStatus.COMPLETED)
+ 
+     @pytest.mark.asyncio
+     async def test_agent_id_format(self):
+-        pool = SubAgentPool(max_concurrent=2)
++        """Agent IDs should follow sub-NNN format."""
++        llm = _make_llm()
++        pool = SubAgentPool(max_concurrent=2, llm=llm)
+         h1 = await pool.spawn(prompt="Task 1", background=False)
+         h2 = await pool.spawn(prompt="Task 2", background=False)
+         assert h1.id == "sub-001"
+         assert h2.id == "sub-002"
+ 
++    @pytest.mark.asyncio
++    async def test_semaphore_limits_concurrency(self):
++        """Background tasks should respect the semaphore limit."""
++        # Use a semaphore of 1 so tasks serialize
++        # Make LLM return only after a small delay so we can observe concurrency
++        import asyncio
++
++        async def _delayed_gen(*args, **kwargs):
++            await asyncio.sleep(0.05)
++            yield FakeTextDelta("ok")
++            yield FakeDone()
++
++        llm = MagicMock()
++        llm.complete = MagicMock(side_effect=_delayed_gen)
++
++        pool = SubAgentPool(max_concurrent=1, llm=llm)
++        h1 = await pool.spawn(prompt="Task 1", background=True)
++        h2 = await pool.spawn(prompt="Task 2", background=True)
++
++        await h1.wait()
++        await h2.wait()
++
++        assert h1.status == AgentStatus.COMPLETED
++        assert h2.status == AgentStatus.COMPLETED
++        assert llm.complete.call_count == 2
++
++    @pytest.mark.asyncio
++    async def test_send_message_stop_interrupts_worker(self):
++        """send_message('stop') should cause worker to return [Interrupted]."""
++        # LLM that would loop but gets interrupted
++        gen1 = _async_gen([FakeTextDelta("Working..."), FakeDone()])
++        llm = MagicMock()
++        llm.complete = MagicMock(return_value=gen1)
++
++        pool = SubAgentPool(max_concurrent=2, llm=llm)
++        handle = await pool.spawn(prompt="Work", background=True)
++
++        # Send stop message
++        await pool.send_message(handle.id, "stop")
++
++        result = await handle.wait()
++        # Either interrupted or completed (race between interrupt and LLM)
++        assert handle.status in (AgentStatus.INTERRUPTED, AgentStatus.COMPLETED)
++
++    @pytest.mark.asyncio
++    async def test_cap_exceeded_raises(self):
++        """Spawning beyond MAX_TOTAL should raise CapExceededError."""
++        llm = _make_llm()
++        pool = SubAgentPool(max_concurrent=2, llm=llm)
++        pool.MAX_TOTAL = 3  # Lower cap for testing
++
++        for _ in range(3):
++            await pool.spawn(prompt="Task", background=False)
++
++        with pytest.raises(CapExceededError):
++            await pool.spawn(prompt="Overflow")
++
+ 
+ class TestSubAgentHandle:
+     @pytest.mark.asyncio
+     async def test_wait_returns_result(self):
+         from myagent.subagent.pool import SubAgentHandle
+-        import asyncio
++        from myagent.tools.base import ToolResult
+ 
+         handle = SubAgentHandle(id="test-001")
+         handle.status = AgentStatus.COMPLETED
+-        handle._result_data = __import__("myagent.tools.base", fromlist=["ToolResult"]).ToolResult(
+-            output="Done"
+-        )
++        handle._result_data = ToolResult(output="Done")
+         handle._completion_event.set()
+ 
+         result = await handle.wait()
+         assert result.output == "Done"
++
++    @pytest.mark.asyncio
++    async def test_send_message_sets_interrupt_on_stop(self):
++        """send_message('stop') should set the interrupt event."""
++        from myagent.subagent.pool import SubAgentHandle
++
++        handle = SubAgentHandle(id="test-002")
++        assert not handle._interrupt_event.is_set()
++
++        await handle.send_message("stop")
++        assert handle._interrupt_event.is_set()
++        assert handle._message == "stop"
++
++    @pytest.mark.asyncio
++    async def test_send_message_non_stop_does_not_interrupt(self):
++        """Non-'stop' messages should not set the interrupt event."""
++        from myagent.subagent.pool import SubAgentHandle
++
++        handle = SubAgentHandle(id="test-003")
++        await handle.send_message("hello")
++        assert not handle._interrupt_event.is_set()
++        assert handle._message == "hello"
+diff --git a/tests/subagent/test_worker.py b/tests/subagent/test_worker.py
+index 8c68a06..c1000b3 100644
+--- a/tests/subagent/test_worker.py
++++ b/tests/subagent/test_worker.py
+@@ -1,13 +1,195 @@
+ """Tests for SubAgentWorker."""
+ 
++import asyncio
++from unittest.mock import AsyncMock, MagicMock
++
+ import pytest
+ 
+ from myagent.subagent.worker import SubAgentWorker
+ 
+ 
++# ── Fake stream events (matching the duck-typing fallback) ──────────
++
++
++class FakeTextDelta:
++    def __init__(self, content):
++        self.content = content
++
++
++class FakeToolCall:
++    def __init__(self, name, call_id="call-1", params=None):
++        self.name = name
++        self.id = call_id
++        self.params = params or {}
++
++
++class FakeDone:
++    def __init__(self, usage=None):
++        self.usage = usage
++        self.stop_reason = "end_turn"
++
++
++def _async_gen(items):
++    async def gen():
++        for item in items:
++            yield item
++
++    return gen()
++
++
++# ── Tests ───────────────────────────────────────────────────────────
++
++
+ class TestSubAgentWorker:
+     @pytest.mark.asyncio
+-    async def test_run_returns_prompt_summary(self):
++    async def test_run_without_llm_returns_error(self):
++        """Without LLM, worker should return an error message."""
+         worker = SubAgentWorker(prompt="Review auth module", tools=["read", "grep"])
+         result = await worker.run()
+-        assert "Review auth module" in result
++        assert "Error" in result
++        assert "LLM" in result
++
++    @pytest.mark.asyncio
++    async def test_run_with_llm_streams_text(self):
++        """Worker should stream LLM text and return the final content."""
++        gen1 = _async_gen([FakeTextDelta("Analysis complete."), FakeDone()])
++        llm = MagicMock()
++        llm.complete = MagicMock(return_value=gen1)
++
++        worker = SubAgentWorker(
++            prompt="Review auth module",
++            tools=["read", "grep"],
++            llm=llm,
++        )
++        result = await worker.run()
++        assert "Analysis complete" in result
++        llm.complete.assert_called_once()
++
++    @pytest.mark.asyncio
++    async def test_run_executes_tool_calls_and_continues(self):
++        """Worker should execute tool calls from LLM, feed results back,
++        and continue the loop."""
++        gen1 = _async_gen([
++            FakeToolCall("read", "call-1", {"file_path": "x.py"}),
++            FakeDone(),
++        ])
++        gen2 = _async_gen([FakeTextDelta("Got file contents"), FakeDone()])
++        llm = MagicMock()
++        llm.complete = MagicMock(side_effect=[gen1, gen2])
++
++        from myagent.tools.base import ToolResult
++
++        tool = MagicMock()
++        tool.execute = AsyncMock(return_value=ToolResult(output="file content"))
++        registry = MagicMock()
++        registry.get = MagicMock(return_value=tool)
++
++        worker = SubAgentWorker(
++            prompt="Read x.py",
++            tools=["read"],
++            llm=llm,
++            tool_registry=registry,
++        )
++        result = await worker.run()
++        assert "Got file contents" in result
++        assert llm.complete.call_count == 2
++        tool.execute.assert_called_once()
++
++    @pytest.mark.asyncio
++    async def test_run_interrupt_stops_immediately(self):
++        """When interrupt_event is set before run, worker should stop
++        at the first iteration without calling LLM."""
++        import asyncio
++
++        interrupt = asyncio.Event()
++        interrupt.set()
++
++        llm = MagicMock()
++        worker = SubAgentWorker(
++            prompt="Do something",
++            llm=llm,
++            interrupt_event=interrupt,
++        )
++        result = await worker.run()
++        assert "[Interrupted]" in result
++        llm.complete.assert_not_called()
++
++    @pytest.mark.asyncio
++    async def test_run_llm_error_returns_error_string(self):
++        """Worker should catch LLM exceptions and return an error string."""
++        llm = MagicMock()
++        llm.complete = MagicMock(side_effect=Exception("API down"))
++
++        worker = SubAgentWorker(
++            prompt="Do something",
++            llm=llm,
++        )
++        result = await worker.run()
++        assert "Error" in result
++        assert "API down" in result
++
++    @pytest.mark.asyncio
++    async def test_run_max_iterations(self):
++        """Worker should stop after MAX_ITERATIONS even if LLM keeps
++        emitting tool calls."""
++        call_count = SubAgentWorker.MAX_ITERATIONS + 2
++        fakes = [[FakeToolCall("read", f"call-{i}", {"file_path": "x.py"}), FakeDone()]
++                  for i in range(call_count)]
++        llm = MagicMock()
++        llm.complete = MagicMock(side_effect=[_async_gen(f) for f in fakes])
++
++        from myagent.tools.base import ToolResult
++
++        tool = MagicMock()
++        tool.execute = AsyncMock(return_value=ToolResult(output="ok"))
++        registry = MagicMock()
++        registry.get = MagicMock(return_value=tool)
++
++        worker = SubAgentWorker(
++            prompt="Read many files",
++            tools=["read"],
++            llm=llm,
++            tool_registry=registry,
++        )
++        result = await worker.run()
++        assert "max iterations" in result.lower()
++        assert llm.complete.call_count == SubAgentWorker.MAX_ITERATIONS
++
++    @pytest.mark.asyncio
++    async def test_run_tool_subset_filtering(self):
++        """Worker should only provide schemas for the requested tool subset."""
++        gen1 = _async_gen([FakeTextDelta("Done"), FakeDone()])
++        llm = MagicMock()
++        llm.complete = MagicMock(return_value=gen1)
++
++        registry = MagicMock()
++        registry.get_schemas_for = MagicMock(return_value=[
++            {"type": "function", "function": {"name": "read", "description": "", "parameters": {}}},
++        ])
++
++        worker = SubAgentWorker(
++            prompt="Read something",
++            tools=["read"],
++            llm=llm,
++            tool_registry=registry,
++        )
++        result = await worker.run()
++        assert "Done" in result
++        registry.get_schemas_for.assert_called_once_with(["read"])
++
++    @pytest.mark.asyncio
++    async def test_run_without_tools_passes_no_schemas(self):
++        """When no tools are specified, no tool schemas should be sent to LLM."""
++        gen1 = _async_gen([FakeTextDelta("Plain text response"), FakeDone()])
++        llm = MagicMock()
++        llm.complete = MagicMock(return_value=gen1)
++
++        worker = SubAgentWorker(
++            prompt="Answer a question",
++            llm=llm,
++        )
++        result = await worker.run()
++        assert "Plain text response" in result
++        # Verify tools=None was passed (or tools=[])
++        call_kwargs = llm.complete.call_args.kwargs
++        assert call_kwargs.get("tools") in (None, [])

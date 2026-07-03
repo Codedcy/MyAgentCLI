@@ -1,0 +1,73 @@
+=== COMMITS ===
+ce003e0 fix(mcp): stderr drain, schema ref/oneOf resolution, permission levels
+f72ff9e fix: spec alignment — memory, logging, session, context, skills, sandbox, LLM, commands
+710c2d2 fix(tools): ToolResult success/artifacts, registry tracking, param gaps
+b74bb45 docs: task 8 completion report
+2e852c3 fix(config): project root auto-detection, env var expansion, AGENT.md frontmatter
+e4994a4 fix(permissions): interactive Rich confirm dialog for permission checks
+109df72 fix(dream): implement real memory consolidation — dedup, clean empty, write log
+da72c3b fix(web): real web_search via DuckDuckGo; HTML->Markdown in web_fetch
+ee1c950 fix(subagent): real worker ReAct loop, pool wiring, semaphore fix, send_message
+be4efec fix(cli): address review findings — await stop, remove dead code, cleanup
+89a24e1 fix(cli): wire CommandDispatcher, Renderer, StatusBar; fix --resume; enable multi-line REPL
+e80bb0e fix(goal): LLM-driven goal evaluation instead of always-True stub
+a381e33 fix(engine): address review findings — intent docstring, tool logging
+f1a1b62 fix(engine): true iterative ReAct loop with tool result feedback
+
+=== STAT ===
+ .superpowers/sdd/progress.md                       |   10 +
+ .superpowers/sdd/task-briefs/task-1-brief.md       |  167 ++
+ .superpowers/sdd/task-briefs/task-1-diff.txt       |  618 +++++
+ .superpowers/sdd/task-briefs/task-1-fix-diff.txt   |  185 ++
+ .superpowers/sdd/task-briefs/task-1-report.md      |  107 +
+ .superpowers/sdd/task-briefs/task-10-report.md     |  108 +
+ .superpowers/sdd/task-briefs/task-2-brief.md       |   99 +
+ .superpowers/sdd/task-briefs/task-2-diff.txt       |  325 +++
+ .superpowers/sdd/task-briefs/task-2-report.md      |   38 +
+ .superpowers/sdd/task-briefs/task-3-brief.md       |   97 +
+ .superpowers/sdd/task-briefs/task-3-diff.txt       |  317 +++
+ .superpowers/sdd/task-briefs/task-3-report.md      |   76 +
+ .superpowers/sdd/task-briefs/task-4-brief.md       |   52 +
+ .superpowers/sdd/task-briefs/task-5-brief.md       |   48 +
+ .superpowers/sdd/task-briefs/task-6-brief.md       |   37 +
+ .superpowers/sdd/task-briefs/task-7-brief.md       |   34 +
+ .superpowers/sdd/task-briefs/task-8-report.md      |   65 +
+ .../superpowers/plans/2026-07-03-audit-fix-plan.md | 2533 ++++++++++++++++++++
+ myagent/agent/engine.py                            |  393 ++-
+ myagent/agent/goal.py                              |  179 +-
+ myagent/agent/project.py                           |   22 +
+ myagent/cli/commands.py                            |   40 +-
+ myagent/cli/main.py                                |   33 +-
+ myagent/cli/repl.py                                |  138 +-
+ myagent/config/loader.py                           |   84 +-
+ myagent/context/builder.py                         |   40 +-
+ myagent/context/compression.py                     |   65 +-
+ myagent/context/persistence.py                     |   19 +-
+ myagent/llm/provider.py                            |  122 +-
+ myagent/logging/formatter.py                       |   21 +-
+ myagent/logging/logger.py                          |   45 +-
+ myagent/memory/dream.py                            |  135 +-
+ myagent/memory/store.py                            |   67 +-
+ myagent/permissions/controller.py                  |   73 +-
+ myagent/skills/registry.py                         |   56 +-
+ myagent/subagent/pool.py                           |  138 +-
+ myagent/subagent/worker.py                         |  190 +-
+ myagent/tools/base.py                              |    8 +
+ myagent/tools/builtin/agent_tools.py               |    9 +
+ myagent/tools/builtin/exec_tools.py                |   37 +
+ myagent/tools/builtin/file_tools.py                |   12 +
+ myagent/tools/builtin/memory_tools.py              |   64 +-
+ myagent/tools/builtin/search_tools.py              |  187 +-
+ myagent/tools/builtin/session_tools.py             |   74 +-
+ myagent/tools/builtin/web_tools.py                 |  257 +-
+ myagent/tools/mcp/adapter.py                       |  109 +-
+ myagent/tools/mcp/client.py                        |   38 +
+ myagent/tools/registry.py                          |   62 +-
+ tests/agent/test_engine.py                         |  140 +-
+ tests/agent/test_goal.py                           |   79 +-
+ tests/agent/test_project.py                        |   36 +
+ tests/config/test_loader.py                        |  150 ++
+ tests/integration/test_subagent_flow.py            |   27 +-
+ tests/subagent/test_pool.py                        |  143 +-
+ tests/subagent/test_worker.py                      |  186 +-
+ 55 files changed, 8056 insertions(+), 338 deletions(-)
