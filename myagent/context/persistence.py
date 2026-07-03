@@ -101,19 +101,27 @@ class SessionStore:
         tools_dir = sess_dir / "tools"
         call_count = len(list(tools_dir.glob("call-*.json")))
         call_file = tools_dir / f"call-{call_count + 1:03d}.json"
+
+        # Store complete tool result (gap-10-6: no truncation per spec).
+        # For very large results, use a reference file to keep the main
+        # tool call JSON manageable while preserving full traceability.
+        result_raw = str(call.result)
+        result_content, result_ref = self._persist_tool_result(
+            sess_dir, call_count + 1, result_raw
+        )
+        call_data = {
+            "call_id": call.call_id,
+            "tool_name": call.tool_name,
+            "params": call.params,
+            "result": result_content,
+            "permission": call.permission,
+            "timestamp": call.timestamp.isoformat(),
+        }
+        if result_ref:
+            call_data["result_ref"] = result_ref
         call_file.write_text(
-            json.dumps(
-                {
-                    "call_id": call.call_id,
-                    "tool_name": call.tool_name,
-                    "params": call.params,
-                    "result": str(call.result)[:50000],
-                    "permission": call.permission,
-                    "timestamp": call.timestamp.isoformat(),
-                },
-                ensure_ascii=False,
-                indent=2,
-            )
+            json.dumps(call_data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
         )
 
     async def list_sessions(
@@ -371,6 +379,40 @@ class SessionStore:
                 ))
                 lines.append("")
             md.write_text("\n".join(lines), encoding="utf-8")
+
+    def _persist_tool_result(
+        self, sess_dir: Path, call_index: int, content: str
+    ) -> tuple[str, str | None]:
+        """Persist a tool call result, using a reference file for very large results.
+
+        Similar to _persist_message_content but for tool call results.
+        Returns (content_to_store_in_json, ref_file_path_or_None).
+
+        gap-10-6: Stores complete tool results without truncation per spec
+        requirement for full input/output traceability.
+        """
+        if len(content) <= self._LONG_MESSAGE_THRESHOLD:
+            return content, None
+
+        # Store full result in long-messages/ subdirectory
+        long_dir = sess_dir / "long-messages"
+        long_dir.mkdir(parents=True, exist_ok=True)
+        ref_file = long_dir / f"tool-call-{call_index:03d}.json"
+        ref_file.write_text(
+            json.dumps({
+                "call_index": call_index,
+                "content": content,
+                "content_length": len(content),
+            }, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        ref_path = f"long-messages/tool-call-{call_index:03d}.json"
+        truncated = (
+            f"[Full result reference: {ref_path} ({len(content)} chars)]\n"
+            f"{content[:2000]}\n"
+            f"... (truncated in inline JSON, full content at {ref_path})"
+        )
+        return truncated, ref_path
 
     # Threshold: messages longer than this are stored in a separate reference
     # file to keep the main transcript manageable. Shorter messages are stored
