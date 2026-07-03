@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 
@@ -130,12 +131,13 @@ class SessionManager:
                 _log.warning("Failed to write final transcript for session: %s", e)
 
         # Prompt for permission persistence (gap-2-04)
+        # gap-13-04: Use Console.print() instead of Prompt.ask() because
+        # prompt_toolkit may already be stopped at session end (per spec §十).
         if self.permissions:
             changes = self.permissions.get_session_changes()
             if changes:
                 try:
                     from rich.console import Console
-                    from rich.prompt import Prompt
                     console = Console()
                     console.print(
                         f"\n[bold yellow]权限变更[/bold yellow]: 本次会话中调整了 "
@@ -143,12 +145,9 @@ class SessionManager:
                     )
                     for c in changes:
                         console.print(f"  - {c.get('rule', 'unknown')} ({c.get('action', 'unknown')})")
-                    answer = Prompt.ask(
-                        "是否持久化到配置文件？[Y/n]",
-                        choices=["Y", "y", "N", "n"],
-                        default="Y",
-                    )
-                    if answer.lower() == "y":
+                    console.print("是否持久化到配置文件？[Y/n]")
+                    answer = sys.stdin.readline().strip()
+                    if answer.lower() in ("y", "yes", ""):
                         self._persist_permission_changes(changes, console)
                 except ImportError:
                     pass  # Rich not available
