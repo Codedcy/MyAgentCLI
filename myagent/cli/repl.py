@@ -217,35 +217,27 @@ class REPLEngine:
         if self._dream_engine:
             self._dream_checker_task = asyncio.create_task(self._periodic_dream_check())
 
-        # Shared Rich Live layout for status bar + output (gap-2-07)
+        # Initialize Rich Live for output display during engine processing.
+        # We do NOT start Live here — Rich Live is a full-screen display that
+        # conflicts with prompt_toolkit's terminal control. Instead, we render
+        # the initial greeting once, then let prompt_toolkit take full control.
+        # Live is only used transiently during process_input() for status+output.
         self._live = None
+        self._output_lines: list[str] = []
+
+        # Show initial greeting
+        self._console.print("MyAgentCLI — Type /help for commands, Ctrl+D to exit.")
+        self._console.print(f"Project: [bold]{self._project_dir.name}[/bold]")
+
+        # Show initial status bar as a one-time render (not Live)
         if self._status_bar:
             try:
-                from rich.live import Live
-                from rich.layout import Layout
-                from rich.panel import Panel
-
-                layout = Layout()
-                layout.split(
-                    Layout(name="status", size=3),
-                    Layout(name="output"),
-                )
-                # Initialize with status bar panel
                 status_renderable = self._status_bar.get_renderable()
-                layout["status"].update(status_renderable or Panel(""))
-                layout["output"].update(Panel("MyAgentCLI — Type /help for commands, Ctrl+D to exit.\n"
-                                               f"Project: {self._project_dir.name}",
-                                               title="Output"))
-
-                self._live = Live(layout, refresh_per_second=4, console=self._console, vertical_overflow="visible")
-                self._live.start()
-                self._output_lines: list[str] = []
-            except ImportError:
-                self._live = None
-
-        if self._live is None:
-            self._console.print("MyAgentCLI — Type /help for commands, Ctrl+D to exit.")
-            self._console.print(f"Project: [bold]{self._project_dir.name}[/bold]")
+                if status_renderable:
+                    self._console.print(status_renderable)
+                self._console.print()  # blank line before prompt
+            except Exception:
+                pass
 
         try:
             from prompt_toolkit import PromptSession
@@ -299,31 +291,16 @@ class REPLEngine:
 
             while self._running:
                 try:
-                    # Stop Rich Live display so prompt_toolkit can take full
-                    # control of the terminal for input. The Live refresh loop
-                    # (4 FPS) otherwise conflicts with prompt_toolkit rendering.
-                    if self._live:
-                        self._live.stop()
-                    try:
-                        user_input = await session.prompt_async("myagent> ")
-                    finally:
-                        if self._live:
-                            self._live.start()
+                    user_input = await session.prompt_async("myagent> ")
                 except KeyboardInterrupt:
                     # This is a fallback — the key binding handles most Ctrl+C cases.
                     # If KeyboardInterrupt still fires (e.g. during prompt_toolkit init),
                     # show the exit confirmation.
                     self._console.print()
                     try:
-                        if self._live:
-                            self._live.stop()
-                        try:
-                            confirm = await session.prompt_async(
-                                "Exit? (y/n) ", multiline=False
-                            )
-                        finally:
-                            if self._live:
-                                self._live.start()
+                        confirm = await session.prompt_async(
+                            "Exit? (y/n) ", multiline=False
+                        )
                         if confirm.strip().lower() in ("y", "yes"):
                             self._console.print()
                             break
@@ -339,15 +316,9 @@ class REPLEngine:
                 if user_input is self._SENTINEL_CTRL_C:
                     self._console.print()
                     try:
-                        if self._live:
-                            self._live.stop()
-                        try:
-                            confirm = await session.prompt_async(
-                                "Exit? (y/n) ", multiline=False
-                            )
-                        finally:
-                            if self._live:
-                                self._live.start()
+                        confirm = await session.prompt_async(
+                            "Exit? (y/n) ", multiline=False
+                        )
                         if confirm.strip().lower() in ("y", "yes"):
                             self._console.print()
                             break
