@@ -122,7 +122,9 @@ class AgentEngine:
         self.config = config
         self.project_dir = project_dir or Path.cwd()
 
-    async def run(self, user_input: str, session) -> AsyncIterator[AgentEvent]:
+    async def run(
+        self, user_input: str, session, active_skill: str | None = None
+    ) -> AsyncIterator[AgentEvent]:
         """Execute one turn of the ReAct loop."""
 
         # Build context
@@ -131,6 +133,7 @@ class AgentEngine:
             current_input=user_input,
             history=history,
             project_context=self.project_context,
+            active_skill=active_skill,
         )
 
         # ReAct loop (simplified — in production, full loop with LLM streaming)

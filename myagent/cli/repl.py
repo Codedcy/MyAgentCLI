@@ -30,6 +30,7 @@ class REPLEngine:
         self._running = False
         self._current_session = None
         self._console = None
+        self._active_skill: str | None = None  # skill name to inject into next engine run (gap-2-01)
 
     async def run(self) -> None:
         """Start the REPL loop."""
@@ -144,6 +145,10 @@ class REPLEngine:
                 else:
                     print(result.output)
 
+                if result.skill_invoked:
+                    # Store active skill for the next natural-language input (gap-2-01)
+                    self._active_skill = result.skill_invoked
+
                 if not result.success:
                     return
                 return
@@ -156,8 +161,14 @@ class REPLEngine:
 
         # Natural language → AgentEngine
         if self._engine and self._current_session:
+            # Inject active skill if set by /skill-name (gap-2-01)
+            active_skill = self._active_skill
+            self._active_skill = None  # Clear after injecting
+
             has_pending_question = False
-            async for event in self._engine.run(text, self._current_session):
+            async for event in self._engine.run(
+                text, self._current_session, active_skill=active_skill
+            ):
                 if self._renderer:
                     rendered = self._renderer.render_event(event)
                     if rendered and self._console:

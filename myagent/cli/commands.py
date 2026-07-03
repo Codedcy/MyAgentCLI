@@ -22,6 +22,7 @@ class CommandResult:
     output: str
     success: bool = True
     exit_requested: bool = False
+    skill_invoked: str | None = None  # skill name if a skill was invoked via /skill-name
 
 
 class CommandDispatcher:
@@ -53,6 +54,17 @@ class CommandDispatcher:
         handler = self._commands.get(cmd_name)
         if handler:
             return await handler(args, ctx)
+
+        # Check if cmd_name matches a registered skill (gap-2-01: /skill-name forced invocation)
+        if ctx.skill_registry:
+            skill = ctx.skill_registry.get(cmd_name)
+            if skill:
+                return CommandResult(
+                    output=f"Skill invoked: /{cmd_name} — {skill.description}",
+                    success=True,
+                    skill_invoked=skill.name,
+                )
+
         return CommandResult(output=f"Unknown command: /{cmd_name}", success=False)
 
     async def _cmd_mode(self, args: str, ctx: CommandContext) -> CommandResult:
