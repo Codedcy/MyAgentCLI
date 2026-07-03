@@ -43,6 +43,11 @@ TOOL_LEVEL_MAP: dict[str, int] = {
     "bash": 2,
     "spawn_subagent": 2,
     "send_message": 0,  # read-only communication, no filesystem/network side effects
+    # MCP bridge tools — read-only resource/prompt access
+    "mcp_read_resource": 0,  # reads MCP resource data (read-only)
+    "mcp_get_prompt": 0,     # invokes MCP prompt template (read-only)
+    # Config management — modifies in-memory agent behavior (write level)
+    "config_set": 1,         # adjusts runtime configuration (analogous to memory_write)
 }
 
 
