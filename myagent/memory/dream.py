@@ -434,10 +434,19 @@ class DreamEngine:
                     f"with `{older.name}`. The newer memory (`{keeper.name}`) is kept."
                 )
                 updated_content = keeper.content + resolution_note
+                # Construct frontmatter Markdown content for MemoryStore.write()
+                import yaml as _yaml
+                fm_dict = {
+                    "name": keeper.name,
+                    "description": keeper.description,
+                    "metadata": getattr(keeper, "metadata", {}),
+                }
+                fm_yaml = _yaml.safe_dump(fm_dict, default_flow_style=False, allow_unicode=True).strip()
+                full_content = f"---\n{fm_yaml}\n---\n\n{updated_content}"
+                file_path = str(self.memory_store.project_dir / f"{keeper.name}.md")
                 await self.memory_store.write(
-                    name=keeper.name,
-                    content=updated_content,
-                    description=keeper.description,
+                    file_path=file_path,
+                    content=full_content,
                 )
                 result.memories_updated += 1
                 actions.append(
@@ -474,19 +483,29 @@ class DreamEngine:
         if not findings or not self.memory_store:
             return
 
+        import yaml as _yaml
+
         for finding in findings:
             # Extract meaningful patterns to create memories
             if "corrections" in finding.lower() and "detected" in finding.lower():
                 try:
+                    name = "common-corrections"
+                    description = "Common correction patterns detected in recent sessions"
+                    body = (
+                        "This project has patterns of repeated corrections across sessions. "
+                        "Common issues include: approach corrections, naming fixes, and style adjustments. "
+                        "Consider reviewing the project conventions before starting new work.\n\n"
+                        f"**Dream finding:** {finding}"
+                    )
+                    fm_yaml = _yaml.safe_dump(
+                        {"name": name, "description": description, "metadata": {}},
+                        default_flow_style=False, allow_unicode=True,
+                    ).strip()
+                    full_content = f"---\n{fm_yaml}\n---\n\n{body}"
+                    file_path = str(self.memory_store.project_dir / f"{name}.md")
                     await self.memory_store.write(
-                        name="common-corrections",
-                        content=(
-                            "This project has patterns of repeated corrections across sessions. "
-                            "Common issues include: approach corrections, naming fixes, and style adjustments. "
-                            "Consider reviewing the project conventions before starting new work.\n\n"
-                            f"**Dream finding:** {finding}"
-                        ),
-                        description="Common correction patterns detected in recent sessions",
+                        file_path=file_path,
+                        content=full_content,
                     )
                     result.memories_created += 1
                     actions.append("- Created `common-corrections` memory from transcript patterns")
@@ -499,14 +518,22 @@ class DreamEngine:
 
             if "topics" in finding.lower() and ":" in finding:
                 try:
+                    name = "frequent-topics"
+                    description = "Frequently discussed topics across recent sessions"
+                    body = (
+                        "The most frequently discussed topics in recent sessions are "
+                        "recorded here for context awareness.\n\n"
+                        f"**Dream finding:** {finding}"
+                    )
+                    fm_yaml = _yaml.safe_dump(
+                        {"name": name, "description": description, "metadata": {}},
+                        default_flow_style=False, allow_unicode=True,
+                    ).strip()
+                    full_content = f"---\n{fm_yaml}\n---\n\n{body}"
+                    file_path = str(self.memory_store.project_dir / f"{name}.md")
                     await self.memory_store.write(
-                        name="frequent-topics",
-                        content=(
-                            "The most frequently discussed topics in recent sessions are "
-                            "recorded here for context awareness.\n\n"
-                            f"**Dream finding:** {finding}"
-                        ),
-                        description="Frequently discussed topics across recent sessions",
+                        file_path=file_path,
+                        content=full_content,
                     )
                     result.memories_created += 1
                     actions.append("- Created `frequent-topics` memory from transcript topics")
