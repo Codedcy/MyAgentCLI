@@ -33,6 +33,9 @@ class TestLogManager:
 
         LogManager.setup(config=config, session_id="test-session-123")
 
+        # Emit startup event with session_id (gap-18-04: now separate from setup)
+        LogManager.log_startup(config=config, session_id="test-session-123")
+
         # Write a log message
         logger = get_logger("tools.registry")
         logger.info(
