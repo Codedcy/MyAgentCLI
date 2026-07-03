@@ -127,7 +127,12 @@ class DreamEngine:
         memory_summary = await self._build_memory_summary()
         transcript_excerpts = await self._build_transcript_excerpts(session_store)
 
-        prompt = self._build_dream_subagent_prompt(memory_summary, transcript_excerpts)
+        # ── Detect factual errors to pass to the sub-agent (gap-17-04) ──
+        factual_errors_text = await self._build_factual_errors_section()
+
+        prompt = self._build_dream_subagent_prompt(
+            memory_summary, transcript_excerpts, factual_errors_text
+        )
 
         # ── Spawn the sub-agent ──
         try:
@@ -303,10 +308,64 @@ class DreamEngine:
 
         return "\n".join(lines)
 
+    async def _build_factual_errors_section(self) -> str:
+        """Build a factual error summary for the sub-agent prompt (gap-17-04).
+
+        Runs _check_factual_errors on all memories to detect discrepancies
+        between memory file content and the detected project environment.
+        Returns formatted text for injection into the sub-agent prompt,
+        or an empty string if no errors are found or no project context exists.
+        """
+        if self._project_context is None or self.memory_store is None:
+            return ""
+
+        # Gather all memories (same logic as _run_inline)
+        all_memories: list[tuple] = []
+        seen_names: set[str] = set()
+        for scope in ("project", "user"):
+            try:
+                entries = await self.memory_store.list_all(scope)
+            except Exception:
+                continue
+            for entry in entries:
+                if entry.name in seen_names:
+                    continue
+                seen_names.add(entry.name)
+                try:
+                    mf = await self.memory_store.read(entry.name)
+                except Exception:
+                    continue
+                if mf is None:
+                    continue
+                all_memories.append((mf, 0.0))
+
+        factual_errors = self._check_factual_errors(all_memories)
+        if not factual_errors:
+            return ""
+
+        lines = [
+            "## Detected Factual Discrepancies (vs Detected Environment)",
+            "",
+            "The following memory files contain statements that conflict with "
+            "the project environment detected at startup. Please correct these "
+            "memories by updating the content via memory_write to use the "
+            "correct detected values:",
+            "",
+        ]
+        for fe in factual_errors:
+            lines.append(f"- {fe}")
+        return "\n".join(lines)
+
     def _build_dream_subagent_prompt(
-        self, memory_summary: str, transcript_excerpts: str
+        self, memory_summary: str, transcript_excerpts: str,
+        factual_errors: str = "",
     ) -> str:
         """Build the sub-agent prompt for dream analysis (G3, G10)."""
+        # Build factual errors section if provided (gap-17-04)
+        factual_section = ""
+        if factual_errors:
+            factual_section = f"\n{factual_errors}\n"
+
         return f"""You are a memory consolidation agent running in a background "dream" cycle.
 Your task is to analyze existing memories and recent session transcripts,
 then produce a structured analysis and execute memory maintenance actions.
@@ -316,6 +375,7 @@ then produce a structured analysis and execute memory maintenance actions.
 
 ## Session Transcripts
 {transcript_excerpts}
+{factual_section}
 
 ## Instructions
 
@@ -525,7 +585,8 @@ Do NOT interact with project code files — only memory files."""
                 await self._merge_contradictions(contradictions, all_memories, result, actions)
 
             # ── 5b. Cross-reference memory facts against detected project
-            #        conventions (gap-15-04: factual error detection in single files) ──
+            #        conventions (gap-15-04: factual error detection in single files)
+            #        AND auto-correct detected errors (gap-17-04) ──
             factual_errors = self._check_factual_errors(all_memories)
             if factual_errors:
                 analysis_sections.append("")
@@ -536,6 +597,18 @@ Do NOT interact with project code files — only memory files."""
                 )
                 for fe in factual_errors:
                     analysis_sections.append(f"- {fe}")
+
+                # Auto-correct detected factual errors (gap-17-04):
+                # Update each affected memory file to replace outdated references
+                # with the detected environment facts. Track corrections in result.
+                corrected = await self._auto_correct_factual_errors(
+                    factual_errors, all_memories, result, actions
+                )
+                if corrected > 0:
+                    analysis_sections.append(
+                        f"\nAutomatically corrected {corrected} memory file(s) "
+                        f"to align with detected project environment."
+                    )
 
             # ── 6. Identify and DELETE stale memories (gap-2-13, > 30 days) ──
             stale_count = 0
@@ -1074,6 +1147,173 @@ Do NOT interact with project code files — only memory files."""
                             break
 
         return errors[:10]  # Limit to top 10
+
+    async def _auto_correct_factual_errors(
+        self, factual_errors: list[str], all_memories: list,
+        result: DreamResult, actions: list[str],
+    ) -> int:
+        """Auto-correct detected factual errors in memory files (gap-17-04).
+
+        For each factual discrepancy detected by _check_factual_errors, this
+        method updates the affected memory file by replacing the outdated
+        reference (e.g., "Python 3.8", "flake8", "pip") with the correct
+        detected value (e.g., "Python 3.12", "ruff", "uv").
+
+        The correction is conservative: it uses word-boundary regex replacement
+        to avoid partial-word matches, and adds a correction note to the
+        memory content documenting what was changed and why.
+
+        Returns the number of successfully corrected memory files.
+        """
+        import re
+
+        if not self.memory_store or not self._project_context:
+            return 0
+
+        ctx = self._project_context
+        corrected_count = 0
+        corrected_names: set[str] = set()
+
+        # Build a mapping from error detection category to the correct value
+        detected_facts = {
+            "python_version": getattr(ctx, "python_version", None),
+            "package_manager": getattr(ctx, "package_manager", None),
+            "linter": getattr(ctx, "linter", None),
+            "test_framework": getattr(ctx, "test_framework", None),
+            "build_system": getattr(ctx, "build_system", None),
+        }
+
+        # Map of outdated → correct replacement pairs extracted from error strings.
+        # We parse the error strings to determine what to replace.
+        # Error formats (from _check_factual_errors):
+        #   "`name` mentions Python X.Y, but detected Python version is Z"
+        #   "`name` references `X` as package manager, but the project uses `Z`"
+        #   "`name` references `X` as linter, but the project uses `Z`"
+        #   "`name` references `X` as test framework, but the project uses `Z`"
+        #   "`name` references `X` as build system, but the project uses `Z`"
+
+        # Extract memory name from each error
+        for fe_text in factual_errors:
+            name_match = re.search(r'`([^`]+)`', fe_text)
+            if not name_match:
+                continue
+            mem_name = name_match.group(1)
+            if mem_name in corrected_names:
+                continue
+
+            # Determine the category and replacement pair from the error text
+            category = None
+            outdated_val = None
+            correct_val = None
+
+            # Python version: "mentions Python X.Y, but detected ... is Z"
+            py_match = re.search(
+                r'mentions Python (\d+\.\d+),.*?detected Python version is (\d+\.\d+)',
+                fe_text,
+            )
+            if py_match:
+                category = "python_version"
+                outdated_val = py_match.group(1)
+                correct_val = py_match.group(2)
+
+            # Package manager / Linter / Test framework / Build system:
+            # "references `X` as <category>, but the project uses `Z`"
+            ref_match = re.search(
+                r'references `([^`]+)` as (package manager|linter|test framework|build system), but the project uses `([^`]+)`',
+                fe_text,
+            )
+            if ref_match:
+                outdated_val = ref_match.group(1)
+                cat_str = ref_match.group(2)
+                correct_val = ref_match.group(3)
+                cat_map = {
+                    "package manager": "package_manager",
+                    "linter": "linter",
+                    "test framework": "test_framework",
+                    "build system": "build_system",
+                }
+                category = cat_map.get(cat_str)
+
+            if not category or not outdated_val or not correct_val:
+                continue
+            if not detected_facts.get(category):
+                continue
+
+            # Find the memory file in all_memories
+            mf = None
+            for mem, _ in all_memories:
+                if mem.name == mem_name:
+                    mf = mem
+                    break
+            if mf is None:
+                continue
+
+            # Update the memory file content
+            try:
+                original_content = mf.content
+
+                # Use word-boundary regex to replace the outdated value.
+                # We construct a pattern that matches the outdated term as a
+                # whole word/version to avoid false matches.
+                escaped_outdated = re.escape(outdated_val)
+                pattern = re.compile(r'\b' + escaped_outdated + r'\b', re.IGNORECASE)
+
+                new_content = pattern.sub(correct_val, original_content)
+                if new_content == original_content:
+                    # No replacement made — try without word boundary
+                    # (the outdated value may be part of a compound word)
+                    pattern_loose = re.compile(escaped_outdated, re.IGNORECASE)
+                    new_content = pattern_loose.sub(correct_val, original_content)
+
+                if new_content == original_content:
+                    # Still no replacement — skip this memory
+                    continue
+
+                # Append a correction note
+                correction_note = (
+                    f"\n\n*[Dream auto-correction: Replaced `{outdated_val}` → "
+                    f"`{correct_val}` ({category}) to align with detected "
+                    f"project environment.]*"
+                )
+                updated_content = new_content + correction_note
+
+                # Write the updated memory file via memory_store
+                import yaml as _yaml
+                fm_dict = {
+                    "name": mf.name,
+                    "description": mf.description,
+                    "metadata": getattr(mf, "metadata", {}),
+                }
+                fm_yaml = _yaml.safe_dump(
+                    fm_dict, default_flow_style=False, allow_unicode=True,
+                ).strip()
+                full_content = f"---\n{fm_yaml}\n---\n\n{updated_content}"
+                file_path = str(self.memory_store.project_dir / f"{mf.name}.md")
+                await self.memory_store.write(
+                    file_path=file_path,
+                    content=full_content,
+                )
+
+                result.memories_updated += 1
+                corrected_count += 1
+                corrected_names.add(mem_name)
+                actions.append(
+                    f"- Corrected factual error in `{mem_name}`: "
+                    f"`{outdated_val}` → `{correct_val}` ({category})"
+                )
+                logger.info(
+                    "Dream: auto-corrected factual error in '%s': %s→%s (%s)",
+                    mem_name, outdated_val, correct_val, category,
+                    extra={"category": "system"},
+                )
+            except Exception:
+                logger.warning(
+                    "Dream: failed to auto-correct factual error in '%s'",
+                    mem_name, exc_info=True,
+                    extra={"category": "system"},
+                )
+
+        return corrected_count
 
     async def _merge_contradictions(
         self, contradictions: list[str], all_memories: list,
