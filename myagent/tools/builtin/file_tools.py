@@ -7,6 +7,12 @@ from pathlib import Path
 
 from myagent.tools.base import ToolContext, ToolResult
 
+# ── Shared read tracking ──────────────────────────────────────────
+# All file-modifying tools (write, edit) refuse to operate on files
+# that haven't been read in the current session. ReadTool populates
+# this set; WriteTool and EditTool consult it as a guard.
+_read_files: set[str] = set()
+
 
 class ReadTool:
     name = "read"
@@ -48,6 +54,10 @@ class ReadTool:
             offset = params.get("offset", 0)
             limit = params.get("limit")
             original_total = len(lines)
+
+            # G5/G6: track that this file has been read so write/edit can
+            # enforce the "must read first" constraint.
+            _read_files.add(str(path.resolve()))
 
             if offset or limit:
                 start = offset or 0
@@ -93,8 +103,6 @@ class WriteTool:
         "required": ["file_path", "content"],
     }
 
-    _read_files: set[str] = set()  # Track files that were read (session-scoped)
-
     async def execute(self, params: dict, context: ToolContext) -> ToolResult:
         path = Path(params["file_path"])
         if not path.is_absolute():
@@ -102,9 +110,16 @@ class WriteTool:
 
         content = params["content"]
 
-        # Safety: if overwriting a file not previously read, warn
-        if path.exists() and str(path) not in self._read_files:
-            self._read_files.add(str(path))
+        # G6: enforce "must read file before overwriting" constraint.
+        if path.exists():
+            resolved = str(path.resolve())
+            if resolved not in _read_files:
+                return ToolResult(
+                    error=(
+                        f"Must read file before overwriting: {path}. "
+                        f"Use the Read tool first."
+                    )
+                )
 
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -151,6 +166,16 @@ class EditTool:
 
         if not path.exists():
             return ToolResult(error=f"File not found: {path}")
+
+        # G5: enforce "must read file before editing" constraint.
+        resolved = str(path.resolve())
+        if resolved not in _read_files:
+            return ToolResult(
+                error=(
+                    f"Must read file before editing: {path}. "
+                    f"Use the Read tool first."
+                )
+            )
 
         old = params["old_string"]
         new = params["new_string"]

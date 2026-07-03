@@ -70,6 +70,9 @@ class TestWriteTool:
     async def test_write_overwrite(self, tmp_path):
         f = tmp_path / "existing.txt"
         f.write_text("old")
+        # Must read the file before overwriting (G6)
+        read_tool = ReadTool()
+        await read_tool.execute({"file_path": str(f)}, make_ctx(tmp_path))
         tool = WriteTool()
         result = await tool.execute({"file_path": str(f), "content": "new"}, make_ctx(tmp_path))
         assert result.error is None
@@ -81,6 +84,9 @@ class TestEditTool:
     async def test_edit_single_replacement(self, tmp_path):
         f = tmp_path / "src.py"
         f.write_text("x = 1\ny = 2\n")
+        # Must read the file before editing (G5)
+        read_tool = ReadTool()
+        await read_tool.execute({"file_path": str(f)}, make_ctx(tmp_path))
         tool = EditTool()
         result = await tool.execute(
             {"file_path": str(f), "old_string": "x = 1", "new_string": "x = 42"},
@@ -115,6 +121,9 @@ class TestEditTool:
     async def test_edit_replace_all(self, tmp_path):
         f = tmp_path / "src.py"
         f.write_text("dup\ndup\n")
+        # Must read the file before editing (G5)
+        read_tool = ReadTool()
+        await read_tool.execute({"file_path": str(f)}, make_ctx(tmp_path))
         tool = EditTool()
         result = await tool.execute(
             {"file_path": str(f), "old_string": "dup", "new_string": "fixed", "replace_all": True},
