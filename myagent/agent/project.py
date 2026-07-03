@@ -210,25 +210,34 @@ class ProjectDetector:
         return None
 
     async def _detect_python_version(self) -> str | None:
-        """Detect Python version."""
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "python", "--version",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await proc.communicate()
-            output = (stdout + stderr).decode().strip()
-            # "Python 3.12.3" → "3.12"
-            if output.startswith("Python "):
-                version = output.split()[1]
-                parts = version.split(".")
-                if len(parts) >= 2:
-                    return f"{parts[0]}.{parts[1]}"
-                return version
-        except (OSError, FileNotFoundError):
-            pass
-        return None
+        """Detect Python version.
+
+        Tries 'python3' first (correct on systems where 'python' is Python 2),
+        then falls back to 'python', and finally uses sys.version from the
+        running interpreter (always Python 3.12+ since we require it).
+        """
+        # Try python3 first, then python, then sys.version
+        for python_cmd in ("python3", "python"):
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    python_cmd, "--version",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, stderr = await proc.communicate()
+                output = (stdout + stderr).decode().strip()
+                # "Python 3.12.3" → "3.12"
+                if output.startswith("Python "):
+                    version = output.split()[1]
+                    parts = version.split(".")
+                    if len(parts) >= 2:
+                        return f"{parts[0]}.{parts[1]}"
+                    return version
+            except (OSError, FileNotFoundError):
+                continue
+        # Final fallback: use the running interpreter's version
+        import sys
+        return f"{sys.version_info.major}.{sys.version_info.minor}"
 
     def _detect_build_system(self, project_dir: Path) -> str | None:
         """Detect build system."""
