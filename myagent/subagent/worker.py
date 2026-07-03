@@ -21,7 +21,7 @@ from myagent.llm.provider import LLMError
 from myagent.llm.provider import TextDelta as LLMTextDelta
 from myagent.llm.provider import ThinkingDelta as LLMThinkingDelta
 from myagent.llm.provider import ToolCall as LLMToolCall
-from myagent.tools.base import ToolContext
+from myagent.tools.base import ToolContext, ToolResult
 
 # Retry constants for sub-agent LLM calls (gap-8-01)
 # Same strategy as LLMProvider: exponential backoff, max 3 retries, 2s-30s
@@ -260,45 +260,12 @@ class SubAgentWorker:
                         if self.tool_registry else None
                     )
                     if tool:
-                        ctx = self.tool_context or ToolContext(
-                            session_id="subagent",
-                            project_dir=None,
-                            permissions=None,
-                            config=self._config,
-                            subagent_pool=(
-                                getattr(self.tool_context, 'subagent_pool', None)
-                                if self.tool_context else None
-                            ),
+                        result = await self._execute_tool_call(tool, tc)
+                        result_text = (
+                            result.output
+                            if not result.error
+                            else f"Error: {result.error}"
                         )
-                        try:
-                            t0 = time.monotonic()
-                            result = await tool.execute(tc.params, ctx)
-                            duration_ms = (time.monotonic() - t0) * 1000
-                            result_text = (
-                                result.output
-                                if not result.error
-                                else f"Error: {result.error}"
-                            )
-                            logger.info(
-                                "Tool '%s' executed in %.1fms (%d chars)",
-                                tc.name,
-                                duration_ms,
-                                len(result.output),
-                                extra={"category": "tool"},
-                            )
-                        except Exception as e:
-                            logger.error(
-                                "Tool '%s' failed: %s",
-                                tc.name,
-                                str(e),
-                                exc_info=True,
-                                extra={
-                                    "category": "error",
-                                    "component": "tool",
-                                    "context": f"subagent_tool:{tc.name}",
-                                },
-                            )
-                            result_text = f"Error executing {tc.name}: {e}"
                     else:
                         result_text = f"Error: Unknown tool '{tc.name}'"
 
@@ -328,6 +295,116 @@ class SubAgentWorker:
         return f"Error: Sub-agent reached max iterations ({self.MAX_ITERATIONS})"
 
     # ── helpers ────────────────────────────────────────────────────
+
+    async def _execute_tool_call(self, tool, tc) -> ToolResult:
+        """Execute one tool call with sub-agent permission and logging rules."""
+        ctx = self._tool_context_for_call()
+        params_summary = self._params_summary(tc.params)
+
+        permissions = getattr(ctx, "permissions", None)
+        if permissions:
+            level = self._get_tool_level(tc.name)
+            perm_result = permissions.check(tc.name, level=level, params=tc.params)
+            if perm_result.name == "DENY":
+                logger.info(
+                    "Tool '%s' DENIED by permission controller",
+                    tc.name,
+                    extra={
+                        "category": "tool",
+                        "tool_name": tc.name,
+                        "params_summary": params_summary,
+                        "permission_result": "denied",
+                    },
+                )
+                return ToolResult(
+                    error=(
+                        f"Permission denied: {tc.name} requires level {level} "
+                        "access."
+                    )
+                )
+            if perm_result.name == "ASK":
+                try:
+                    allowed = await permissions.confirm(tc.name, tc.params)
+                except Exception:
+                    logger.exception(
+                        "Permission confirmation failed for tool '%s'",
+                        tc.name,
+                        extra={
+                            "category": "error",
+                            "component": "subagent",
+                            "context": f"permission_confirm:{tc.name}",
+                        },
+                    )
+                    allowed = False
+                if not allowed:
+                    logger.info(
+                        "Tool '%s' DENIED by user",
+                        tc.name,
+                        extra={
+                            "category": "tool",
+                            "tool_name": tc.name,
+                            "params_summary": params_summary,
+                            "permission_result": "denied",
+                        },
+                    )
+                    return ToolResult(error=f"User denied permission for '{tc.name}'.")
+
+        try:
+            t0 = time.monotonic()
+            result = await tool.execute(tc.params, ctx)
+            duration_ms = (time.monotonic() - t0) * 1000
+            logger.info(
+                "Tool '%s' executed in %.1fms (%d chars)",
+                tc.name,
+                duration_ms,
+                len(result.output),
+                extra={
+                    "category": "tool",
+                    "tool_name": tc.name,
+                    "params_summary": params_summary,
+                    "permission_result": "allowed",
+                    "duration_ms": round(duration_ms, 1),
+                    "result_size_chars": len(result.output),
+                },
+            )
+            return result
+        except Exception as e:
+            logger.error(
+                "Tool '%s' failed: %s",
+                tc.name,
+                str(e),
+                exc_info=True,
+                extra={
+                    "category": "error",
+                    "component": "tool",
+                    "context": f"subagent_tool:{tc.name}",
+                },
+            )
+            return ToolResult(error=f"Error executing {tc.name}: {e}")
+
+    def _tool_context_for_call(self) -> ToolContext:
+        if self.tool_context is not None:
+            return self.tool_context
+        project_dir = self._project_dir or Path.cwd()
+        return ToolContext(
+            session_id="subagent",
+            project_dir=project_dir,
+            permissions=None,
+            config=self._config,
+            subagent_pool=None,
+            working_dir=project_dir,
+            tool_registry=self.tool_registry,
+        )
+
+    @staticmethod
+    def _params_summary(params: dict) -> str:
+        params_str = str(params)
+        return params_str[:200] if len(params_str) > 200 else params_str
+
+    @staticmethod
+    def _get_tool_level(tool_name: str) -> int:
+        from myagent.permissions.controller import TOOL_LEVEL_MAP
+        return TOOL_LEVEL_MAP.get(tool_name, 3)
 
     async def _stream_llm_with_retry(
         self,

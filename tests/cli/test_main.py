@@ -73,6 +73,34 @@ async def test_startup_mcp_servers_uses_project_dir(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_startup_mcp_servers_supports_documented_mcpservers_key(
+    tmp_path, monkeypatch
+):
+    registry = MagicMock()
+    project_dir = tmp_path / "project"
+    mcp_dir = project_dir / ".myagent"
+    mcp_dir.mkdir(parents=True)
+    (mcp_dir / "mcp.json").write_text(
+        json.dumps({"mcpServers": {"doc-server": {"command": "doc-cmd"}}}),
+        encoding="utf-8",
+    )
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(cli_main.Path, "home", classmethod(lambda cls: home))
+
+    start_mock = AsyncMock(return_value=object())
+    monkeypatch.setattr(cli_main, "_start_single_mcp_server", start_mock)
+
+    clients = await cli_main._startup_mcp_servers(registry, project_dir)
+
+    assert len(clients) == 1
+    start_mock.assert_awaited_once_with(
+        "doc-server", {"command": "doc-cmd"}, registry
+    )
+
+
+@pytest.mark.asyncio
 async def test_startup_mcp_servers_project_overrides_user_server(
     tmp_path, monkeypatch
 ):
@@ -103,3 +131,52 @@ async def test_startup_mcp_servers_project_overrides_user_server(
     start_mock.assert_awaited_once_with(
         "same", {"command": "project-cmd"}, registry
     )
+
+
+@pytest.mark.asyncio
+async def test_startup_mcp_servers_project_mcpservers_override_and_append_user(
+    tmp_path, monkeypatch
+):
+    registry = MagicMock()
+    home = tmp_path / "home"
+    user_mcp = home / ".myagent"
+    user_mcp.mkdir(parents=True)
+    (user_mcp / "mcp.json").write_text(
+        json.dumps({
+            "mcpServers": {
+                "user-only": {"command": "user-only-cmd"},
+                "same": {"command": "user-cmd"},
+            }
+        }),
+        encoding="utf-8",
+    )
+
+    project_dir = tmp_path / "project"
+    project_mcp = project_dir / ".myagent"
+    project_mcp.mkdir(parents=True)
+    (project_mcp / "mcp.json").write_text(
+        json.dumps({
+            "mcpServers": {
+                "same": {"command": "project-cmd"},
+                "project-only": {"command": "project-only-cmd"},
+            }
+        }),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(cli_main.Path, "home", classmethod(lambda cls: home))
+
+    start_mock = AsyncMock(return_value=object())
+    monkeypatch.setattr(cli_main, "_start_single_mcp_server", start_mock)
+
+    await cli_main._startup_mcp_servers(registry, project_dir)
+
+    started = {
+        call.args[0]: call.args[1]
+        for call in start_mock.await_args_list
+    }
+    assert started == {
+        "user-only": {"command": "user-only-cmd"},
+        "same": {"command": "project-cmd"},
+        "project-only": {"command": "project-only-cmd"},
+    }

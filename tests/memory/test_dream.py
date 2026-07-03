@@ -10,6 +10,9 @@ from types import SimpleNamespace
 import pytest
 
 from myagent.memory.dream import DreamEngine, DreamResult, TranscriptFindings
+from myagent.memory.store import MemoryStore
+from myagent.tools.base import ToolResult
+from myagent.tools.builtin.memory_tools import MemoryWriteTool
 
 
 class TestDreamEngine:
@@ -42,6 +45,78 @@ class TestDreamEngine:
         assert result.log_path is not None
         assert result.log_path.exists()
         assert "Dream Log" in result.log_path.read_text()
+
+    @pytest.mark.asyncio
+    async def test_run_as_subagent_passes_memory_store_tool_context(self, tmp_path):
+        project_dir = tmp_path / "project"
+        memory_store = MemoryStore(
+            project_memory_dir=project_dir / ".myagent" / "memory",
+            user_memory_dir=tmp_path / "user-memory",
+        )
+
+        class FakeHandle:
+            async def wait(self):
+                return ToolResult(output="Memory actions completed")
+
+        class FakePool:
+            def __init__(self):
+                self.kwargs = None
+                self.tool_result = None
+
+            async def spawn(self, **kwargs):
+                self.kwargs = kwargs
+                ctx = kwargs.get("tool_context")
+                if ctx is not None:
+                    content = (
+                        "---\n"
+                        "name: dream-note\n"
+                        "description: Dream note\n"
+                        "metadata: {}\n"
+                        "---\n\n"
+                        "Remember to route dream memory writes through MemoryStore.\n"
+                    )
+                    self.tool_result = await MemoryWriteTool().execute(
+                        {
+                            "file_path": str(
+                                memory_store.project_dir / "dream-note.md"
+                            ),
+                            "content": content,
+                        },
+                        ctx,
+                    )
+                return FakeHandle()
+
+        pool = FakePool()
+        engine = DreamEngine(
+            state_dir=tmp_path / "state",
+            memory_store=memory_store,
+            subagent_pool=pool,
+        )
+
+        result = await engine.run(
+            session_store=SimpleNamespace(base_dir=tmp_path / "sessions")
+        )
+
+        assert pool.kwargs is not None
+        ctx = pool.kwargs.get("tool_context")
+        assert ctx is not None
+        assert ctx.memory_store is memory_store
+        assert pool.tool_result.error is None
+        assert memory_store.get_session_writes().created == ["dream-note"]
+        assert result.memories_created == 1
+        assert (memory_store.project_dir / "MEMORY.md").exists()
+
+    def test_dream_subagent_prompt_renders_json_summary_template(self, tmp_path):
+        engine = DreamEngine(state_dir=tmp_path)
+
+        prompt = engine._build_dream_subagent_prompt(
+            "No memories",
+            "No transcripts",
+        )
+
+        assert '"created"' in prompt
+        assert '"updated"' in prompt
+        assert '"deleted"' in prompt
 
     @pytest.mark.asyncio
     async def test_scan_transcripts_includes_old_unprocessed_transcript(self, tmp_path):

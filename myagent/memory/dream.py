@@ -6,7 +6,7 @@ import json
 import logging
 import time
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -50,12 +50,20 @@ class DreamEngine:
         state_dir: Path | None = None,
         subagent_pool=None,
         project_context=None,
+        tool_registry=None,
+        permissions=None,
+        project_dir: Path | None = None,
+        config_loader=None,
     ):
         self.config = config
         self.memory_store = memory_store
         self.state_dir = state_dir or Path.home() / ".myagent"
         self._state_file = self.state_dir / "last_dream.json"
         self._subagent_pool = subagent_pool
+        self._tool_registry = tool_registry
+        self._permissions = permissions
+        self._project_dir = project_dir
+        self._config_loader = config_loader
         # ProjectContext for cross-referencing memory facts against
         # detected environment (gap-15-04: inline factual error detection)
         self._project_context = project_context
@@ -233,11 +241,14 @@ class DreamEngine:
 
         # ── Spawn the sub-agent ──
         try:
+            tool_context = self._build_subagent_tool_context()
             handle = await self._subagent_pool.spawn(
                 prompt=prompt,
                 tools=["memory_write", "read", "glob"],  # Tools needed for memory ops
                 mode="Think High",
                 background=True,
+                tool_context=tool_context,
+                config=tool_context.config,
             )
             sub_result = await handle.wait()
         except Exception as e:
@@ -325,6 +336,83 @@ class DreamEngine:
         )
 
         return result
+
+    def _build_subagent_tool_context(self):
+        """Build the ToolContext passed to the dream sub-agent."""
+        from myagent.tools.base import ToolContext
+
+        base_context = getattr(self._subagent_pool, "_tool_context", None)
+        project_dir = self._infer_project_dir()
+        project_context = self._project_context or getattr(
+            base_context, "project_context", None
+        )
+        permissions = (
+            self._permissions
+            if self._permissions is not None
+            else getattr(base_context, "permissions", None)
+        )
+        config = getattr(base_context, "config", None)
+        if config is None:
+            config = self.config
+        tool_registry = (
+            self._tool_registry
+            if self._tool_registry is not None
+            else getattr(base_context, "tool_registry", None)
+        )
+        mcp_clients = (
+            getattr(tool_registry, "mcp_clients", None)
+            if tool_registry is not None
+            else getattr(base_context, "mcp_clients", None)
+        )
+
+        if base_context is not None:
+            return replace(
+                base_context,
+                session_id="dream",
+                project_dir=project_dir,
+                permissions=permissions,
+                config=config,
+                subagent_pool=self._subagent_pool,
+                working_dir=project_dir,
+                project_context=project_context,
+                config_loader=self._config_loader or getattr(
+                    base_context, "config_loader", None
+                ),
+                memory_store=self.memory_store or getattr(
+                    base_context, "memory_store", None
+                ),
+                tool_registry=tool_registry,
+                mcp_clients=mcp_clients,
+            )
+
+        return ToolContext(
+            session_id="dream",
+            project_dir=project_dir,
+            permissions=permissions,
+            config=config,
+            subagent_pool=self._subagent_pool,
+            working_dir=project_dir,
+            project_context=project_context,
+            config_loader=self._config_loader,
+            memory_store=self.memory_store,
+            tool_registry=tool_registry,
+            mcp_clients=mcp_clients,
+        )
+
+    def _infer_project_dir(self) -> Path:
+        if self._project_dir is not None:
+            return Path(self._project_dir)
+        memory_project_dir = getattr(self.memory_store, "project_dir", None)
+        if memory_project_dir is None:
+            return Path.cwd()
+
+        memory_project_dir = Path(memory_project_dir)
+        if (
+            memory_project_dir.name == "memory"
+            and memory_project_dir.parent.name == ".myagent"
+        ):
+            return memory_project_dir.parent.parent
+        return memory_project_dir
 
     async def _build_memory_summary(self) -> str:
         """Build a summary of all memories for the sub-agent prompt."""
@@ -560,11 +648,11 @@ summary block at the VERY END of your response, enclosed in a fenced JSON
 code block. This block is machine-parsed to count your operations:
 
 ```json
-{
+{{
   "created": <number of new memories created>,
   "updated": <number of existing memories updated>,
   "deleted": <number of memories deleted>
-}
+}}
 ```
 
 This JSON block must be the LAST thing in your response. Use actual counts,

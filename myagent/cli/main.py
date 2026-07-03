@@ -130,6 +130,20 @@ async def async_main(argv: list[str] | None = None) -> int:
         project_memory_dir=project_dir / ".myagent" / "memory",
         user_memory_dir=Path.home() / ".myagent" / "memory",
     )
+    from myagent.tools.base import ToolContext
+    subagent_pool._tool_context = ToolContext(
+        session_id="subagent-pool",
+        project_dir=project_dir,
+        permissions=permissions,
+        config=config,
+        subagent_pool=subagent_pool,
+        working_dir=project_dir,
+        project_context=project_ctx,
+        config_loader=loader,
+        memory_store=memory_store,
+        tool_registry=tool_registry,
+        mcp_clients=mcp_clients,
+    )
 
     from myagent.skills.registry import SkillRegistry
     skill_registry = SkillRegistry(project_dir=project_dir / ".myagent" / "skills")
@@ -155,6 +169,11 @@ async def async_main(argv: list[str] | None = None) -> int:
         memory_store=memory_store,
         state_dir=Path.home() / ".myagent",
         subagent_pool=subagent_pool,
+        project_context=project_ctx,
+        tool_registry=tool_registry,
+        permissions=permissions,
+        project_dir=project_dir,
+        config_loader=loader,
     )
     # Record session start time for hours-based dream trigger (gap-r12-06)
     dream_engine.touch_session_start()
@@ -438,7 +457,15 @@ async def _startup_mcp_servers(tool_registry, project_dir: Path) -> list:
             )
             continue
 
-        servers = data.get("servers", data) if isinstance(data, dict) else {}
+        if isinstance(data, dict):
+            if isinstance(data.get("mcpServers"), dict):
+                servers = data["mcpServers"]
+            elif isinstance(data.get("servers"), dict):
+                servers = data["servers"]
+            else:
+                servers = data
+        else:
+            servers = {}
         if isinstance(servers, dict):
             for name, server_cfg in servers.items():
                 server_configs[name] = server_cfg

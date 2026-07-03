@@ -5,7 +5,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from myagent.permissions.controller import PermissionResult
 from myagent.subagent.worker import SubAgentWorker
+from myagent.tools.base import ToolContext, ToolResult
 
 
 # ── Fake stream events (matching the duck-typing fallback) ──────────
@@ -94,6 +96,148 @@ class TestSubAgentWorker:
         assert "Got file contents" in result
         assert llm.complete.call_count == 2
         tool.execute.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_run_denies_tool_call_without_executing_tool(self, tmp_path):
+        gen1 = _async_gen([
+            FakeToolCall("write", "call-1", {"file_path": "x.py", "content": "x"}),
+            FakeDone(),
+        ])
+        gen2 = _async_gen([FakeTextDelta("Denied handled"), FakeDone()])
+        llm = MagicMock()
+        llm.complete = MagicMock(side_effect=[gen1, gen2])
+
+        tool = MagicMock()
+        tool.execute = AsyncMock(return_value=ToolResult(output="should not run"))
+        registry = MagicMock()
+        registry.get = MagicMock(return_value=tool)
+
+        permissions = MagicMock()
+        permissions.check.return_value = PermissionResult.DENY
+        permissions.confirm = AsyncMock(return_value=True)
+        ctx = ToolContext(
+            session_id="subagent",
+            project_dir=tmp_path,
+            permissions=permissions,
+            config=None,
+        )
+
+        worker = SubAgentWorker(
+            prompt="Write x.py",
+            tools=["write"],
+            llm=llm,
+            tool_registry=registry,
+            tool_context=ctx,
+        )
+
+        result = await worker.run()
+
+        assert "Denied handled" in result
+        permissions.check.assert_called_once_with(
+            "write",
+            level=1,
+            params={"file_path": "x.py", "content": "x"},
+        )
+        permissions.confirm.assert_not_called()
+        tool.execute.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_run_asks_permission_and_skips_tool_when_user_denies(self, tmp_path):
+        gen1 = _async_gen([
+            FakeToolCall("bash", "call-1", {"command": "pytest"}),
+            FakeDone(),
+        ])
+        gen2 = _async_gen([FakeTextDelta("User denial handled"), FakeDone()])
+        llm = MagicMock()
+        llm.complete = MagicMock(side_effect=[gen1, gen2])
+
+        tool = MagicMock()
+        tool.execute = AsyncMock(return_value=ToolResult(output="should not run"))
+        registry = MagicMock()
+        registry.get = MagicMock(return_value=tool)
+
+        permissions = MagicMock()
+        permissions.check.return_value = PermissionResult.ASK
+        permissions.confirm = AsyncMock(return_value=False)
+        ctx = ToolContext(
+            session_id="subagent",
+            project_dir=tmp_path,
+            permissions=permissions,
+            config=None,
+        )
+
+        worker = SubAgentWorker(
+            prompt="Run tests",
+            tools=["bash"],
+            llm=llm,
+            tool_registry=registry,
+            tool_context=ctx,
+        )
+
+        result = await worker.run()
+
+        assert "User denial handled" in result
+        permissions.check.assert_called_once_with(
+            "bash",
+            level=2,
+            params={"command": "pytest"},
+        )
+        permissions.confirm.assert_awaited_once_with("bash", {"command": "pytest"})
+        tool.execute.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_run_logs_successful_tool_execution_contract(
+        self, tmp_path, caplog
+    ):
+        gen1 = _async_gen([
+            FakeToolCall(
+                "write",
+                "call-1",
+                {"file_path": "x.py", "content": "x" * 250},
+            ),
+            FakeDone(),
+        ])
+        gen2 = _async_gen([FakeTextDelta("Write complete"), FakeDone()])
+        llm = MagicMock()
+        llm.complete = MagicMock(side_effect=[gen1, gen2])
+
+        tool = MagicMock()
+        tool.execute = AsyncMock(return_value=ToolResult(output="written"))
+        registry = MagicMock()
+        registry.get = MagicMock(return_value=tool)
+
+        permissions = MagicMock()
+        permissions.check.return_value = PermissionResult.ALLOW
+        permissions.confirm = AsyncMock(return_value=True)
+        ctx = ToolContext(
+            session_id="subagent",
+            project_dir=tmp_path,
+            permissions=permissions,
+            config=None,
+        )
+
+        caplog.set_level("INFO", logger="myagent.subagent")
+        worker = SubAgentWorker(
+            prompt="Write x.py",
+            tools=["write"],
+            llm=llm,
+            tool_registry=registry,
+            tool_context=ctx,
+        )
+
+        await worker.run()
+
+        tool_records = [
+            record for record in caplog.records
+            if getattr(record, "category", None) == "tool"
+            and getattr(record, "tool_name", None) == "write"
+        ]
+        assert tool_records
+        record = tool_records[-1]
+        assert record.permission_result == "allowed"
+        assert len(record.params_summary) <= 200
+        assert isinstance(record.duration_ms, float)
+        assert record.result_size_chars == len("written")
 
     @pytest.mark.asyncio
     async def test_run_interrupt_stops_immediately(self):

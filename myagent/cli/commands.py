@@ -122,7 +122,15 @@ class CommandDispatcher:
 
     async def _cmd_dream(self, args: str, ctx: CommandContext) -> CommandResult:
         if ctx.dream_engine:
-            result = await ctx.dream_engine.run()
+            session_store = None
+            if ctx.session_manager is not None:
+                session_store = getattr(ctx.session_manager, "session_store", None)
+            if session_store is None and ctx.engine is not None:
+                session_store = getattr(ctx.engine, "session_store", None)
+            if session_store is not None:
+                result = await ctx.dream_engine.run(session_store=session_store)
+            else:
+                result = await ctx.dream_engine.run()
             return CommandResult(output=f"Dream cycle completed. Log: {result.log_path}")
         return CommandResult(output="Dream engine not available.")
 
