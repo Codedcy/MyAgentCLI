@@ -102,9 +102,63 @@ tool usage limit."""
         self.memory_store = memory_store
         self.skill_registry = skill_registry
         self.config = config
-        # Session-scoped memory cache (gap-27): load once, reuse across turns
+        # Session-scoped memory cache (gap-27, gap-r6-06):
+        # - Caches recall results to avoid repeated semantic searches
+        # - Detects topic drift by comparing current input to cached key
+        # - Auto-expires after DRIFT_TURN_LIMIT turns to ensure freshness
         self._memory_cache: dict[str, list] = {}
         self._cache_key: str | None = None
+        self._turn_count_since_refresh: int = 0
+        self._recent_inputs: list[str] = []  # sliding window for drift detection
+
+    # Number of turns after which the cache auto-refreshes regardless of drift
+    _CACHE_TURN_LIMIT = 20
+    # Minimum keyword overlap ratio to consider the topic unchanged
+    _DRIFT_OVERLAP_THRESHOLD = 0.30
+
+    @staticmethod
+    def _tokenize_for_cache(text: str) -> set[str]:
+        """Extract significant lowercase words from text for cache/drift logic."""
+        import re
+        tokens = set()
+        for word in re.split(r'[\s,;:.!?()\[\]{}"\']+', text.lower()):
+            word = word.strip()
+            # Skip stop words and very short tokens
+            if len(word) < 3:
+                continue
+            if word in {'the', 'and', 'for', 'you', 'can', 'that', 'this',
+                        'with', 'have', 'from', 'are', 'not', 'but', 'all',
+                        'was', 'has', 'had', 'its', 'his', 'her', 'our',
+                        'will', 'would', 'could', 'should', 'been', 'being',
+                        'did', 'does', 'just', 'like', 'than', 'then', 'also',
+                        'into', 'over', 'such', 'only', 'very', 'much', 'some',
+                        '这些', '那些', '这个', '那个', '什么', '怎么', '为什么',
+                        'when', 'where', 'what', 'which', 'about', '他们',
+                        '我们', '你们', '它们', '因为', '所以', '但是', '虽然',
+                        '已经', '可以', '需要', '应该', '可能', '或者', '以及'}:
+                continue
+            tokens.add(word)
+        return tokens
+
+    def _detect_topic_drift(self, current_input: str) -> bool:
+        """Check if the current input represents a topic change from the cache key.
+
+        Uses keyword overlap ratio: if less than _DRIFT_OVERLAP_THRESHOLD of
+        significant words from the current input overlap with the cached key's
+        significant words, consider it a topic drift.
+        """
+        if not self._cache_key:
+            return True
+
+        current_tokens = self._tokenize_for_cache(current_input)
+        cached_tokens = self._tokenize_for_cache(self._cache_key)
+
+        if not current_tokens:
+            return False
+
+        overlap = len(current_tokens & cached_tokens)
+        ratio = overlap / len(current_tokens) if current_tokens else 0
+        return ratio < self._DRIFT_OVERLAP_THRESHOLD
 
     async def build(
         self,
@@ -118,20 +172,39 @@ tool usage limit."""
         # L3: Project context (spec §三 六层模型 L3)
         l3 = self._format_project_context(project_context)
 
-        # L4: Relevant memories — use session-scoped cache (gap-27)
-        # (spec §三 六层模型 L4)
+        # L4: Relevant memories — session-scoped cache with drift detection (gap-r6-06)
+        # (spec §三 六层模型 L4, §六 记忆生命周期)
         l4 = ""
         if self.memory_store:
             try:
-                # Use the initial input as cache key for the session
-                cache_key = self._cache_key or current_input[:100]
-                if self._memory_cache.get(cache_key) is not None:
-                    memories = self._memory_cache[cache_key]
-                else:
+                # Track recent inputs for drift detection
+                self._recent_inputs.append(current_input[:200])
+                if len(self._recent_inputs) > 5:
+                    self._recent_inputs = self._recent_inputs[-5:]
+
+                self._turn_count_since_refresh += 1
+                should_refresh = False
+
+                # Condition 1: No cache yet — initial load
+                if self._cache_key is None:
+                    should_refresh = True
+                # Condition 2: Turn limit exceeded — force refresh
+                elif self._turn_count_since_refresh >= self._CACHE_TURN_LIMIT:
+                    should_refresh = True
+                # Condition 3: Topic drift detected — keyword overlap too low
+                elif self._detect_topic_drift(current_input):
+                    should_refresh = True
+
+                if should_refresh:
+                    query = current_input[:200]
                     from myagent.memory.recall import recall
-                    memories = await recall(cache_key, self.memory_store, limit=10)
-                    self._memory_cache[cache_key] = memories
-                    self._cache_key = cache_key
+                    memories = await recall(query, self.memory_store, limit=10)
+                    self._memory_cache[query[:100]] = memories
+                    self._cache_key = query[:100]
+                    self._turn_count_since_refresh = 0
+                else:
+                    memories = self._memory_cache.get(self._cache_key, [])
+
                 l4 = self._format_memories(memories)
             except Exception:
                 pass
