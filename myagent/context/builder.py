@@ -61,7 +61,12 @@ class LLMRequest:
 class ContextBuilder:
     """Assembles six-layer context for LLM API calls."""
 
-    L0_SYSTEM_PROMPT = """You are MyAgent, a CLI-based AI assistant powered by DeepSeek V4 Pro.
+    # Base L0 system prompt template. {model_description} is dynamically
+    # populated at build time from the configured model name.
+    # (gap-17-05: replaced static hardcoded model name with dynamic template)
+    # Note: all literal curly braces in the template must be doubled
+    # so that str.format() processes only {model_description}.
+    _L0_TEMPLATE = """You are MyAgent, a CLI-based AI assistant powered by {model_description}.
 You operate in a ReAct loop: Think → Decide → Execute → Observe.
 You have access to tools for file operations, code search, shell execution,
 web access, sub-agent orchestration, and task tracking.
@@ -93,7 +98,7 @@ the very first line of your response, followed by your natural language reply.
 
 You may also use a virtual tool call `skill_invoke` to activate a skill from the
 Available Skills list (see below). Emit `tool_call(name="skill_invoke",
-params={"skill": "<name>"})` when you determine a listed skill matches the current
+params={{{{"skill"}}: "<name>"}})` when you determine a listed skill matches the current
 task. This tool call is intercepted by the engine and does not count against your
 tool usage limit."""
 
@@ -110,6 +115,38 @@ tool usage limit."""
         self._cache_key: str | None = None
         self._turn_count_since_refresh: int = 0
         self._recent_inputs: list[str] = []  # sliding window for drift detection
+
+    def _build_l0_system_prompt(self) -> str:
+        """Build the L0 system prompt with the configured model name (gap-17-05).
+
+        Dynamically populates the model description from the active config.
+        Uses the provider and model name if available, otherwise falls back
+        to a generic phrase. This ensures the system prompt never claims a
+        model identity that does not match the actual configured model.
+        """
+        model_desc = "a large language model"
+        if self.config is not None:
+            try:
+                model_cfg = getattr(self.config, "model", None)
+                if model_cfg is not None:
+                    provider = getattr(model_cfg, "provider", None) or ""
+                    model = getattr(model_cfg, "model", None) or ""
+                    if provider and model:
+                        # Build a human-readable model description
+                        # e.g. "DeepSeek V4 Pro", "GPT-4o", "Claude 3.5 Sonnet"
+                        if "-" in model and provider.lower() in model.lower():
+                            # Model string already contains provider (e.g. "deepseek-v4-pro")
+                            # Convert to title case with spaces
+                            parts = model.replace("-", " ").split()
+                            model_desc = " ".join(
+                                p.capitalize() if p.lower() != "pro" else "Pro"
+                                for p in parts
+                            )
+                        else:
+                            model_desc = f"{provider}/{model}"
+            except Exception:
+                pass
+        return self._L0_TEMPLATE.format(model_description=model_desc)
 
     # Number of turns after which the cache auto-refreshes regardless of drift
     _CACHE_TURN_LIMIT = 20
@@ -232,7 +269,7 @@ tool usage limit."""
         # Assemble system prompt: L0 + L3 + L4 + skill_content + L2 + goal_context
         # (spec §三: L0=system prompt, L3=project, L4=memory, L2=skills index;
         #  skill_content and goal_context are not layers but injected here)
-        system_parts = [self.L0_SYSTEM_PROMPT]
+        system_parts = [self._build_l0_system_prompt()]
         if l3:
             system_parts.append(f"## Project Context\n{l3}")
         if l4:
