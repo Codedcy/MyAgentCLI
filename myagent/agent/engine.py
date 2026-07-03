@@ -431,6 +431,17 @@ class AgentEngine:
                         skill = self.skill_registry.get(tc.params.get("skill", ""))
                         if skill:
                             active_skill = skill.name
+                            # Log skill invocation for metrics tracking (gap-20-05)
+                            logger.info(
+                                "Skill invoked: %s (source=model)",
+                                skill.name,
+                                extra={
+                                    "category": "skill",
+                                    "event": "invoked",
+                                    "skill_name": skill.name,
+                                    "invocation_source": "model",
+                                },
+                            )
                             # Rebuild context with skill content injected (gap-32)
                             if self.context_builder and user_input:
                                 history = session.get_recent_messages() if hasattr(session, 'get_recent_messages') else []

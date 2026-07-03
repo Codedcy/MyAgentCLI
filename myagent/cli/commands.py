@@ -62,6 +62,19 @@ class CommandDispatcher:
         if ctx.skill_registry:
             skill = ctx.skill_registry.get(cmd_name)
             if skill:
+                # Log skill invocation for metrics tracking (gap-20-05)
+                import logging
+                _log = logging.getLogger("myagent.agent")
+                _log.info(
+                    "Skill invoked: %s (source=slash_command)",
+                    skill.name,
+                    extra={
+                        "category": "skill",
+                        "event": "invoked",
+                        "skill_name": skill.name,
+                        "invocation_source": "slash_command",
+                    },
+                )
                 return CommandResult(
                     output=f"Skill invoked: /{cmd_name} — {skill.description}",
                     success=True,
