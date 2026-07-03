@@ -19,7 +19,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--list-sessions", action="store_true", help="List all sessions")
     parser.add_argument("--session", help="Session ID for export")
-    parser.add_argument("--export", help="Export format (markdown)", default="markdown")
+    parser.add_argument("--export", choices=["markdown", "json"], help="Export format (markdown or json)", default="markdown")
     parser.add_argument(
         "--mode",
         choices=["think-high", "think-max", "non-think"],
