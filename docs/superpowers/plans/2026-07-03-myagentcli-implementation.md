@@ -530,7 +530,9 @@ LogManager.setup()
   - Tool `execute()`: INFO with tool_name, params_summary, duration_ms, permission_result
   - `SubAgentPool.spawn()`: INFO subagent lifecycle events
   - `MCPClient`: INFO connection lifecycle, ERROR on disconnect
-  - All `except` blocks: ERROR with exception_type + traceback + context
+  - All `except` blocks: ERROR with exception_type + traceback + context + component
+- **Error component enum**: Error log `component` values are `llm`, `tool`, `agent`, `mcp`, `system`, `memory`, and `subagent`, aligned with the runtime logging categories and ownership boundaries.
+- **Expected fallback/control-flow noise**: The strict all-except exception logging contract records expected fallback/control-flow exceptions; future structured fields or filtering policy may reduce operator noise, but the current contract prioritizes auditability.
 
 **Log record schema (category-specific extras):**
 

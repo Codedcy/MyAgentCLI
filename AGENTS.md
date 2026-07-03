@@ -100,5 +100,5 @@ myagent/
   - **子Agent 生命周期** (`category="subagent"`): spawn/completed/failed/interrupted, prompt_summary, duration_ms
   - **ReAct 循环** (`category="agent"`): 每轮迭代的 iteration 计数, event 类型, tokens_used
   - **系统事件** (`category="system"`): startup, shutdown, config 加载
-  - **异常** (`category="error"`): 所有 except 块必须记录 exception_type + traceback + context（触发时的操作描述）+ component（llm/tool/agent/mcp）
+  - **异常** (`category="error"`): 所有 except 块必须记录 exception_type + traceback + context（触发时的操作描述）+ component（llm/tool/agent/mcp/system/memory/subagent；与现有日志 category 对齐：LLM、工具、Agent、MCP、系统、记忆、子Agent）
   - 禁止使用 `print()` 输出日志；CLI 层面向用户的输出通过 Rich/renderer 处理，内部事件通过 logging

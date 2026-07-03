@@ -4,17 +4,39 @@ from __future__ import annotations
 
 import ast
 import logging
+import re
 from pathlib import Path
 
 from myagent.config.loader import ConfigLoader
 
-
+REPO_ROOT = Path(__file__).resolve().parents[2]
 SOURCE_ROOT = Path(__file__).resolve().parents[2] / "myagent"
 ERROR_COMPONENTS = {"llm", "tool", "agent", "mcp", "system", "memory", "subagent"}
+ERROR_COMPONENT_DOCS = [
+    REPO_ROOT / "AGENTS.md",
+    REPO_ROOT / "docs" / "superpowers" / "specs" / "2026-07-02-myagentcli-design.md",
+]
+ERROR_COMPONENT_PATTERN = re.compile(
+    r"\b(" + "|".join(sorted(ERROR_COMPONENTS)) + r")\b"
+)
 
 
 def _python_files() -> list[Path]:
     return sorted(SOURCE_ROOT.rglob("*.py"))
+
+
+def _documented_error_component_enums(path: Path) -> list[tuple[int, set[str], str]]:
+    enums: list[tuple[int, set[str], str]] = []
+
+    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        if "component" not in line:
+            continue
+
+        components = set(ERROR_COMPONENT_PATTERN.findall(line))
+        if len(components) >= 4:
+            enums.append((line_number, components, line.strip()))
+
+    return enums
 
 
 def _location(path: Path, node: ast.AST) -> str:
@@ -134,6 +156,25 @@ def test_traceback_logging_uses_error_metadata() -> None:
                 missing.append(_location(path, call))
 
     assert missing == []
+
+
+def test_documented_error_components_match_static_guard() -> None:
+    mismatched: list[str] = []
+
+    for path in ERROR_COMPONENT_DOCS:
+        enums = _documented_error_component_enums(path)
+        if not enums:
+            mismatched.append(f"{path.relative_to(REPO_ROOT)}: missing documented component enum")
+            continue
+
+        for line_number, components, line in enums:
+            if components != ERROR_COMPONENTS:
+                mismatched.append(
+                    f"{path.relative_to(REPO_ROOT)}:{line_number}: "
+                    f"{sorted(components)} != {sorted(ERROR_COMPONENTS)} ({line})"
+                )
+
+    assert mismatched == []
 
 
 def test_malformed_agent_frontmatter_logs_structured_error(
