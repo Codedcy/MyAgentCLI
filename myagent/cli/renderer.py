@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 
@@ -16,6 +17,9 @@ class Renderer:
     - Done → final usage stats
     - Error → red panel
     """
+
+    def __init__(self, syntax_highlight: bool = True):
+        self._syntax_highlight = syntax_highlight
 
     def render_event(self, event: Any) -> Any:
         """Dispatch by event type name to the appropriate renderer."""
@@ -37,7 +41,48 @@ class Renderer:
 
     def _render_text(self, event):
         from rich.text import Text
-        return Text(event.content)
+        content = event.content
+
+        # G4: Syntax highlight fenced code blocks in output when enabled
+        if self._syntax_highlight and "```" in content:
+            return self._render_with_code_highlight(content)
+
+        return Text(content)
+
+    def _render_with_code_highlight(self, content: str):
+        """Render text with code blocks syntax-highlighted via Rich Syntax."""
+        from rich.console import RenderableType
+        from rich.text import Text
+        from rich.syntax import Syntax
+
+        # Split by fenced code blocks: ```lang\ncode\n```
+        pattern = re.compile(r'```(\w*)\n(.*?)```', re.DOTALL)
+        parts = []
+        last_end = 0
+
+        for m in pattern.finditer(content):
+            # Add text before this code block
+            before = content[last_end:m.start()]
+            if before:
+                parts.append(Text(before))
+
+            lang = m.group(1) or "text"
+            code = m.group(2)
+            try:
+                parts.append(Syntax(code, lang, theme="monokai", word_wrap=True))
+            except Exception:
+                # Fall back to plain text for unsupported languages
+                parts.append(Text(f"```{lang}\n{code}\n```"))
+            last_end = m.end()
+
+        # Add remaining text after last code block
+        remaining = content[last_end:]
+        if remaining:
+            parts.append(Text(remaining))
+
+        if len(parts) == 1:
+            return parts[0]
+        return parts  # Return list for Rich to render sequentially
 
     def _render_thinking(self, event):
         from rich.text import Text

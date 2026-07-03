@@ -196,11 +196,22 @@ class REPLEngine:
             )
             completer = SlashCompleter(skill_registry=skill_registry)
 
+            # Build lexer for syntax highlighting (G4)
+            lexer = None
+            if self._config and getattr(self._config.ui, "syntax_highlight", True):
+                try:
+                    from prompt_toolkit.lexers import PygmentsLexer
+                    from pygments.lexers.python import PythonLexer
+                    lexer = PygmentsLexer(PythonLexer)
+                except ImportError:
+                    pass  # Pygments not available; skip syntax highlighting
+
             session = PromptSession(
                 history=FileHistory(str(history_file)),
                 multiline=True,
                 key_bindings=kb,
                 completer=completer,
+                lexer=lexer,
             )
 
             while self._running:

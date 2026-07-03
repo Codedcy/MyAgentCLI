@@ -179,7 +179,7 @@ async def async_main(argv: list[str] | None = None) -> int:
     commands = CommandDispatcher()
 
     from myagent.cli.renderer import Renderer
-    renderer = Renderer()
+    renderer = Renderer(syntax_highlight=config.ui.syntax_highlight)
 
     # Wire status bar to sub-agent pool state via lifecycle callbacks (gap-r6-08)
     if status_bar:
