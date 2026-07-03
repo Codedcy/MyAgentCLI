@@ -103,11 +103,17 @@ class MemoryStore:
         f = found
         content = f.read_text(encoding="utf-8")
         fm = self._parse_frontmatter(content)
+        body = self._body(content)
+        metadata = fm.get("metadata", {})
+        # Extract [[wiki-style links]] from the body for cross-reference resolution
+        links = LINK_RE.findall(body)
+        if links:
+            metadata["links"] = links
         return MemoryFile(
             name=fm.get("name", f.stem),
             description=fm.get("description", ""),
-            metadata=fm.get("metadata", {}),
-            content=self._body(content),
+            metadata=metadata,
+            content=body,
             path=f,
         )
 

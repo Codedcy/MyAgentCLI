@@ -80,6 +80,10 @@ async def recall(
     embeddings for ranking. Falls back to TF-like keyword scoring
     otherwise.
 
+    After initial recall, follows [[wiki-style links]] in each recalled
+    memory to include linked (cross-referenced) memories in the result set.
+    Linked memories are appended after direct matches with lower priority.
+
     Args:
         query: The search query (usually current user input).
         store: MemoryStore to search.
@@ -104,15 +108,22 @@ async def recall(
     model = _get_embedding_model()
     if model is not None:
         try:
-            return await _semantic_recall(model, query, store, all_entries, limit)
+            results = await _semantic_recall(model, query, store, all_entries, limit)
         except Exception as e:
             logger.warning(
                 "Semantic recall failed, falling back to keyword: %s", e,
                 extra={"category": "memory", "exception_type": type(e).__name__},
             )
+            results = await _keyword_recall(query_tokens, store, all_entries, limit)
+    else:
+        # Fallback: keyword-based recall
+        results = await _keyword_recall(query_tokens, store, all_entries, limit)
 
-    # Fallback: keyword-based recall
-    return await _keyword_recall(query_tokens, store, all_entries, limit)
+    # Follow wiki links: for each recalled memory, resolve [[links]]
+    # and include linked memories in the result set (appended after direct matches).
+    results = await _resolve_cross_references(results, store, limit)
+
+    return results
 
 
 async def _semantic_recall(
@@ -175,3 +186,43 @@ async def _keyword_recall(
     # Sort by descending score, then by name for stability
     scored.sort(key=lambda x: (-x[0], x[1].name))
     return [mf for _, mf in scored[:limit]]
+
+
+async def _resolve_cross_references(
+    results: list[MemoryFile],
+    store: MemoryStore,
+    limit: int,
+) -> list[MemoryFile]:
+    """Follow [[wiki-style links]] in recalled memories to include linked memories.
+
+    For each directly recalled memory that has metadata["links"], look up
+    the linked memory names and include them in the result set. Linked
+    memories are appended after direct matches (lower priority).
+
+    Deduplication: if a linked memory is already in the direct results, it
+    is not added again.
+    """
+    direct_names = {mf.name for mf in results}
+    linked_names: set[str] = set()
+    linked_memories: list[MemoryFile] = []
+
+    # Collect all unique link targets from direct results
+    for mf in results:
+        links = mf.metadata.get("links", [])
+        if isinstance(links, list):
+            for link_name in links:
+                link_name = link_name.strip()
+                if link_name and link_name not in direct_names and link_name not in linked_names:
+                    linked_names.add(link_name)
+
+    # Resolve linked memories
+    slots_remaining = limit - len(results)
+    for link_name in linked_names:
+        if slots_remaining <= 0:
+            break
+        linked_mf = await store.read(link_name)
+        if linked_mf is not None:
+            linked_memories.append(linked_mf)
+            slots_remaining -= 1
+
+    return results + linked_memories
