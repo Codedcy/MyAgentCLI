@@ -227,7 +227,12 @@ class PermissionController:
     async def confirm(self, tool_name: str, params: dict | None = None) -> bool:
         """Interactive confirmation dialog. Returns True if user approves.
 
-        Non-TTY fallback returns True. No timeout — wait forever.
+        Non-TTY environments DENY by default (gap-20-07). Per spec §五:
+        "权限确认不设超时——一直等待用户明确响应". When no terminal is
+        available, we cannot obtain explicit user consent, so the operation
+        must be denied. Use --dangerously-skip-permissions for CI/CD.
+
+        No timeout — wait forever for user response in interactive mode.
         """
         params = params or {}
         level = self._get_level(tool_name)
@@ -235,14 +240,19 @@ class PermissionController:
         level_name = level_names.get(level, f"L{level}")
 
         # Non-interactive environment (tests, CI, piped stdin)
+        # gap-20-07: Deny instead of auto-allowing. The spec requires
+        # explicit user consent with no timeout. In non-TTY we cannot
+        # obtain consent, so we must deny. Use --dangerously-skip-permissions
+        # to bypass permission checks entirely in CI/CD.
         if not sys.stdin.isatty():
             logger.warning(
-                "Non-interactive environment — auto-allowing %s (level=%s)",
+                "Non-interactive environment — denying %s (level=%s). "
+                "Use --dangerously-skip-permissions for automated execution.",
                 tool_name,
                 level_name,
                 extra={"category": "system"},
             )
-            return True
+            return False
 
         # Rich may not be installed — graceful fallback
         try:
