@@ -92,7 +92,13 @@ AgentEvent = (
 
 
 class AgentEngine:
-    TOOL_RESULT_MAX_CHARS = 5000
+
+    @property
+    def _tool_result_max_chars(self) -> int:
+        """Read tool_result_max_chars from config, falling back to default 5000."""
+        if self.config and hasattr(self.config, 'tools'):
+            return getattr(self.config.tools, 'tool_result_max_chars', 5000)
+        return 5000
 
     def __init__(
         self,
@@ -826,7 +832,7 @@ class AgentEngine:
             )
 
             # Summarize large results via sub-agent; fall back to truncation
-            if len(result.output) > self.TOOL_RESULT_MAX_CHARS:
+            if len(result.output) > self._tool_result_max_chars:
                 result = await self._summarize_via_subagent(result, tc.name, call_id=tc.id)
 
             # Persist tool call to session store (gap-14)
@@ -903,7 +909,7 @@ class AgentEngine:
         return ToolResult(
             output=(
                 f"[Truncated from {len(result.output)} chars]\n"
-                f"{result.output[:self.TOOL_RESULT_MAX_CHARS]}"
+                f"{result.output[:self._tool_result_max_chars]}"
             ),
             error=result.error,
             metadata=result.metadata,
