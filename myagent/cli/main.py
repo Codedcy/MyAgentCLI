@@ -294,15 +294,12 @@ def _register_builtin_tools(registry) -> None:
     from myagent.tools.builtin.session_tools import TaskCreateTool, TaskUpdateTool
     from myagent.tools.builtin.memory_tools import MemoryWriteTool
     from myagent.tools.builtin.web_tools import WebFetchTool, WebSearchTool
-    from myagent.tools.builtin.config_tools import ConfigSetTool
-
     for tool_cls in [
         ReadTool, WriteTool, EditTool, GlobTool,
         GrepTool, BashTool,
         SpawnSubagentTool, SendMessageTool,
         TaskCreateTool, TaskUpdateTool,
         MemoryWriteTool, WebFetchTool, WebSearchTool,
-        ConfigSetTool,
     ]:
         registry.register(tool_cls())
 
