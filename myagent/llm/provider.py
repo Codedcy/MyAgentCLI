@@ -237,14 +237,18 @@ class LLMProvider:
                 # Log request + write prompt files (gap-10)
                 t0 = time.monotonic()
                 logger.info(
-                    "LLM request: model=%s attempt=%d messages=%d tokens_est=%d",
+                    "LLM request: model=%s attempt=%d messages=%d tokens_est=%d tools=%d",
                     model_name, attempt + 1, len(messages), estimated_tokens,
+                    len(tools) if tools else 0,
                     extra={
                         "category": "llm",
                         "event": "request",
                         "model": model_name,
+                        "thinking_mode": thinking,
                         "messages_count": len(messages),
                         "estimated_tokens": estimated_tokens,
+                        "tools_count": len(tools) if tools else 0,
+                        "stream": True,
                         "retry_count": attempt,
                     },
                 )
