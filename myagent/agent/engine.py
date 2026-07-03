@@ -170,7 +170,11 @@ class AgentEngine:
 
         while iteration < self.MAX_ITERATIONS:
             iteration += 1
-            logger.info("ReAct iteration %d", iteration, extra={"category": "agent"})
+            tokens_this_turn = 0  # accumulated from LLM Done events this iteration
+            logger.info(
+                "ReAct iteration %d", iteration,
+                extra={"category": "agent", "tokens_used_this_turn": tokens_this_turn},
+            )
 
             # ── Context compression check (gap-01, gap-25) ──────
             if self.compression:
@@ -238,7 +242,11 @@ class AgentEngine:
                         yield ThinkingChunk(content=getattr(event, "content", ""))
                     elif kind == "tool_call":
                         tool_calls_in_turn.append(event)
-                    # kind == "done": stream is concluding — fall through
+                    elif kind == "done":
+                        # Capture token usage from Done event for per-turn logging
+                        usage = getattr(event, "usage", None)
+                        if usage:
+                            tokens_this_turn = getattr(usage, "total_tokens", 0)
             except Exception as e:
                 # gap-06: preserve partial content on stream interruption
                 partial_text = "".join(text_buffer)
@@ -335,6 +343,14 @@ class AgentEngine:
                     })
 
                 # Loop again — LLM will see tool results in next iteration
+                logger.info(
+                    "ReAct iteration %d complete (tool calls)", iteration,
+                    extra={
+                        "category": "agent",
+                        "event": "tool_call",
+                        "tokens_used_this_turn": tokens_this_turn,
+                    },
+                )
                 continue
 
             # ── No tool calls — text response complete ───────────
@@ -360,6 +376,14 @@ class AgentEngine:
                             "the corrected approach. What would you like to do differently?"
                         ),
                     })
+                    logger.info(
+                        "ReAct iteration %d complete (correct)", iteration,
+                        extra={
+                            "category": "agent",
+                            "event": "correct",
+                            "tokens_used_this_turn": tokens_this_turn,
+                        },
+                    )
                     continue
                 elif intent == "insert":
                     # Acknowledge new sub-task and continue
@@ -370,6 +394,14 @@ class AgentEngine:
                             "you mentioned, then continue with the original work."
                         ),
                     })
+                    logger.info(
+                        "ReAct iteration %d complete (insert)", iteration,
+                        extra={
+                            "category": "agent",
+                            "event": "insert",
+                            "tokens_used_this_turn": tokens_this_turn,
+                        },
+                    )
                     continue
 
             # Detect AskUserQuestion — stop this turn; wait for user reply
@@ -393,9 +425,25 @@ class AgentEngine:
                 if not goal_check.achieved:
                     # Inject feedback and re-enter the loop
                     self._continue_with_feedback(goal_check, messages)
+                    logger.info(
+                        "ReAct iteration %d complete (goal not achieved)", iteration,
+                        extra={
+                            "category": "agent",
+                            "event": "goal_continue",
+                            "tokens_used_this_turn": tokens_this_turn,
+                        },
+                    )
                     continue
 
             # Goal achieved (or no goal set) — we are done
+            logger.info(
+                "ReAct iteration %d complete (done)", iteration,
+                extra={
+                    "category": "agent",
+                    "event": "done",
+                    "tokens_used_this_turn": tokens_this_turn,
+                },
+            )
             yield Done()
             return
 
