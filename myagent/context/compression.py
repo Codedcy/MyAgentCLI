@@ -45,10 +45,22 @@ class CompressionEngine:
         if session_dir is not None:
             self._session_dir = _Path(session_dir)
 
+    @staticmethod
+    def _count_conversation_messages(messages: list[Message]) -> int:
+        """Count non-system messages (actual conversation rounds).
+
+        System messages (the system prompt) are metadata injected by the
+        engine and should not count toward the minimum_messages debounce
+        guard (gap-r14-05). The spec's "最少 10 轮消息" refers to actual
+        conversation rounds, not including system prompts.
+        """
+        return sum(1 for m in messages if m.role != "system")
+
     async def compact(
         self, messages: list[Message], current_usage_pct: float
     ) -> CompactResult:
-        if self.config and len(messages) < self.config.minimum_messages:
+        conv_count = self._count_conversation_messages(messages)
+        if self.config and conv_count < self.config.minimum_messages:
             return CompactResult(messages=messages, usage_after=current_usage_pct, layers_applied=[])
 
         # ── Save original state for debounce rollback ──────────
@@ -208,7 +220,8 @@ class CompressionEngine:
         if not self.llm or self._layer3_failures >= 3:
             return messages
 
-        if len(messages) < 10:
+        # Count actual conversation messages (exclude system prompts, gap-r14-05)
+        if self._count_conversation_messages(messages) < 10:
             return messages
 
         # Take oldest 60% of messages, summarize them
