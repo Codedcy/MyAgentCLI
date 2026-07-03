@@ -49,12 +49,16 @@ class DreamEngine:
         memory_store=None,
         state_dir: Path | None = None,
         subagent_pool=None,
+        project_context=None,
     ):
         self.config = config
         self.memory_store = memory_store
         self.state_dir = state_dir or Path.home() / ".myagent"
         self._state_file = self.state_dir / "last_dream.json"
         self._subagent_pool = subagent_pool
+        # ProjectContext for cross-referencing memory facts against
+        # detected environment (gap-15-04: inline factual error detection)
+        self._project_context = project_context
 
     def should_run(self, session_rounds: int) -> bool:
         if self.config and not self.config.enabled:
@@ -482,6 +486,19 @@ Do NOT interact with project code files — only memory files."""
                 # gap-2-02: Merge contradictory memories — keep newer, delete older
                 await self._merge_contradictions(contradictions, all_memories, result, actions)
 
+            # ── 5b. Cross-reference memory facts against detected project
+            #        conventions (gap-15-04: factual error detection in single files) ──
+            factual_errors = self._check_factual_errors(all_memories)
+            if factual_errors:
+                analysis_sections.append("")
+                analysis_sections.append("### Factual Discrepancies (vs Detected Environment)")
+                analysis_sections.append(
+                    "The following memories contain statements that may conflict "
+                    "with the project environment detected at startup:"
+                )
+                for fe in factual_errors:
+                    analysis_sections.append(f"- {fe}")
+
             # ── 6. Identify and DELETE stale memories (gap-2-13, > 30 days) ──
             stale_count = 0
             stale_to_delete: list[str] = []
@@ -875,6 +892,150 @@ Do NOT interact with project code files — only memory files."""
                                 )
 
         return contradictions[:5]  # Limit to top 5
+
+    def _check_factual_errors(self, all_memories: list) -> list[str]:
+        """Cross-reference individual memory content against detected project conventions.
+
+        The inline dream path previously could only detect contradictions between
+        pairs of memories. This method adds the ability to flag potentially
+        incorrect facts within a single memory file by comparing its content
+        against the project environment detected at startup (gap-15-04).
+
+        Checks performed:
+        - Python version: memory claims a version that conflicts with detected version
+        - Package manager: memory references a different package manager
+        - Linter: memory references a linter not detected in the project
+        - Test framework: memory references a framework not detected
+
+        Returns:
+            List of human-readable discrepancy descriptions for the dream log.
+            Does NOT modify memory files directly — the sub-agent path handles
+            actual corrections via LLM reasoning.
+        """
+        if self._project_context is None:
+            return []
+
+        ctx = self._project_context
+        errors: list[str] = []
+
+        import re
+
+        # Build a map of detected facts from the project context
+        detected_facts: dict[str, str | None] = {
+            "python_version": getattr(ctx, "python_version", None),
+            "package_manager": getattr(ctx, "package_manager", None),
+            "linter": getattr(ctx, "linter", None),
+            "test_framework": getattr(ctx, "test_framework", None),
+            "build_system": getattr(ctx, "build_system", None),
+        }
+
+        for mf, _ in all_memories:
+            content_lower = mf.content.lower()
+
+            # ── Python version check ──
+            if detected_facts.get("python_version"):
+                detected_ver = detected_facts["python_version"]
+                # Look for patterns like "Python 3.8", "python 3.12", "3.8+"
+                version_matches = re.findall(
+                    r'(?:python\s*)?(\d+\.\d+)(?:\+)?',
+                    content_lower,
+                )
+                for vm in version_matches:
+                    # Only flag if a specific version is mentioned that differs
+                    # from detected (ignore generic references like "3.x")
+                    if vm != detected_ver and vm.count(".") == 1:
+                        errors.append(
+                            f"`{mf.name}` mentions Python {vm}, "
+                            f"but detected Python version is {detected_ver}"
+                        )
+                        break  # One discrepancy per memory is enough
+
+            # ── Package manager check ──
+            if detected_facts.get("package_manager"):
+                detected_pm = detected_facts["package_manager"]
+                # Check if memory recommends a different package manager
+                pm_alternatives = {
+                    "uv": ["pip", "poetry", "pipenv"],
+                    "pip": ["uv", "poetry", "pipenv"],
+                    "poetry": ["uv", "pip", "pipenv"],
+                    "npm": ["yarn", "pnpm"],
+                    "yarn": ["npm", "pnpm"],
+                    "pnpm": ["npm", "yarn"],
+                }
+                alternatives = pm_alternatives.get(detected_pm, [])
+                for alt in alternatives:
+                    # Match the alternative as a whole word (not part of another word)
+                    if re.search(r'\b' + re.escape(alt) + r'\b', content_lower):
+                        if f"use {alt}" in content_lower or f"using {alt}" in content_lower or f"with {alt}" in content_lower:
+                            errors.append(
+                                f"`{mf.name}` references `{alt}` as package manager, "
+                                f"but the project uses `{detected_pm}`"
+                            )
+                            break
+
+            # ── Linter check ──
+            if detected_facts.get("linter"):
+                detected_linter = detected_facts["linter"]
+                linter_alternatives = {
+                    "ruff": ["flake8", "pylint", "black", "isort"],
+                    "flake8": ["ruff", "pylint"],
+                    "eslint": ["prettier", "tslint"],
+                }
+                alternatives = linter_alternatives.get(detected_linter, [])
+                for alt in alternatives:
+                    if re.search(r'\b' + re.escape(alt) + r'\b', content_lower):
+                        if any(phrase in content_lower for phrase in [
+                            f"use {alt}", f"using {alt}", f"run {alt}",
+                            f"with {alt}", f"linter is {alt}",
+                        ]):
+                            errors.append(
+                                f"`{mf.name}` references `{alt}` as linter, "
+                                f"but the project uses `{detected_linter}`"
+                            )
+                            break
+
+            # ── Test framework check ──
+            if detected_facts.get("test_framework"):
+                detected_tf = detected_facts["test_framework"]
+                tf_alternatives = {
+                    "pytest": ["unittest", "nose", "nose2"],
+                    "unittest": ["pytest", "nose"],
+                    "jest": ["mocha", "ava", "jasmine"],
+                }
+                alternatives = tf_alternatives.get(detected_tf, [])
+                for alt in alternatives:
+                    if re.search(r'\b' + re.escape(alt) + r'\b', content_lower):
+                        if any(phrase in content_lower for phrase in [
+                            f"use {alt}", f"using {alt}", f"run {alt}",
+                            f"with {alt}", f"tests? with {alt}",
+                        ]):
+                            errors.append(
+                                f"`{mf.name}` references `{alt}` as test framework, "
+                                f"but the project uses `{detected_tf}`"
+                            )
+                            break
+
+            # ── Build system check ──
+            if detected_facts.get("build_system"):
+                detected_bs = detected_facts["build_system"]
+                bs_alternatives = {
+                    "make": ["cmake", "bazel", "gradle"],
+                    "pyproject": ["setuptools", "distutils"],
+                    "npm": ["grunt", "gulp", "webpack"],
+                }
+                alternatives = bs_alternatives.get(detected_bs, [])
+                for alt in alternatives:
+                    if re.search(r'\b' + re.escape(alt) + r'\b', content_lower):
+                        if any(phrase in content_lower for phrase in [
+                            f"use {alt}", f"using {alt}", f"build with {alt}",
+                        ]):
+                            errors.append(
+                                f"`{mf.name}` references `{alt}` as build system, "
+                                f"but the project uses `{detected_bs}`"
+                            )
+                            break
+
+        return errors[:10]  # Limit to top 10
 
     async def _merge_contradictions(
         self, contradictions: list[str], all_memories: list,
