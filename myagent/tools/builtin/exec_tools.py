@@ -42,7 +42,11 @@ class BashTool:
 
     async def execute(self, params: dict, context: ToolContext) -> ToolResult:
         command = params["command"]
-        timeout_ms = params.get("timeout", 120000)  # default 120s
+        # Read config timeout if available, fall back to hardcoded 120000ms (gap-13)
+        config_timeout_ms = 120000
+        if context.config and hasattr(context.config, 'tools'):
+            config_timeout_ms = context.config.tools.shell_timeout_seconds * 1000
+        timeout_ms = params.get("timeout", config_timeout_ms)
         run_in_background = params.get("run_in_background", False)
         dangerously_disable_sandbox = params.get("dangerouslyDisableSandbox", False)
 
