@@ -154,14 +154,37 @@ class DreamEngine:
             result.memories_updated = 0
             result.memories_deleted = 0
         else:
-            # Count memory operations mentioned in the sub-agent output
-            import re
-            created = len(re.findall(r'(?:created?|wrote?|新增|创建)\s+(?:memory|记忆)', analysis_text, re.IGNORECASE))
-            updated = len(re.findall(r'(?:updated?|merged?|合并|更新)\s+(?:memory|记忆)', analysis_text, re.IGNORECASE))
-            deleted = len(re.findall(r'(?:deleted?|removed?|删除|清理)\s+(?:memory|记忆)', analysis_text, re.IGNORECASE))
-            result.memories_created = created
-            result.memories_updated = updated
-            result.memories_deleted = deleted
+            # Primary: parse structured JSON summary block from sub-agent output (gap-16-04)
+            parsed = self._parse_dream_json_summary(analysis_text)
+            if parsed:
+                result.memories_created = parsed.get("created", 0)
+                result.memories_updated = parsed.get("updated", 0)
+                result.memories_deleted = parsed.get("deleted", 0)
+            else:
+                # Fallback 1: introspect memory_store session writes for actual counts
+                session_counts = self._count_from_session_writes()
+                if session_counts:
+                    result.memories_created = session_counts.get("created", 0)
+                    result.memories_updated = session_counts.get("updated", 0)
+                    result.memories_deleted = session_counts.get("deleted", 0)
+                else:
+                    # Fallback 2: regex-based counting on NL output (legacy)
+                    import re
+                    created = len(re.findall(
+                        r'(?:created?|wrote?|新增|创建)\s+(?:memory|记忆)',
+                        analysis_text, re.IGNORECASE,
+                    ))
+                    updated = len(re.findall(
+                        r'(?:updated?|merged?|合并|更新)\s+(?:memory|记忆)',
+                        analysis_text, re.IGNORECASE,
+                    ))
+                    deleted = len(re.findall(
+                        r'(?:deleted?|removed?|删除|清理)\s+(?:memory|记忆)',
+                        analysis_text, re.IGNORECASE,
+                    ))
+                    result.memories_created = created
+                    result.memories_updated = updated
+                    result.memories_deleted = deleted
 
         # ── Write dream log ──
         log_lines = [
@@ -331,6 +354,21 @@ Note the most frequently discussed topics in recent sessions.
 
 First, write a clear analysis section covering each of the 6 areas above.
 Then execute memory_write for any concrete actions needed.
+
+After ALL your analysis and memory operations, you MUST append a structured
+summary block at the VERY END of your response, enclosed in a fenced JSON
+code block. This block is machine-parsed to count your operations:
+
+```json
+{
+  "created": <number of new memories created>,
+  "updated": <number of existing memories updated>,
+  "deleted": <number of memories deleted>
+}
+```
+
+This JSON block must be the LAST thing in your response. Use actual counts,
+not estimates. Even if you created 0 memories, include the block with 0 values.
 
 Do NOT ask questions or wait for confirmation. This runs silently in background.
 Do NOT interact with project code files — only memory files."""
@@ -1201,6 +1239,65 @@ Do NOT interact with project code files — only memory files."""
             except Exception:
                 logger.warning("Dream: failed to create 'frequent-topics' memory", exc_info=True,
                                extra={"category": "system"})
+
+    @staticmethod
+    def _parse_dream_json_summary(text: str) -> dict | None:
+        """Parse the structured JSON summary block from sub-agent output.
+
+        The sub-agent is instructed to append a fenced JSON block at the very
+        end of its response:
+        ```json
+        {"created": N, "updated": N, "deleted": N}
+        ```
+
+        Returns the parsed dict or None if no valid block is found.
+        """
+        import re as _re
+        # Find the last fenced JSON block in the text
+        # Pattern: ```json\n{...}\n```
+        json_blocks = list(_re.finditer(
+            r'```json\s*\n(.*?)\n\s*```', text, _re.DOTALL | _re.IGNORECASE,
+        ))
+        if not json_blocks:
+            # Also try without json tag
+            json_blocks = list(_re.finditer(
+                r'```\s*\n(\{.*?"created".*?\})\s*\n\s*```', text, _re.DOTALL,
+            ))
+        if not json_blocks:
+            return None
+
+        # Try each block from last to first
+        for match in reversed(json_blocks):
+            try:
+                data = json.loads(match.group(1).strip())
+                if isinstance(data, dict) and "created" in data:
+                    return {
+                        "created": int(data.get("created", 0)),
+                        "updated": int(data.get("updated", 0)),
+                        "deleted": int(data.get("deleted", 0)),
+                    }
+            except (json.JSONDecodeError, ValueError, TypeError):
+                continue
+        return None
+
+    def _count_from_session_writes(self) -> dict | None:
+        """Get operation counts from memory_store session write log.
+
+        Introspects the memory store's session-level tracking of writes
+        to determine actual memory operations performed by the sub-agent.
+        Returns None if memory_store is unavailable.
+        """
+        if self.memory_store is None:
+            return None
+        try:
+            session_writes = self.memory_store.get_session_writes()
+            return {
+                "created": len(session_writes.created),
+                "updated": len(session_writes.updated),
+                "deleted": len(session_writes.deleted),
+            }
+        except Exception:
+            return None
 
     def _load_state(self) -> dict:
         if self._state_file.exists():
