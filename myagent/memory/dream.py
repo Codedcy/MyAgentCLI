@@ -171,20 +171,44 @@ class DreamEngine:
                 analysis_sections.append("### Contradictions Detected")
                 for c in contradictions:
                     analysis_sections.append(f"- {c}")
+                # gap-2-02: Merge contradictory memories — keep newer, delete older
+                await self._merge_contradictions(contradictions, all_memories, result, actions)
 
-            # ── 6. Identify stale memories (not accessed in > 30 days) ──
+            # ── 6. Identify and DELETE stale memories (gap-2-13, > 30 days) ──
             stale_count = 0
+            stale_to_delete: list[str] = []
             for mf, mtime in all_memories:
                 age_days = (time.time() - mtime) / 86400
                 if age_days > 30 and len(mf.content.strip()) >= 20:
                     analysis_sections.append(
                         f"- Stale memory: `{mf.name}` (last modified {age_days:.0f} days ago)"
                     )
+                    stale_to_delete.append(mf.name)
                     stale_count += 1
+
+            for name in stale_to_delete:
+                try:
+                    await self.memory_store.delete(name)
+                    actions.append(f"- Deleted stale memory: `{name}` (> 30 days)")
+                    result.memories_deleted += 1
+                    logger.info(
+                        "Dream: deleted stale memory '%s'", name,
+                        extra={"category": "system"},
+                    )
+                except Exception:
+                    logger.warning(
+                        "Dream: failed to delete stale memory '%s'", name, exc_info=True
+                    )
+
             if stale_count == 0:
                 analysis_sections.append("")
                 analysis_sections.append("### No Stale Memories")
                 analysis_sections.append("All memories have been accessed within the last 30 days.")
+
+            # ── 6b. Create memories from transcript patterns (gap-2-02) ──
+            await self._create_memories_from_patterns(
+                transcript_findings, result, actions, analysis_sections
+            )
 
         # ── 7. Write dream log with narrative analysis (gap-35) ──
         log_lines = [f"# Dream Log - {today}", ""]
@@ -368,6 +392,126 @@ class DreamEngine:
                         )
 
         return contradictions[:5]  # Limit to top 5
+
+    async def _merge_contradictions(
+        self, contradictions: list[str], all_memories: list,
+        result: DreamResult, actions: list[str],
+    ) -> None:
+        """Merge contradictory memories: keep the newer one, delete the older (gap-2-02)."""
+        # Extract conflicting name pairs from contradiction strings
+        import re
+        name_pattern = re.compile(r'`([^`]+)`')
+
+        processed: set[str] = set()
+        for c_text in contradictions:
+            names = name_pattern.findall(c_text)
+            if len(names) < 2:
+                continue
+            # Sort pair for consistent handling
+            pair = tuple(sorted(names[:2]))
+            if pair in processed:
+                continue
+            processed.add(pair)
+
+            # Find the actual memory files for these names
+            name_to_entry: dict[str, tuple] = {}
+            for mf, mtime in all_memories:
+                if mf.name in pair and mf.name not in name_to_entry:
+                    name_to_entry[mf.name] = (mf, mtime)
+
+            if len(name_to_entry) < 2:
+                continue
+
+            entries = list(name_to_entry.values())
+            entries.sort(key=lambda x: x[1], reverse=True)
+            keeper, keeper_mtime = entries[0]
+            older, older_mtime = entries[1]
+
+            # Update the keeper's content to note the resolution
+            try:
+                resolution_note = (
+                    f"\n\n**Resolved contradiction (dream cycle):** Previously conflicted "
+                    f"with `{older.name}`. The newer memory (`{keeper.name}`) is kept."
+                )
+                updated_content = keeper.content + resolution_note
+                await self.memory_store.write(
+                    name=keeper.name,
+                    content=updated_content,
+                    description=keeper.description,
+                )
+                result.memories_updated += 1
+                actions.append(
+                    f"- Updated `{keeper.name}` to resolve contradiction with `{older.name}`"
+                )
+                logger.info(
+                    "Dream: resolved contradiction — updated '%s', kept newer",
+                    keeper.name,
+                    extra={"category": "system"},
+                )
+            except Exception:
+                logger.warning(
+                    "Dream: failed to update '%s' for contradiction resolution",
+                    keeper.name, exc_info=True,
+                )
+
+            # Delete the older memory
+            try:
+                await self.memory_store.delete(older.name)
+                actions.append(
+                    f"- Deleted `{older.name}` (older duplicate from contradiction with `{keeper.name}`)"
+                )
+                result.memories_deleted += 1
+            except Exception:
+                logger.warning(
+                    "Dream: failed to delete older memory '%s'", older.name, exc_info=True
+                )
+
+    async def _create_memories_from_patterns(
+        self, findings: list[str], result: DreamResult,
+        actions: list[str], analysis_sections: list[str],
+    ) -> None:
+        """Create new memory files from detected patterns in transcripts (gap-2-02)."""
+        if not findings or not self.memory_store:
+            return
+
+        for finding in findings:
+            # Extract meaningful patterns to create memories
+            if "corrections" in finding.lower() and "detected" in finding.lower():
+                try:
+                    await self.memory_store.write(
+                        name="common-corrections",
+                        content=(
+                            "This project has patterns of repeated corrections across sessions. "
+                            "Common issues include: approach corrections, naming fixes, and style adjustments. "
+                            "Consider reviewing the project conventions before starting new work.\n\n"
+                            f"**Dream finding:** {finding}"
+                        ),
+                        description="Common correction patterns detected in recent sessions",
+                    )
+                    result.memories_created += 1
+                    actions.append("- Created `common-corrections` memory from transcript patterns")
+                    logger.info(
+                        "Dream: created 'common-corrections' memory from transcript patterns",
+                        extra={"category": "system"},
+                    )
+                except Exception:
+                    logger.warning("Dream: failed to create 'common-corrections' memory", exc_info=True)
+
+            if "topics" in finding.lower() and ":" in finding:
+                try:
+                    await self.memory_store.write(
+                        name="frequent-topics",
+                        content=(
+                            "The most frequently discussed topics in recent sessions are "
+                            "recorded here for context awareness.\n\n"
+                            f"**Dream finding:** {finding}"
+                        ),
+                        description="Frequently discussed topics across recent sessions",
+                    )
+                    result.memories_created += 1
+                    actions.append("- Created `frequent-topics` memory from transcript topics")
+                except Exception:
+                    logger.warning("Dream: failed to create 'frequent-topics' memory", exc_info=True)
 
     def _load_state(self) -> dict:
         if self._state_file.exists():
