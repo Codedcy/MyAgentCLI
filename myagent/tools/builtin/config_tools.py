@@ -6,9 +6,12 @@ Design doc reference: §九 配置系统 — Layer 2 (runtime overrides)
 from __future__ import annotations
 
 import dataclasses
-from typing import Any, get_type_hints
+import logging
+from typing import get_type_hints
 
 from myagent.tools.base import ToolContext, ToolResult
+
+logger = logging.getLogger("myagent.tools.config")
 
 
 def _derive_valid_keys(cls=None, prefix: str = "") -> set[str]:
@@ -33,6 +36,14 @@ def _derive_valid_keys(cls=None, prefix: str = "") -> set[str]:
     try:
         hints = get_type_hints(cls)
     except Exception:
+        logger.exception(
+            "Failed to derive config key type hints",
+            extra={
+                "category": "error",
+                "component": "tool",
+                "context": "config_set.derive_valid_keys",
+            },
+        )
         return keys
 
     for field in dataclasses.fields(cls):
@@ -68,6 +79,14 @@ def _derive_type_map(cls=None, prefix: str = "") -> dict[str, type]:
     try:
         hints = get_type_hints(cls)
     except Exception:
+        logger.exception(
+            "Failed to derive config type map",
+            extra={
+                "category": "error",
+                "component": "tool",
+                "context": "config_set.derive_type_map",
+            },
+        )
         return type_map
 
     for field in dataclasses.fields(cls):
@@ -176,7 +195,7 @@ class ConfigSetTool:
             # Validate type coercion from the schema-derived type map
             validated = self._validate_value(key, value)
 
-            updated_config = config_loader.apply_runtime_override(key, validated)
+            config_loader.apply_runtime_override(key, validated)
 
             # Also update the in-memory config reference on the context
             if context.config is not None:
@@ -191,6 +210,15 @@ class ConfigSetTool:
                 metadata={"key": key, "value": validated},
             )
         except Exception as e:
+            logger.exception(
+                "Failed to update runtime config key '%s'",
+                key,
+                extra={
+                    "category": "error",
+                    "component": "tool",
+                    "context": "config_set.execute",
+                },
+            )
             return ToolResult(error=f"Failed to update config '{key}': {e}")
 
     @staticmethod

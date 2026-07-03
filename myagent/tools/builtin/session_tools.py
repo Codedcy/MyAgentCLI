@@ -8,11 +8,14 @@ from __future__ import annotations
 
 import itertools
 import json
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
 from myagent.tools.base import ToolContext, ToolResult
+
+logger = logging.getLogger("myagent.tools.session")
 
 
 @dataclass
@@ -41,7 +44,7 @@ class TaskItem:
         }
 
     @classmethod
-    def from_dict(cls, d: dict) -> "TaskItem":
+    def from_dict(cls, d: dict) -> TaskItem:
         return cls(
             id=d.get("id", ""),
             subject=d.get("subject", ""),
@@ -124,7 +127,14 @@ class TaskList:
                 encoding="utf-8",
             )
         except Exception:
-            pass  # Best-effort persistence
+            logger.exception(
+                "Failed to persist task list",
+                extra={
+                    "category": "error",
+                    "component": "tool",
+                    "context": "task_list.save_to_disk",
+                },
+            )
 
     def _load_from_disk(self) -> None:
         """Load task list from disk on startup."""
@@ -137,7 +147,14 @@ class TaskList:
                 task = TaskItem.from_dict(td)
                 self.tasks[task.id] = task
         except Exception:
-            pass  # Start fresh on corrupt data
+            logger.exception(
+                "Failed to load persisted task list; starting fresh",
+                extra={
+                    "category": "error",
+                    "component": "tool",
+                    "context": "task_list.load_from_disk",
+                },
+            )
 
 
 # Global session-scoped task list (one per session)

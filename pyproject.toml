@@ -43,7 +43,7 @@ myagent = "myagent.cli.main:main"
 include = ["myagent*"]
 
 [tool.setuptools.package-data]
-myagent = ["skills/builtin/**/*.md"]
+myagent = ["skills/builtin/**/*"]
 
 [tool.ruff]
 target-version = "py312"

@@ -116,7 +116,11 @@ class WebFetchTool:
         try:
             import httpx
         except ImportError:
-            logger.error("web_fetch failed: httpx not available", extra={"category": "error", "component": "tool", "context": "web_fetch"})
+            logger.error(
+                "web_fetch failed: httpx not available",
+                exc_info=True,
+                extra={"category": "error", "component": "tool", "context": "web_fetch"},
+            )
             return ToolResult(error="httpx not available")
 
         try:
@@ -127,6 +131,7 @@ class WebFetchTool:
         except Exception as e:
             logger.error(
                 "web_fetch HTTP error: url=%s error=%s", url, e,
+                exc_info=True,
                 extra={"category": "error", "component": "tool", "context": "web_fetch"},
             )
             return ToolResult(error=f"Failed to fetch {url}: {e}")
@@ -162,7 +167,10 @@ class WebFetchTool:
         lines = []
         lines.append(f"Fetched from: {url}")
         lines.append(f"Status: {response.status_code}")
-        lines.append(f"Content length: {len(raw_html)} chars (HTML), {len(markdown_content)} chars (markdown)")
+        lines.append(
+            f"Content length: {len(raw_html)} chars (HTML), "
+            f"{len(markdown_content)} chars (markdown)"
+        )
         if prompt.strip():
             lines.append(f"Prompt: {prompt[:200]}")
         if llm_used:
@@ -277,10 +285,16 @@ class WebFetchTool:
             return "", False
 
         except Exception as e:
-            logger.warning(
+            logger.error(
                 "web_fetch: LLM answering failed (%s), falling back to regex extraction",
                 e,
-                extra={"category": "tool", "tool_name": "web_fetch"},
+                exc_info=True,
+                extra={
+                    "category": "error",
+                    "component": "tool",
+                    "context": "web_fetch.llm_answer",
+                    "tool_name": "web_fetch",
+                },
             )
             return "", False
 
@@ -328,7 +342,11 @@ class WebSearchTool:
         try:
             import httpx
         except ImportError:
-            logger.error("web_search failed: httpx not available", extra={"category": "error", "component": "tool", "context": "web_search"})
+            logger.error(
+                "web_search failed: httpx not available",
+                exc_info=True,
+                extra={"category": "error", "component": "tool", "context": "web_search"},
+            )
             return ToolResult(
                 output=f"Web search for: {query}\n\n(httpx not available — cannot perform search)",
                 metadata={"query": query},
@@ -360,10 +378,16 @@ class WebSearchTool:
                     )
                 data = resp.json()
         except httpx.HTTPStatusError as e:
-            logger.warning(
+            logger.error(
                 "web_search HTTP error: query=%s status=%d error=%s",
                 query, e.response.status_code, e,
-                extra={"category": "tool", "tool_name": "web_search"},
+                exc_info=True,
+                extra={
+                    "category": "error",
+                    "component": "tool",
+                    "context": "web_search.http_status",
+                    "tool_name": "web_search",
+                },
             )
             return ToolResult(
                 error=(
@@ -371,13 +395,23 @@ class WebSearchTool:
                     f"{e.response.status_code}. Query: '{query}'. "
                     f"Try again later or use web_fetch with a specific URL instead."
                 ),
-                metadata={"query": query, "search_error": True, "http_status": e.response.status_code},
+                metadata={
+                    "query": query,
+                    "search_error": True,
+                    "http_status": e.response.status_code,
+                },
             )
         except Exception as e:
-            logger.warning(
+            logger.error(
                 "web_search API unavailable: query=%s error=%s type=%s",
                 query, e, type(e).__name__,
-                extra={"category": "tool", "tool_name": "web_search"},
+                exc_info=True,
+                extra={
+                    "category": "error",
+                    "component": "tool",
+                    "context": "web_search.api",
+                    "tool_name": "web_search",
+                },
             )
             return ToolResult(
                 error=(
@@ -385,7 +419,11 @@ class WebSearchTool:
                     f"Query: '{query}'. Reason: {type(e).__name__}: {str(e)[:200]}. "
                     f"Try again later or use web_fetch with a specific URL instead."
                 ),
-                metadata={"query": query, "search_error": True, "error_detail": f"{type(e).__name__}: {str(e)[:300]}"},
+                metadata={
+                    "query": query,
+                    "search_error": True,
+                    "error_detail": f"{type(e).__name__}: {str(e)[:300]}",
+                },
             )
 
         results = self._parse_results(data, allowed_domains, blocked_domains)
@@ -415,7 +453,11 @@ class WebSearchTool:
         abstract = data.get("AbstractText", "") or ""
         abstract_url = data.get("AbstractURL", "") or ""
         if abstract:
-            entries.append({"title": data.get("Heading", "Result"), "url": abstract_url, "snippet": abstract})
+            entries.append({
+                "title": data.get("Heading", "Result"),
+                "url": abstract_url,
+                "snippet": abstract,
+            })
 
         # 2. RelatedTopics
         for topic in data.get("RelatedTopics", []) or []:

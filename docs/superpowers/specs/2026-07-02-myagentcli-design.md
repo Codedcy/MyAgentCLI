@@ -434,7 +434,7 @@ sequenceDiagram
     end
 ```
 
-> **SSE 传输支持**: MCP 协议支持 stdio 和 SSE 两种传输方式。首版实现聚焦 stdio（子进程通信），SSE 传输作为后续增强特性（`v1.1+`）。MCP 适配层预留了传输抽象接口以支持未来扩展。
+> **实现说明**: 当前 MCP client 是手写 JSON-RPC 实现，通过 transport 抽象支持 stdio 子进程通信和 SSE；实现没有直接调用 `mcp` Python SDK client API。
 
 ---
 
@@ -1062,7 +1062,7 @@ logging:
 | CLI 输出 | Rich | Markdown 渲染、Panel/Layout、Live 实时刷新 |
 | 模型接入 | LiteLLM | 上百模型统一抽象，后续换模型只需改配置 |
 | 基础模型 | DeepSeek V4 Pro | 1M 上下文，1.6T/49B MoE，MIT 协议 |
-| MCP 协议 | mcp (Python SDK) | 行业标准，子进程 stdio/SSE 通信 |
+| MCP 协议 | 手写 JSON-RPC client | 行业标准协议，子进程 stdio/SSE 通信；未直接调用 mcp SDK client API |
 | 配置格式 | YAML | 人类可读，多层合并方便 |
 | 持久化 | JSON + Markdown | JSON 结构化，Markdown 人类可读 |
 | 分发 | pipx / pip (PyPI) | Python CLI 工具标准分发方式 |

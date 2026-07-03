@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import logging
+
 from myagent.tools.base import ToolContext, ToolResult
+
+logger = logging.getLogger("myagent.tools.memory")
 
 
 class MemoryWriteTool:
@@ -64,4 +68,13 @@ class MemoryWriteTool:
                     },
                 )
         except Exception as e:
+            logger.exception(
+                "Memory write failed for '%s'",
+                file_path,
+                extra={
+                    "category": "error",
+                    "component": "tool",
+                    "context": "memory_write",
+                },
+            )
             return ToolResult(error=str(e))

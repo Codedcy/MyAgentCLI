@@ -2,6 +2,7 @@
 
 import json
 import logging
+import sys
 
 from myagent.logging.formatter import JsonLineFormatter
 
@@ -66,3 +67,31 @@ class TestJsonLineFormatter:
         assert data["level"] == "DEBUG"
         # Should not have extra fields
         assert "category" not in data
+
+    def test_error_record_includes_exception_metadata(self):
+        formatter = JsonLineFormatter()
+        try:
+            raise RuntimeError("boom")
+        except RuntimeError:
+            record = logging.LogRecord(
+                name="myagent.tools",
+                level=logging.ERROR,
+                pathname="test.py",
+                lineno=1,
+                msg="Tool failed",
+                args=(),
+                exc_info=sys.exc_info(),
+            )
+
+        record.category = "error"
+        record.component = "tool"
+        record.context = "memory_write"
+
+        output = formatter.format(record)
+        data = json.loads(output)
+
+        assert data["category"] == "error"
+        assert data["component"] == "tool"
+        assert data["context"] == "memory_write"
+        assert data["exception_type"] == "RuntimeError"
+        assert "RuntimeError: boom" in "".join(data["traceback"])

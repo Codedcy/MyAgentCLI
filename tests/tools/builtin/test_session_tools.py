@@ -1,5 +1,7 @@
 """Tests for session tools: task_create, task_update."""
 
+import logging
+
 import pytest
 
 from myagent.tools.base import ToolContext
@@ -49,6 +51,19 @@ class TestTaskList:
         task = tl.create("Task", "desc")
         tl.delete(task.id)
         assert tl.get(task.id) is None
+
+    def test_corrupt_persisted_tasks_log_structured_error(self, tmp_path, caplog):
+        persist_path = tmp_path / "tasks.json"
+        persist_path.write_text("{not-json", encoding="utf-8")
+        caplog.set_level(logging.ERROR, logger="myagent.tools.session")
+
+        TaskList(persist_path=persist_path)
+
+        record = next(record for record in caplog.records if record.name == "myagent.tools.session")
+        assert record.category == "error"
+        assert record.component == "tool"
+        assert record.context == "task_list.load_from_disk"
+        assert record.exc_info is not None
 
 
 class TestTaskCreateTool:

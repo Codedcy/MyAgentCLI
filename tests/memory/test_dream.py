@@ -1,6 +1,7 @@
 """Tests for DreamEngine."""
 
 import json
+import logging
 import os
 import time
 from pathlib import Path
@@ -8,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from myagent.memory.dream import DreamEngine
+from myagent.memory.dream import DreamEngine, DreamResult, TranscriptFindings
 
 
 class TestDreamEngine:
@@ -100,3 +101,28 @@ class TestDreamEngine:
 
         assert findings.sessions_scanned == 0
         assert findings.correction_count == 0
+
+    @pytest.mark.asyncio
+    async def test_create_memory_failure_logs_structured_error(self, tmp_path, caplog):
+        class FailingMemoryStore:
+            project_dir = tmp_path
+
+            async def write(self, file_path: str, content: str):
+                raise RuntimeError("memory write failed")
+
+        engine = DreamEngine(state_dir=tmp_path / "state", memory_store=FailingMemoryStore())
+        findings = TranscriptFindings(
+            correction_count=2,
+            correction_markers=["Actually"],
+            sessions_scanned=1,
+            text=["corrections detected"],
+        )
+        caplog.set_level(logging.ERROR, logger="myagent.memory.dream")
+
+        await engine._create_memories_from_patterns(findings, DreamResult(), [], [])
+
+        record = next(record for record in caplog.records if record.name == "myagent.memory.dream")
+        assert record.category == "error"
+        assert record.component == "agent"
+        assert record.context == "dream.create_common_corrections_memory"
+        assert record.exc_info is not None

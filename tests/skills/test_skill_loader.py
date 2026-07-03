@@ -1,5 +1,8 @@
 """Tests for SkillLoader."""
 
+import tomllib
+from pathlib import Path
+
 from myagent.skills.loader import SkillLoader
 
 
@@ -39,3 +42,21 @@ For testing purposes.
         assert len(resources.scripts) == 1
         assert len(resources.templates) == 0
         assert len(resources.assets) == 0
+
+    def test_builtin_tdd_template_uses_non_python_suffix_and_is_enumerated(self):
+        repo_root = Path(__file__).resolve().parents[2]
+        skill_dir = repo_root / "myagent" / "skills" / "builtin" / "tdd"
+
+        resources = SkillLoader.enumerate_resources(skill_dir)
+        template_paths = {path.as_posix() for path in resources.templates}
+
+        assert "templates/test_template.py.tmpl" in template_paths
+        assert "templates/test_template.py" not in template_paths
+
+    def test_package_data_includes_all_builtin_skill_resources(self):
+        repo_root = Path(__file__).resolve().parents[2]
+        pyproject = tomllib.loads((repo_root / "pyproject.toml").read_text(encoding="utf-8"))
+
+        package_data = pyproject["tool"]["setuptools"]["package-data"]["myagent"]
+
+        assert "skills/builtin/**/*" in package_data

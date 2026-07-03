@@ -9,11 +9,14 @@ from __future__ import annotations
 
 import asyncio
 import fnmatch
+import logging
 import re
 import shutil
 from pathlib import Path
 
 from myagent.tools.base import ToolContext, ToolResult
+
+logger = logging.getLogger("myagent.tools.search")
 
 
 class GrepTool:
@@ -140,7 +143,6 @@ class GrepTool:
     }
 
     async def execute(self, params: dict, context: ToolContext) -> ToolResult:
-        pattern = params["pattern"]
         search_path = Path(params.get("path", str(context.project_dir)))
 
         # Prefer ripgrep when available (10–100x faster on large repos)
@@ -228,9 +230,25 @@ class GrepTool:
                 output=output,
                 metadata={"exit_code": 0, "engine": "rg"},
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
+            logger.exception(
+                "grep timed out while running ripgrep",
+                extra={
+                    "category": "error",
+                    "component": "tool",
+                    "context": "grep.rg_timeout",
+                },
+            )
             return ToolResult(error=f"grep timed out after {timeout}s")
         except Exception as e:
+            logger.exception(
+                "grep failed while running ripgrep",
+                extra={
+                    "category": "error",
+                    "component": "tool",
+                    "context": "grep.rg",
+                },
+            )
             return ToolResult(error=str(e))
 
     # ── pure Python fallback ─────────────────────────────────────
@@ -257,6 +275,14 @@ class GrepTool:
                 flags |= re.MULTILINE | re.DOTALL
             regex = re.compile(pattern, flags)
         except re.error as e:
+            logger.exception(
+                "grep received an invalid regex pattern",
+                extra={
+                    "category": "error",
+                    "component": "tool",
+                    "context": "grep.invalid_regex",
+                },
+            )
             return ToolResult(error=f"Invalid regex pattern: {e}")
 
         # Collect matching files
@@ -271,6 +297,7 @@ class GrepTool:
             try:
                 content = file_path.read_text(encoding="utf-8", errors="replace")
             except (PermissionError, OSError):
+                # Expected for unreadable files during recursive search; skip them.
                 continue
 
             if multiline:
@@ -368,14 +395,18 @@ class GrepTool:
                 continue
             # Skip common non-text locations
             parts_lower = {p.lower() for p in f.parts}
-            if parts_lower & {"__pycache__", "node_modules", ".git", "dist", "build", ".venv", "venv"}:
+            if parts_lower & {
+                "__pycache__", "node_modules", ".git", "dist", "build", ".venv", "venv",
+            }:
                 continue
             # Apply file type filter
-            if type_extensions is not None:
-                if f.suffix.lower() not in type_extensions:
-                    # Also match files without extension by basename (e.g. "Makefile")
-                    if f.name not in type_extensions:
-                        continue
+            if (
+                type_extensions is not None
+                and f.suffix.lower() not in type_extensions
+                and f.name not in type_extensions
+            ):
+                # Also match files without extension by basename (e.g. "Makefile").
+                continue
             # Apply file glob filter
             if file_glob and not fnmatch.fnmatch(f.name, file_glob):
                 continue
@@ -387,6 +418,7 @@ class GrepTool:
                     if b"\x00" in sample:
                         continue
                 except (PermissionError, OSError):
+                    # Expected for unreadable files during recursive search; skip them.
                     continue
             files.append(f)
 

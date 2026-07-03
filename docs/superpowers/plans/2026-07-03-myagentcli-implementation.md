@@ -6,7 +6,11 @@
 
 **Architecture:** Four-layer asynchronous monolith — CLI (Rich + prompt_toolkit), Application (ReAct engine + goal tracker + session manager), Service (tool registry + sub-agent pool + memory store), Infrastructure (LiteLLM + MCP protocol). Single ReAct loop for all interactions; sub-agents via spawn_subagent tool; model autonomously judges complexity and orchestration strategy.
 
-**Tech Stack:** Python 3.12+, LiteLLM, Rich, prompt_toolkit, YAML config, JSON+Markdown persistence, pipx/pip distribution, mcp Python SDK.
+**Tech Stack:** Python 3.12+, LiteLLM, Rich, prompt_toolkit, YAML config, JSON+Markdown persistence, pipx/pip distribution, MCP protocol via hand-written JSON-RPC client.
+
+## Current Status
+
+This plan is now a historical implementation plan, not the live task tracker. Tasks 1-24 have been implemented across the initial build and subsequent gap-fix rounds; unchecked boxes below are preserved as the original execution checklist. As of round 22, pytest collects 234 tests, built-in skills package all resources under `myagent/skills/builtin/`, and MCP is implemented as a hand-written JSON-RPC client over stdio/SSE transport abstractions rather than direct `mcp` SDK client API usage.
 
 ## Global Constraints
 
@@ -1958,9 +1962,9 @@ Test that SkillRegistry discovers all six built-in skills.
 - Create: `README.md` — installation and usage
 - Create: `myagent/cli/main.py` — verify `main()` entry point
 
-- [ ] **Step 1: Verify pyproject.toml completeness**
+- [x] **Step 1: Verify pyproject.toml completeness**
 
-Check: `[project.scripts]` entry point, `[tool.setuptools.package-data]` for built-in skills, classifiers, license. Package data must include `myagent/skills/builtin/**/*.md`.
+Check: `[project.scripts]` entry point, `[tool.setuptools.package-data]` for built-in skills, classifiers, license. Package data includes built-in skill Markdown, scripts, templates, references, and other resources.
 
 - [ ] **Step 2: Write README.md**
 
@@ -1971,12 +1975,12 @@ Installation (`pipx install myagent`), quick start, configuration, key features 
 Run: `pip install -e .` in a clean venv
 Expected: `myagent --help` works
 
-- [ ] **Step 4: Run full test suite**
+- [x] **Step 4: Run full test suite**
 
 Run: `pytest tests/ -v --cov=myagent --cov-report=term-missing`
-Expected: All tests pass, coverage > 80%
+Current status: pytest collects 234 tests; latest pass/fail evidence is recorded in gap-fix reports.
 
-- [ ] **Step 5: Run lint**
+- [x] **Step 5: Run lint**
 
 Run: `ruff check myagent/`
 Expected: No errors

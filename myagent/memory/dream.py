@@ -1475,10 +1475,14 @@ Do NOT interact with project code files — only memory files."""
                     extra={"category": "system"},
                 )
             except Exception:
-                logger.warning(
+                logger.exception(
                     "Dream: failed to auto-correct factual error in '%s'",
-                    mem_name, exc_info=True,
-                    extra={"category": "system"},
+                    mem_name,
+                    extra={
+                        "category": "error",
+                        "component": "agent",
+                        "context": "dream.auto_correct_factual_error",
+                    },
                 )
 
         return corrected_count
@@ -1531,7 +1535,11 @@ Do NOT interact with project code files — only memory files."""
                     "description": keeper.description,
                     "metadata": getattr(keeper, "metadata", {}),
                 }
-                fm_yaml = _yaml.safe_dump(fm_dict, default_flow_style=False, allow_unicode=True).strip()
+                fm_yaml = _yaml.safe_dump(
+                    fm_dict,
+                    default_flow_style=False,
+                    allow_unicode=True,
+                ).strip()
                 full_content = f"---\n{fm_yaml}\n---\n\n{updated_content}"
                 file_path = str(self.memory_store.project_dir / f"{keeper.name}.md")
                 await self.memory_store.write(
@@ -1548,23 +1556,33 @@ Do NOT interact with project code files — only memory files."""
                     extra={"category": "system"},
                 )
             except Exception:
-                logger.warning(
+                logger.exception(
                     "Dream: failed to update '%s' for contradiction resolution",
-                    keeper.name, exc_info=True,
-                    extra={"category": "system"},
+                    keeper.name,
+                    extra={
+                        "category": "error",
+                        "component": "agent",
+                        "context": "dream.resolve_contradiction_update",
+                    },
                 )
 
             # Delete the older memory
             try:
                 await self.memory_store.delete(older.name)
                 actions.append(
-                    f"- Deleted `{older.name}` (older duplicate from contradiction with `{keeper.name}`)"
+                    f"- Deleted `{older.name}` "
+                    f"(older duplicate from contradiction with `{keeper.name}`)"
                 )
                 result.memories_deleted += 1
             except Exception:
-                logger.warning(
-                    "Dream: failed to delete older memory '%s'", older.name, exc_info=True,
-                    extra={"category": "system"},
+                logger.exception(
+                    "Dream: failed to delete older memory '%s'",
+                    older.name,
+                    extra={
+                        "category": "error",
+                        "component": "agent",
+                        "context": "dream.resolve_contradiction_delete",
+                    },
                 )
 
     async def _create_memories_from_patterns(
@@ -1584,7 +1602,11 @@ Do NOT interact with project code files — only memory files."""
         # G7: Use correction_count directly instead of substring matching on text
         if findings.correction_count >= 2:
             try:
-                markers_desc = ", ".join(findings.correction_markers[:5]) if findings.correction_markers else "various"
+                markers_desc = (
+                    ", ".join(findings.correction_markers[:5])
+                    if findings.correction_markers
+                    else "various"
+                )
                 name = "common-corrections"
                 description = (
                     f"Repeated corrections ({findings.correction_count} instances across "
@@ -1598,7 +1620,8 @@ Do NOT interact with project code files — only memory files."""
                     f"**Patterns detected:** {markers_desc}\n\n"
                     f"**Recommendation:** Before starting new work, review the project "
                     f"CLAUDE.md and related conventions to avoid repeated corrections.\n\n"
-                    f"**Dream finding:** {findings.text[0] if findings.text else 'corrections detected'}"
+                    "**Dream finding:** "
+                    f"{findings.text[0] if findings.text else 'corrections detected'}"
                 )
                 fm_yaml = _yaml.safe_dump(
                     {"name": name, "description": description, "metadata": {}},
@@ -1611,26 +1634,41 @@ Do NOT interact with project code files — only memory files."""
                     content=full_content,
                 )
                 result.memories_created += 1
-                actions.append(f"- Created `common-corrections` memory ({findings.correction_count} corrections)")
+                actions.append(
+                    f"- Created `common-corrections` memory "
+                    f"({findings.correction_count} corrections)"
+                )
                 logger.info(
                     "Dream: created 'common-corrections' memory (%d corrections)",
                     findings.correction_count,
                     extra={"category": "system"},
                 )
             except Exception:
-                logger.warning("Dream: failed to create 'common-corrections' memory", exc_info=True,
-                               extra={"category": "system"})
+                logger.exception(
+                    "Dream: failed to create 'common-corrections' memory",
+                    extra={
+                        "category": "error",
+                        "component": "agent",
+                        "context": "dream.create_common_corrections_memory",
+                    },
+                )
 
         if findings.top_topics:
             try:
                 topics_list = ", ".join(f"`{t[0]}`" for t in findings.top_topics)
                 name = "frequent-topics"
                 description = "Frequently discussed topics across recent sessions"
+                dream_finding = (
+                    findings.text[1]
+                    if len(findings.text) > 1
+                    else findings.text[0] if findings.text else "topics detected"
+                )
                 body = (
                     f"The most frequently discussed topics in {findings.sessions_scanned} "
                     f"recent sessions are: {topics_list}.\n\n"
                     f"This indicates areas of active focus in the project.\n\n"
-                    f"**Dream finding:** {findings.text[1] if len(findings.text) > 1 else findings.text[0] if findings.text else 'topics detected'}"
+                    "**Dream finding:** "
+                    f"{dream_finding}"
                 )
                 fm_yaml = _yaml.safe_dump(
                     {"name": name, "description": description, "metadata": {}},
@@ -1645,8 +1683,14 @@ Do NOT interact with project code files — only memory files."""
                 result.memories_created += 1
                 actions.append(f"- Created `frequent-topics` memory ({topics_list})")
             except Exception:
-                logger.warning("Dream: failed to create 'frequent-topics' memory", exc_info=True,
-                               extra={"category": "system"})
+                logger.exception(
+                    "Dream: failed to create 'frequent-topics' memory",
+                    extra={
+                        "category": "error",
+                        "component": "agent",
+                        "context": "dream.create_frequent_topics_memory",
+                    },
+                )
 
     @staticmethod
     def _parse_dream_json_summary(text: str) -> dict | None:

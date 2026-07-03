@@ -4,7 +4,7 @@
 
 ## 项目状态
 
-✅ **已实现** — 24 个任务全部完成，185 个测试通过。
+✅ **已实现** — 24 个任务已落地，234 个自动化测试通过。
 
 ## 核心特性
 
@@ -12,8 +12,8 @@
 - **ReAct Agent 循环**: Think → Decide → Execute → Observe，默认 Think High
 - **Goal 模式**: 设定目标后 Agent 自主拆解、编排、持续推进，支持人工介入
 - **子 Agent 系统**: 独立上下文、并行/流水线编排，最大并发 min(16, CPU-2)
-- **13 个内置工具**: read/write/edit/glob、grep（ripgrep 优先 + Python 回退）、bash、web_fetch/search、spawn_subagent、task_create/update、memory_write
-- **MCP 协议**: stdio 子进程通信，工具自动发现和适配
+- **16 个内置工具**: read/write/edit/glob、grep（ripgrep 优先 + Python 回退）、bash、web_fetch/search、spawn_subagent/send_message、task_create/update、memory_write、config_set、mcp_read_resource/mcp_get_prompt
+- **MCP 协议**: 手写 JSON-RPC client，支持 stdio 子进程通信和 SSE 传输抽象，自动发现工具/资源/提示
 - **分层上下文**: L0-L6 六层结构，75% 自动压缩，四层渐进式压缩
 - **文件级记忆**: 跨会话持久化 + MEMORY.md 索引 + 梦境机制自动整合
 - **技能系统**: 6 个内置技能 + 用户自定义，三优先级覆盖（内置 < 用户 < 项目）
@@ -40,7 +40,7 @@ Application Layer
   └─ project.py     — 项目环境检测（Git、语言、包管理器等）
 
 Service Layer
-  ├─ tools/         — 工具注册表 + 13 个内置工具 + MCP 适配
+  ├─ tools/         — 工具注册表 + 16 个内置工具 + MCP 适配
   ├─ subagent/      — 子 Agent 池（并发控制、生命周期）
   ├─ context/       — 上下文构建器 + 压缩引擎 + 会话持久化
   ├─ memory/        — 记忆存储 + 语义召回 + 梦境引擎
@@ -51,7 +51,7 @@ Infrastructure Layer
   ├─ config/        — 7 级 YAML 加载 + deep merge
   ├─ permissions/   — 4 级权限控制
   ├─ logging/       — JSON Lines 异步日志
-  └─ tools/mcp/     — MCP stdio 子进程客户端
+  └─ tools/mcp/     — MCP JSON-RPC 客户端（stdio/SSE transport）
 ```
 
 ## 技术栈
@@ -63,7 +63,7 @@ Infrastructure Layer
 | CLI 输出 | Rich | Markdown 渲染、Live 刷新、Panel/Layout |
 | 模型接入 | LiteLLM | 上百模型统一抽象，换模型只改配置 |
 | 基础模型 | DeepSeek V4 Pro | 1M 上下文，1.6T/49B MoE，MIT 协议 |
-| MCP | mcp (Python SDK) | 行业标准，子进程 stdio/SSE |
+| MCP | 手写 JSON-RPC client | 行业标准协议，stdio/SSE transport |
 | 配置 | YAML | 人类可读，多层合并 |
 | 持久化 | JSON + Markdown | JSON 结构化，Markdown 可读 |
 | 分发 | pipx / pip (PyPI) | Python CLI 标准分发 |

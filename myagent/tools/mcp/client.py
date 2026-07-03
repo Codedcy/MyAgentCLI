@@ -15,10 +15,12 @@ import json
 import logging
 import re
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Protocol
 
 logger = logging.getLogger("myagent.tools.mcp")
+
+if TYPE_CHECKING:
+    import httpx
 
 
 # ── Transport abstraction (gap-34) ──────────────────────────────
@@ -130,8 +132,16 @@ class StdioTransport:
                     "error", "traceback", "panic", "fatal", "critical",
                     "exception", "fail",
                 )):
-                    logger.error("MCP stderr [%s]: %s", self.command, decoded,
-                                 extra={"category": "error", "component": "mcp", "context": "mcp_stderr"})
+                    logger.error(
+                        "MCP stderr [%s]: %s",
+                        self.command,
+                        decoded,
+                        extra={
+                            "category": "error",
+                            "component": "mcp",
+                            "context": "mcp_stderr",
+                        },
+                    )
                 elif any(marker in line_lower for marker in ("warn",)):
                     logger.warning("MCP stderr [%s]: %s", self.command, decoded,
                                    extra={"category": "system"})
@@ -145,9 +155,13 @@ class StdioTransport:
         except asyncio.CancelledError:
             pass
         except Exception:
-            logger.debug(
+            logger.exception(
                 "MCP stderr drainer stopped for %s", self.command, exc_info=True,
-                extra={"category": "system"},
+                extra={
+                    "category": "error",
+                    "component": "mcp",
+                    "context": "mcp.stderr_drain",
+                },
             )
 
 
@@ -178,8 +192,8 @@ class SSETransport:
         self.url = url.rstrip("/")
         self.headers = headers or {}
         self.session_id = session_id
-        self._client: "httpx.AsyncClient | None" = None
-        self._sse_response: "httpx.Response | None" = None
+        self._client: httpx.AsyncClient | None = None
+        self._sse_response: httpx.Response | None = None
         self._receive_queue: asyncio.Queue[bytes] = asyncio.Queue()
         self._connected = False
         self._reader_task: asyncio.Task | None = None
@@ -243,7 +257,11 @@ class SSETransport:
                 "SSE POST returned %d: %s",
                 response.status_code,
                 response.text[:200],
-                extra={"category": "error", "component": "mcp"},
+                extra={
+                    "category": "error",
+                    "component": "mcp",
+                    "context": "sse.post_status",
+                },
             )
 
     async def receive(self) -> bytes | None:
@@ -274,13 +292,27 @@ class SSETransport:
             try:
                 await self._sse_response.aclose()
             except Exception:
-                pass
+                logger.exception(
+                    "Failed to close SSE response",
+                    extra={
+                        "category": "error",
+                        "component": "mcp",
+                        "context": "sse.close_response",
+                    },
+                )
 
         if self._client:
             try:
                 await self._client.aclose()
             except Exception:
-                pass
+                logger.exception(
+                    "Failed to close SSE client",
+                    extra={
+                        "category": "error",
+                        "component": "mcp",
+                        "context": "sse.close_client",
+                    },
+                )
 
         # Drain the receive queue
         while not self._receive_queue.empty():
@@ -326,7 +358,11 @@ class SSETransport:
                     else:
                         logger.error(
                             "SSE stream has no aiter_bytes or aiter_raw",
-                            extra={"category": "error", "component": "mcp"},
+                            extra={
+                                "category": "error",
+                                "component": "mcp",
+                                "context": "sse.reader_missing_stream",
+                            },
                         )
                         break
 
@@ -361,10 +397,13 @@ class SSETransport:
                 except StopAsyncIteration:
                     break
                 except Exception:
-                    logger.debug(
+                    logger.exception(
                         "SSE reader error",
-                        exc_info=True,
-                        extra={"category": "error", "component": "mcp"},
+                        extra={
+                            "category": "error",
+                            "component": "mcp",
+                            "context": "sse.reader",
+                        },
                     )
                     break
         except asyncio.CancelledError:
@@ -430,6 +469,14 @@ class SSETransport:
             header = f"Content-Length: {len(body)}\r\n\r\n"
             return header.encode("utf-8") + body
         except Exception:
+            logger.exception(
+                "Failed to encode SSE event",
+                extra={
+                    "category": "error",
+                    "component": "mcp",
+                    "context": "sse.parse_event",
+                },
+            )
             return None
 
 
@@ -538,20 +585,30 @@ class MCPClient:
         except RuntimeError as e:
             err_msg = str(e)
             if "-32601" in err_msg or "Method not found" in err_msg:
+                # Expected capability absence: resources are optional in MCP.
                 logger.debug(
                     "MCP server does not support resources/list: %s", self.command,
                     extra={"category": "system"},
                 )
             else:
-                logger.warning(
+                logger.error(
                     "MCP server resources/list failed: %s", err_msg[:200],
-                    extra={"category": "error", "component": "mcp"},
+                    exc_info=True,
+                    extra={
+                        "category": "error",
+                        "component": "mcp",
+                        "context": "mcp.resources_list",
+                    },
                 )
             return []
         except Exception as e:
-            logger.debug(
+            logger.exception(
                 "MCP server resources/list failed: %s", str(e)[:200],
-                extra={"category": "system"},
+                extra={
+                    "category": "error",
+                    "component": "mcp",
+                    "context": "mcp.resources_list",
+                },
             )
             return []
 
@@ -568,20 +625,30 @@ class MCPClient:
         except RuntimeError as e:
             err_msg = str(e)
             if "-32601" in err_msg or "Method not found" in err_msg:
+                # Expected capability absence: prompts are optional in MCP.
                 logger.debug(
                     "MCP server does not support prompts/list: %s", self.command,
                     extra={"category": "system"},
                 )
             else:
-                logger.warning(
+                logger.error(
                     "MCP server prompts/list failed: %s", err_msg[:200],
-                    extra={"category": "error", "component": "mcp"},
+                    exc_info=True,
+                    extra={
+                        "category": "error",
+                        "component": "mcp",
+                        "context": "mcp.prompts_list",
+                    },
                 )
             return []
         except Exception as e:
-            logger.debug(
+            logger.exception(
                 "MCP server prompts/list failed: %s", str(e)[:200],
-                extra={"category": "system"},
+                extra={
+                    "category": "error",
+                    "component": "mcp",
+                    "context": "mcp.prompts_list",
+                },
             )
             return []
 
@@ -715,13 +782,26 @@ class MCPClient:
                         message = json.loads(body)
                         await self._handle_message(message)
                     except json.JSONDecodeError as e:
-                        logger.warning("Invalid JSON from MCP server: %s", e,
-                                       extra={"category": "system"})
+                        logger.error(
+                            "Invalid JSON from MCP server: %s",
+                            e,
+                            exc_info=True,
+                            extra={
+                                "category": "error",
+                                "component": "mcp",
+                                "context": "mcp.reader_invalid_json",
+                            },
+                        )
 
         except asyncio.CancelledError:
             pass
         except Exception as e:
-            logger.error("MCP reader loop error: %s", e, extra={"category": "error", "component": "mcp", "context": "mcp_reader_loop"})
+            logger.error(
+                "MCP reader loop error: %s",
+                e,
+                exc_info=True,
+                extra={"category": "error", "component": "mcp", "context": "mcp.reader_loop"},
+            )
 
     async def _handle_message(self, message: dict) -> None:
         """Route incoming JSON-RPC message to pending request or ignore."""

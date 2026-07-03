@@ -387,7 +387,11 @@ class AgentEngine:
                     iteration,
                     str(e),
                     exc_info=True,
-                    extra={"category": "error", "component": "llm", "context": "llm_stream_complete"},
+                    extra={
+                        "category": "error",
+                        "component": "llm",
+                        "context": "llm_stream_complete",
+                    },
                 )
                 if partial_text:
                     yield TextChunk(
@@ -576,6 +580,7 @@ class AgentEngine:
                 except Exception as e:
                     logger.error(
                         "Goal check failed: %s", str(e),
+                        exc_info=True,
                         extra={"category": "error", "component": "agent", "context": "goal_check"},
                     )
                     yield Done()
@@ -855,7 +860,11 @@ class AgentEngine:
                 if not allowed:
                     logger.info(
                         "Tool '%s' DENIED by user", tc.name,
-                        extra={"category": "tool", "tool_name": tc.name, "permission_result": "denied"},
+                        extra={
+                            "category": "tool",
+                            "tool_name": tc.name,
+                            "permission_result": "denied",
+                        },
                     )
                     return ToolResult(
                         error=f"User denied permission for '{tc.name}'."
@@ -913,15 +922,25 @@ class AgentEngine:
                     )
                     await self.session_store.save_tool_call(session, record)
                 except Exception:
-                    logger.debug("Failed to persist tool call record", exc_info=True,
-                                 extra={"category": "system"})
+                    logger.exception(
+                        "Failed to persist tool call record",
+                        extra={
+                            "category": "error",
+                            "component": "agent",
+                            "context": "agent.persist_tool_call",
+                        },
+                    )
 
             return result
         except Exception as e:
             logger.error(
                 "Tool '%s' failed: %s", tc.name, str(e),
                 exc_info=True,
-                extra={"category": "error", "component": "tool", "context": f"execute_tool:{tc.name}"},
+                extra={
+                    "category": "error",
+                    "component": "tool",
+                    "context": f"execute_tool:{tc.name}",
+                },
             )
             return ToolResult(error=str(e))
 
@@ -1009,7 +1028,14 @@ class AgentEngine:
                 metadata=result.metadata,
             )
         except Exception:
-            logger.exception("Summarization failed", extra={"category": "error", "component": "agent"})
+            logger.exception(
+                "Summarization failed",
+                extra={
+                    "category": "error",
+                    "component": "agent",
+                    "context": "agent.summarize_tool_result",
+                },
+            )
             return self._truncate_result(result)
 
     def _truncate_result(self, result: ToolResult) -> ToolResult:
@@ -1071,8 +1097,15 @@ class AgentEngine:
                         max_input = info.get("max_input_tokens")
                         if max_input is not None and max_input > 0:
                             return int(max_input)
-        except Exception:
-            pass  # Dynamic discovery is best-effort
+        except ImportError:
+            # LiteLLM is optional for this best-effort discovery path.
+            pass
+        except (TypeError, ValueError):
+            logger.debug(
+                "Dynamic context-window discovery failed; using static fallback",
+                exc_info=True,
+                extra={"category": "system", "context": "agent.context_window_lookup"},
+            )
 
         # ── Fallback: static map with litellm prefix stripped ─────
         short_name = model_name.split("/")[-1] if "/" in model_name else model_name
@@ -1092,6 +1125,14 @@ class AgentEngine:
             try:
                 estimated_tokens = self.llm.token_count(messages)
             except Exception:
+                logger.exception(
+                    "LLM token counting failed; using character estimate",
+                    extra={
+                        "category": "error",
+                        "component": "agent",
+                        "context": "agent.estimate_context_tokens",
+                    },
+                )
                 estimated_tokens = self._char_based_token_estimate(messages, tools)
         else:
             estimated_tokens = self._char_based_token_estimate(messages, tools)
@@ -1191,5 +1232,11 @@ class AgentEngine:
                 )
                 self.session_store._write_transcripts(sess_dir, session)
         except Exception:
-            logger.debug("Failed to persist turn to session store", exc_info=True,
-                         extra={"category": "system"})
+            logger.exception(
+                "Failed to persist turn to session store",
+                extra={
+                    "category": "error",
+                    "component": "agent",
+                    "context": "agent.persist_turn",
+                },
+            )

@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -117,6 +118,21 @@ class TestMCPClient:
 
         assert len(resources) == 1
         assert resources[0]["name"] == "test.txt"
+
+    @pytest.mark.asyncio
+    async def test_list_resources_unexpected_error_logs_structured_error(self, caplog):
+        client = MCPClient(command="echo", args=["hello"])
+        caplog.set_level(logging.ERROR, logger="myagent.tools.mcp")
+
+        with patch.object(client, "_send_request", AsyncMock(side_effect=ValueError("bad rpc"))):
+            resources = await client.list_resources()
+
+        assert resources == []
+        record = next(record for record in caplog.records if record.name == "myagent.tools.mcp")
+        assert record.category == "error"
+        assert record.component == "mcp"
+        assert record.context == "mcp.resources_list"
+        assert record.exc_info is not None
 
     @pytest.mark.asyncio
     async def test_shutdown(self):
