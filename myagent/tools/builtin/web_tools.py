@@ -11,6 +11,18 @@ from myagent.tools.base import ToolContext, ToolResult
 
 logger = logging.getLogger("myagent.tools.web")
 
+# Model to use for prompt-guided answering in web_fetch.
+# Uses the configured primary model with Non-think mode for fast,
+# lightweight Q&A over fetched content. Falls back to regex
+# extraction if the LLM call fails.
+_WEB_FETCH_ANSWER_MODEL_MODE = "Non-think"
+# Maximum characters of fetched content to send to the LLM for answering.
+# The model needs enough context to answer the question, but we cap it
+# to keep latency low and avoid token waste.
+_WEB_FETCH_MAX_CONTENT_CHARS = 15000
+# Maximum characters to return from the LLM answer.
+_WEB_FETCH_MAX_ANSWER_CHARS = 8000
+
 # ── HTML-to-text fallback (no markdownify) ──────────────────────────────────
 
 _RE_SCRIPT_AND_STYLE = re.compile(
@@ -125,8 +137,19 @@ class WebFetchTool:
                          extra={"category": "tool"})
             markdown_content = _html_to_text(raw_html)
 
-        # Apply prompt-guided extraction
-        extracted = _extract_relevant(markdown_content, prompt)
+        # ── Prompt-guided answering ──
+        # Primary: use a lightweight LLM call to answer the prompt against content.
+        # Fallback: keyword-based regex extraction (_extract_relevant).
+        answer_text = ""
+        llm_used = False
+        if prompt.strip():
+            answer_text, llm_used = await self._llm_answer(prompt, markdown_content, context)
+
+        if not answer_text:
+            # LLM call failed or prompt was empty — fall back to regex extraction
+            logger.debug("web_fetch: falling back to regex extraction",
+                         extra={"category": "tool"})
+            answer_text = _extract_relevant(markdown_content, prompt)
 
         # Build output
         lines = []
@@ -135,15 +158,20 @@ class WebFetchTool:
         lines.append(f"Content length: {len(raw_html)} chars (HTML), {len(markdown_content)} chars (markdown)")
         if prompt.strip():
             lines.append(f"Prompt: {prompt[:200]}")
+        if llm_used:
+            lines.append(f"Answer method: LLM ({_WEB_FETCH_ANSWER_MODEL_MODE} mode)")
+        else:
+            lines.append("Answer method: keyword extraction (LLM unavailable)")
         lines.append("")
-        lines.append(extracted)
+        lines.append(answer_text)
 
         output = "\n".join(lines)
 
         duration_ms = getattr(response, "elapsed", None)
         logger.info(
-            "web_fetch done: url=%s status=%d html_len=%d md_len=%d extracted_len=%d",
-            url, response.status_code, len(raw_html), len(markdown_content), len(extracted),
+            "web_fetch done: url=%s status=%d html_len=%d md_len=%d answer_len=%d llm_used=%s",
+            url, response.status_code, len(raw_html), len(markdown_content),
+            len(answer_text), llm_used,
             extra={
                 "category": "tool",
                 "tool_name": "web_fetch",
@@ -158,10 +186,94 @@ class WebFetchTool:
                 "status_code": response.status_code,
                 "html_length": len(raw_html),
                 "markdown_length": len(markdown_content),
-                "extracted_length": len(extracted),
+                "answer_length": len(answer_text),
                 "prompt": prompt,
+                "llm_used": llm_used,
             },
         )
+
+    @staticmethod
+    async def _llm_answer(prompt: str, content: str, context: ToolContext) -> tuple[str, bool]:
+        """Use a lightweight LLM call to answer the prompt against the content.
+
+        Returns (answer_text, llm_used). If the LLM call fails for any reason,
+        returns ("", False) so the caller can fall back to regex extraction.
+
+        Per spec §四 工具系统 — web_fetch: the tool should "fetch a URL, convert
+        the page to markdown, and answer `prompt` against it using a small fast
+        model". We use the configured model in Non-think mode without tools to
+        get a fast, focused answer.
+        """
+        try:
+            import litellm  # noqa: F811
+        except ImportError:
+            logger.debug("web_fetch: litellm not available for LLM answering",
+                         extra={"category": "tool"})
+            return "", False
+
+        # Determine model name from config or default to deepseek-v4-pro
+        model_config = getattr(context, "config", None)
+        if model_config is not None:
+            model = getattr(model_config, "model", None)
+            if model is not None:
+                provider = getattr(model, "provider", "deepseek")
+                model_name = getattr(model, "model", "deepseek-v4-pro")
+                full_model = f"{provider}/{model_name}"
+            else:
+                full_model = "deepseek/deepseek-v4-pro"
+        else:
+            full_model = "deepseek/deepseek-v4-pro"
+
+        # Truncate content to keep the prompt within reasonable token limits
+        truncated = content[:_WEB_FETCH_MAX_CONTENT_CHARS]
+        if len(content) > _WEB_FETCH_MAX_CONTENT_CHARS:
+            truncated += "\n\n[Content truncated ...]"
+
+        system_message = (
+            "You are a helpful assistant that answers questions based on web page content. "
+            "Answer the user's question using ONLY the provided web page content. "
+            "If the content does not contain enough information to answer the question, "
+            "say so clearly. Be concise and direct."
+        )
+
+        user_message = (
+            f"Based on the following web page content, answer this question: {prompt}\n\n"
+            f"--- WEB PAGE CONTENT ---\n{truncated}\n--- END CONTENT ---\n\n"
+            f"Please answer the question: {prompt}"
+        )
+
+        messages = [
+            {"role": "system", "content": system_message},
+            {"role": "user", "content": user_message},
+        ]
+
+        try:
+            response = await litellm.acompletion(
+                model=full_model,
+                messages=messages,
+                stream=False,
+                max_tokens=min(_WEB_FETCH_MAX_ANSWER_CHARS // 2, 4096),
+            )
+
+            if response and response.choices:
+                answer = response.choices[0].message.content or ""
+                answer = answer[:_WEB_FETCH_MAX_ANSWER_CHARS]
+                logger.info(
+                    "web_fetch: LLM answer obtained, length=%d model=%s",
+                    len(answer), full_model,
+                    extra={"category": "tool", "tool_name": "web_fetch"},
+                )
+                return answer, True
+
+            return "", False
+
+        except Exception as e:
+            logger.warning(
+                "web_fetch: LLM answering failed (%s), falling back to regex extraction",
+                e,
+                extra={"category": "tool", "tool_name": "web_fetch"},
+            )
+            return "", False
 
 
 # ── WebSearchTool ───────────────────────────────────────────────────────────
