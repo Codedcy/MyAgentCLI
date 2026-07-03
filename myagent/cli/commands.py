@@ -226,11 +226,10 @@ class CommandDispatcher:
         return CommandResult(output="\n".join(lines))
 
     async def _cmd_exit(self, args: str, ctx: CommandContext) -> CommandResult:
-        """Request exit with confirmation flag for the REPL layer."""
-        if args.strip().lower() in ("--force", "-f"):
-            return CommandResult(output="Goodbye!", success=True, exit_requested=True)
-        return CommandResult(
-            output="Goodbye! (Type /exit --force or /quit --force to confirm, or /exit -f)",
-            success=True,
-            exit_requested=False,
-        )
+        """Request exit — triggers session-end flow per spec section 10.
+
+        Per design spec §十, /exit and /quit directly initiate the session-end
+        flow (stop ReAct loop, end session, stop status bar, exit). No --force
+        flag is required.
+        """
+        return CommandResult(output="Goodbye!", success=True, exit_requested=True)
