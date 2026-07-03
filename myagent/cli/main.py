@@ -212,12 +212,25 @@ async def async_main(argv: list[str] | None = None) -> int:
                         cur, max_i = pi
                         if max_i > 0:
                             progress_pct = (cur / max_i) * 100.0
-                    details.append(SubAgentInfo(
-                        agent_id=hid,
-                        task_name=task_name,
-                        status="running",
-                        progress_pct=progress_pct,
-                    ))
+                    # gap-18-03: check for retry state
+                    retry_count = getattr(h, '_retry_count', 0)
+                    max_retries = getattr(h, '_max_retries', 0)
+                    if retry_count > 0:
+                        details.append(SubAgentInfo(
+                            agent_id=hid,
+                            task_name=task_name,
+                            status="retrying",
+                            progress_pct=progress_pct,
+                            retry_count=retry_count,
+                            max_retries=max_retries,
+                        ))
+                    else:
+                        details.append(SubAgentInfo(
+                            agent_id=hid,
+                            task_name=task_name,
+                            status="running",
+                            progress_pct=progress_pct,
+                        ))
                 elif h.status.value == "completed":
                     result = h._result_data
                     summary = ""

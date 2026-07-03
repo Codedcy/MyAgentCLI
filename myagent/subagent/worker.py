@@ -73,6 +73,7 @@ class SubAgentWorker:
         message_store: list | None = None,
         project_dir: Path | None = None,
         progress_callback=None,
+        retry_callback=None,
         config=None,
     ):
         self.prompt = prompt
@@ -92,6 +93,7 @@ class SubAgentWorker:
         self._project_dir = project_dir
         self._worktree_path: Path | None = None
         self._progress_callback = progress_callback
+        self._retry_callback = retry_callback
         self._current_iteration: int = 0
         self._config = config
 
@@ -357,6 +359,12 @@ class SubAgentWorker:
                         extra={"category": "llm", "event": "subagent_retry",
                                "retry_count": attempt + 1},
                     )
+                    # Notify pool/status bar about retry (gap-18-03)
+                    if self._retry_callback:
+                        try:
+                            self._retry_callback(attempt + 1, _SUBAGENT_MAX_RETRIES, delay)
+                        except Exception:
+                            pass
                     await asyncio.sleep(delay)
                 # else: max retries exhausted, will raise below
             except Exception as e:

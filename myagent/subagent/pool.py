@@ -33,6 +33,10 @@ class SubAgentHandle:
     _result_data: ToolResult | None = None
     _message: str | None = None
     _pending_messages: list = field(default_factory=list)
+    # Retry state for status bar display (gap-18-03)
+    _retry_count: int = 0
+    _max_retries: int = 0
+    _progress_iter: tuple | None = None  # (cur, max) iteration progress
 
     async def wait(self) -> ToolResult:
         await self._completion_event.wait()
@@ -56,6 +60,24 @@ class SubAgentHandle:
         """G10: Send a message from this sub-agent to the main agent."""
         if pool and hasattr(pool, 'send_to_main'):
             pool.send_to_main(self.id, message)
+
+
+def _retry_notify(handle, attempt: int, max_retries: int, pool) -> None:
+    """Update handle with retry state and fire status callbacks (gap-18-03).
+
+    Called synchronously from SubAgentWorker._stream_llm_with_retry
+    during LLM retry events. The status bar callback registered in main.py
+    reads _retry_count/_max_retries from the handle.
+    """
+    handle._retry_count = attempt
+    handle._max_retries = max_retries
+    # Fire status callbacks asynchronously (fire-and-forget)
+    import asyncio
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(pool._notify_status_callbacks(handle.id, AgentStatus.RUNNING, handle))
+    except RuntimeError:
+        pass  # No event loop running (test context)
 
 
 async def _persist_subagent_transcript(session_store, session, handle, worker, duration_ms, output):
@@ -393,6 +415,10 @@ class SubAgentPool:
                 project_dir=getattr(tool_context, 'project_dir', None) if tool_context else None,
                 progress_callback=lambda cur, max_i: setattr(
                     handle, '_progress_iter', (cur, max_i)
+                ),
+                # gap-18-03: retry callback updates handle and notifies status bar
+                retry_callback=lambda attempt, max_r, delay: _retry_notify(
+                    handle, attempt, max_r, self
                 ),
                 config=config,
             )
