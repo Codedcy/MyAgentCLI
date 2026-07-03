@@ -344,15 +344,67 @@ class SessionStore:
             f"Goal Achieved: {session.goal_achieved}",
             "",
         ]
-        for m in session._messages:
+        for i, m in enumerate(session._messages):
             lines.append(f"### {m.role}")
-            lines.append(m.content[:2000])
+            full_content = m.content or ""
+            lines.append(self._persist_message_content(
+                sess_dir, i + 1, m.role, full_content
+            ))
             lines.append("")
         md.write_text("\n".join(lines), encoding="utf-8")
 
+    # Threshold: messages longer than this are stored in a separate reference
+    # file to keep the main transcript manageable. Shorter messages are stored
+    # inline with full content (no truncation — spec requirement: traceability).
+    _LONG_MESSAGE_THRESHOLD = 50000
+
+    def _persist_message_content(
+        self, sess_dir: Path, msg_index: int, role: str, content: str
+    ) -> str:
+        """Persist message content, using reference files for very long messages.
+
+        Messages <= _LONG_MESSAGE_THRESHOLD chars are returned as-is (full content).
+        Longer messages are written to long-messages/msg-NNN.json and a reference
+        string is returned. This ensures full traceability while keeping transcript
+        files manageable.
+        """
+        if len(content) <= self._LONG_MESSAGE_THRESHOLD:
+            return content
+
+        # Store in long-messages/ subdirectory
+        long_dir = sess_dir / "long-messages"
+        long_dir.mkdir(parents=True, exist_ok=True)
+        ref_file = long_dir / f"msg-{msg_index:03d}.json"
+        ref_file.write_text(
+            json.dumps({
+                "msg_index": msg_index,
+                "role": role,
+                "content": content,
+                "content_length": len(content),
+            }, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return (
+            f"[Full content reference: long-messages/msg-{msg_index:03d}.json "
+            f"({len(content)} chars)]\n"
+            f"{content[:2000]}\n"
+            f"... (truncated in transcript, full content at "
+            f"long-messages/msg-{msg_index:03d}.json)"
+        )
+
     def _write_transcripts(self, sess_dir: Path, session: Session) -> None:
-        # JSON — save ALL messages (not just last 50)
+        # JSON — save ALL messages with full content (gap-r6-04: no truncation)
         ts = sess_dir / "transcript.json"
+        messages_data = []
+        for i, m in enumerate(session._messages):
+            full_content = m.content or ""
+            messages_data.append({
+                "role": m.role,
+                "content": self._persist_message_content(
+                    sess_dir, i + 1, m.role, full_content
+                ),
+                "timestamp": m.timestamp.isoformat(),
+            })
         ts.write_text(
             json.dumps(
                 {
@@ -367,21 +419,14 @@ class SessionStore:
                     "turn_count": session.turn_count,
                     "first_message": session._messages[0].content[:100] if session._messages else "",
                     "duration": 0,
-                    "messages": [
-                        {
-                            "role": m.role,
-                            "content": m.content[:5000],
-                            "timestamp": m.timestamp.isoformat(),
-                        }
-                        for m in session._messages  # ALL messages
-                    ],
+                    "messages": messages_data,
                 },
                 ensure_ascii=False,
                 indent=2,
             )
         )
 
-        # Markdown — save ALL messages
+        # Markdown — save ALL messages with full content
         md = sess_dir / "transcript.md"
         lines = [
             f"# Session: {session.id}",
@@ -390,8 +435,11 @@ class SessionStore:
             f"Goal: {session.goal or 'None'}",
             "",
         ]
-        for m in session._messages:
+        for i, m in enumerate(session._messages):
             lines.append(f"### {m.role}")
-            lines.append(m.content[:2000])
+            full_content = m.content or ""
+            lines.append(self._persist_message_content(
+                sess_dir, i + 1, m.role, full_content
+            ))
             lines.append("")
         md.write_text("\n".join(lines), encoding="utf-8")
