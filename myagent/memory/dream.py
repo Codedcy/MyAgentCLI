@@ -6,7 +6,7 @@ import json
 import logging
 import time
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -19,6 +19,16 @@ class DreamResult:
     memories_updated: int = 0
     memories_deleted: int = 0
     log_path: Path | None = None
+
+
+@dataclass
+class TranscriptFindings:
+    """Structured findings from transcript scanning (G7)."""
+    correction_count: int = 0
+    correction_markers: list[str] = field(default_factory=list)
+    top_topics: list[tuple[str, int]] = field(default_factory=list)
+    sessions_scanned: int = 0
+    text: list[str] = field(default_factory=list)
 
 
 class DreamEngine:
@@ -158,10 +168,10 @@ class DreamEngine:
 
             # ── 4. Scan recent transcripts for patterns (gap-18) ──
             transcript_findings = await self._scan_transcripts(session_store)
-            if transcript_findings:
+            if transcript_findings.text:
                 analysis_sections.append("")
                 analysis_sections.append("### Patterns from Recent Sessions")
-                for finding in transcript_findings:
+                for finding in transcript_findings.text:
                     analysis_sections.append(f"- {finding}")
 
             # ── 5. Detect contradictions between memories (gap-18) ──
@@ -244,13 +254,15 @@ class DreamEngine:
 
         return result
 
-    async def _scan_transcripts(self, session_store) -> list[str]:
+    async def _scan_transcripts(self, session_store) -> TranscriptFindings:
         """Scan recent unprocessed session transcripts for patterns (gap-18).
 
         Identifies repeated corrections, new conventions, and topic clusters
         by scanning transcript files from recent sessions.
+
+        Returns structured TranscriptFindings for programmatic processing (G7).
         """
-        findings: list[str] = []
+        findings = TranscriptFindings()
         if session_store is None:
             return findings
 
@@ -276,15 +288,23 @@ class DreamEngine:
                             recent_sessions.append(ts_file)
 
             if not recent_sessions:
+                findings.text.append("No recent sessions found.")
                 return findings
 
             # Sample up to 5 most recent sessions
             recent_sessions.sort(key=lambda p: p.stat().st_mtime, reverse=True)
             sampled = recent_sessions[:5]
+            findings.sessions_scanned = len(sampled)
 
             # Scan for patterns: repeated corrections, common topics, new conventions
             correction_count = 0
+            correction_markers_found: list[str] = []
             topic_keywords: dict[str, int] = {}
+            correction_patterns = [
+                "let me correct", "actually,", "correction:",
+                "更正", "纠正", "my mistake", "i was wrong",
+                "let me fix", "that's not right",
+            ]
             for ts_file in sampled:
                 try:
                     import json as _json
@@ -295,15 +315,12 @@ class DreamEngine:
                         if isinstance(m, dict)
                     )
 
-                    # Detect correction patterns: "actually", "let me correct", etc.
-                    correction_markers = [
-                        "let me correct", "actually,", "correction:",
-                        "更正", "纠正", "my mistake", "i was wrong",
-                        "let me fix", "that's not right",
-                    ]
-                    for marker in correction_markers:
+                    # Detect correction patterns and track which markers were found
+                    for marker in correction_patterns:
                         if marker in text.lower():
                             correction_count += 1
+                            if marker not in correction_markers_found:
+                                correction_markers_found.append(marker)
 
                     # Track topic keywords
                     keywords = [
@@ -318,27 +335,36 @@ class DreamEngine:
                 except Exception:
                     continue
 
+            findings.correction_count = correction_count
+            findings.correction_markers = correction_markers_found
+
             if correction_count >= 2:
-                findings.append(
+                findings.text.append(
                     f"**{correction_count} corrections** detected across {len(sampled)} "
-                    f"recent sessions. Consider consolidating correction patterns into "
-                    f"conventions."
+                    f"recent sessions. Markers found: {', '.join(correction_markers_found)}. "
+                    f"Consider consolidating correction patterns into conventions."
+                )
+            else:
+                findings.text.append(
+                    f"No significant correction patterns detected "
+                    f"({correction_count} corrections across {len(sampled)} sessions)."
                 )
 
             if topic_keywords:
                 top_topics = sorted(topic_keywords.items(), key=lambda x: -x[1])[:3]
+                findings.top_topics = top_topics
                 topic_str = ", ".join(f"`{t}`" for t, _ in top_topics)
-                findings.append(f"Most common topics: {topic_str}")
+                findings.text.append(f"Most common topics: {topic_str}")
 
-            if not findings:
-                findings.append(
+            if not findings.text:
+                findings.text.append(
                     f"Scanned {len(sampled)} recent sessions. No significant patterns "
                     f"or repeated corrections detected."
                 )
 
         except Exception as e:
             logger.warning("Dream transcript scanning failed: %s", e)
-            findings.append(f"Transcript scanning encountered an error: {e}")
+            findings.text.append(f"Transcript scanning encountered an error: {e}")
 
         return findings
 
@@ -476,69 +502,83 @@ class DreamEngine:
                 )
 
     async def _create_memories_from_patterns(
-        self, findings: list[str], result: DreamResult,
+        self, findings: TranscriptFindings, result: DreamResult,
         actions: list[str], analysis_sections: list[str],
     ) -> None:
-        """Create new memory files from detected patterns in transcripts (gap-2-02)."""
+        """Create new memory files from detected patterns in transcripts (gap-2-02, G7).
+
+        Uses structured TranscriptFindings with count-based logic instead of
+        fragile substring matching on finding text.
+        """
         if not findings or not self.memory_store:
             return
 
         import yaml as _yaml
 
-        for finding in findings:
-            # Extract meaningful patterns to create memories
-            if "corrections" in finding.lower() and "detected" in finding.lower():
-                try:
-                    name = "common-corrections"
-                    description = "Common correction patterns detected in recent sessions"
-                    body = (
-                        "This project has patterns of repeated corrections across sessions. "
-                        "Common issues include: approach corrections, naming fixes, and style adjustments. "
-                        "Consider reviewing the project conventions before starting new work.\n\n"
-                        f"**Dream finding:** {finding}"
-                    )
-                    fm_yaml = _yaml.safe_dump(
-                        {"name": name, "description": description, "metadata": {}},
-                        default_flow_style=False, allow_unicode=True,
-                    ).strip()
-                    full_content = f"---\n{fm_yaml}\n---\n\n{body}"
-                    file_path = str(self.memory_store.project_dir / f"{name}.md")
-                    await self.memory_store.write(
-                        file_path=file_path,
-                        content=full_content,
-                    )
-                    result.memories_created += 1
-                    actions.append("- Created `common-corrections` memory from transcript patterns")
-                    logger.info(
-                        "Dream: created 'common-corrections' memory from transcript patterns",
-                        extra={"category": "system"},
-                    )
-                except Exception:
-                    logger.warning("Dream: failed to create 'common-corrections' memory", exc_info=True)
+        # G7: Use correction_count directly instead of substring matching on text
+        if findings.correction_count >= 2:
+            try:
+                markers_desc = ", ".join(findings.correction_markers[:5]) if findings.correction_markers else "various"
+                name = "common-corrections"
+                description = (
+                    f"Repeated corrections ({findings.correction_count} instances across "
+                    f"{findings.sessions_scanned} sessions)"
+                )
+                body = (
+                    f"Across {findings.sessions_scanned} recent sessions, "
+                    f"{findings.correction_count} correction instances were detected. "
+                    f"The agent was frequently corrected or self-corrected, "
+                    f"indicating recurring knowledge gaps or unclear conventions.\n\n"
+                    f"**Patterns detected:** {markers_desc}\n\n"
+                    f"**Recommendation:** Before starting new work, review the project "
+                    f"CLAUDE.md and related conventions to avoid repeated corrections.\n\n"
+                    f"**Dream finding:** {findings.text[0] if findings.text else 'corrections detected'}"
+                )
+                fm_yaml = _yaml.safe_dump(
+                    {"name": name, "description": description, "metadata": {}},
+                    default_flow_style=False, allow_unicode=True,
+                ).strip()
+                full_content = f"---\n{fm_yaml}\n---\n\n{body}"
+                file_path = str(self.memory_store.project_dir / f"{name}.md")
+                await self.memory_store.write(
+                    file_path=file_path,
+                    content=full_content,
+                )
+                result.memories_created += 1
+                actions.append(f"- Created `common-corrections` memory ({findings.correction_count} corrections)")
+                logger.info(
+                    "Dream: created 'common-corrections' memory (%d corrections)",
+                    findings.correction_count,
+                    extra={"category": "system"},
+                )
+            except Exception:
+                logger.warning("Dream: failed to create 'common-corrections' memory", exc_info=True)
 
-            if "topics" in finding.lower() and ":" in finding:
-                try:
-                    name = "frequent-topics"
-                    description = "Frequently discussed topics across recent sessions"
-                    body = (
-                        "The most frequently discussed topics in recent sessions are "
-                        "recorded here for context awareness.\n\n"
-                        f"**Dream finding:** {finding}"
-                    )
-                    fm_yaml = _yaml.safe_dump(
-                        {"name": name, "description": description, "metadata": {}},
-                        default_flow_style=False, allow_unicode=True,
-                    ).strip()
-                    full_content = f"---\n{fm_yaml}\n---\n\n{body}"
-                    file_path = str(self.memory_store.project_dir / f"{name}.md")
-                    await self.memory_store.write(
-                        file_path=file_path,
-                        content=full_content,
-                    )
-                    result.memories_created += 1
-                    actions.append("- Created `frequent-topics` memory from transcript topics")
-                except Exception:
-                    logger.warning("Dream: failed to create 'frequent-topics' memory", exc_info=True)
+        if findings.top_topics:
+            try:
+                topics_list = ", ".join(f"`{t[0]}`" for t in findings.top_topics)
+                name = "frequent-topics"
+                description = "Frequently discussed topics across recent sessions"
+                body = (
+                    f"The most frequently discussed topics in {findings.sessions_scanned} "
+                    f"recent sessions are: {topics_list}.\n\n"
+                    f"This indicates areas of active focus in the project.\n\n"
+                    f"**Dream finding:** {findings.text[1] if len(findings.text) > 1 else findings.text[0] if findings.text else 'topics detected'}"
+                )
+                fm_yaml = _yaml.safe_dump(
+                    {"name": name, "description": description, "metadata": {}},
+                    default_flow_style=False, allow_unicode=True,
+                ).strip()
+                full_content = f"---\n{fm_yaml}\n---\n\n{body}"
+                file_path = str(self.memory_store.project_dir / f"{name}.md")
+                await self.memory_store.write(
+                    file_path=file_path,
+                    content=full_content,
+                )
+                result.memories_created += 1
+                actions.append(f"- Created `frequent-topics` memory ({topics_list})")
+            except Exception:
+                logger.warning("Dream: failed to create 'frequent-topics' memory", exc_info=True)
 
     def _load_state(self) -> dict:
         if self._state_file.exists():
