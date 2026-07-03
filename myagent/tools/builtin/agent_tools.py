@@ -79,7 +79,11 @@ class SendMessageTool:
         "properties": {
             "to": {
                 "type": "string",
-                "description": "Recipient: agent name or ID",
+                "description": "Recipient: agent name or ID, or 'main' to send to the main agent",
+            },
+            "from": {
+                "type": "string",
+                "description": "Sender agent ID (populated automatically in sub-agent context). When calling from a sub-agent to 'main', the sub-agent's own ID is used if this field is omitted.",
             },
             "summary": {
                 "type": "string",
