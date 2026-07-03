@@ -53,10 +53,22 @@ class CompressionEngine:
             old_size = sum(len(m.content) for m in messages)
             messages = self._layer2_summarize(messages)
             new_size = sum(len(m.content) for m in messages)
-            if new_size < old_size * 0.9:
+            # Calculate actual savings ratio
+            if old_size > 0:
+                savings = (old_size - new_size) / old_size
+            else:
+                savings = 0.0
+            # Debounce: skip if savings below minimum_savings threshold (spec §三 防抖保护)
+            min_savings = getattr(self.config, 'minimum_savings', 0.10)
+            if savings >= min_savings:
                 layers_applied.append(2)
                 changed = True
                 current_usage_pct *= 0.7
+            elif savings > 0:
+                logger.debug(
+                    "Layer 2 compression savings (%.1f%%) below minimum_savings (%.1f%%); skipping.",
+                    savings * 100, min_savings * 100,
+                )
 
         # Layer 3: Conversation summary
         if current_usage_pct > self.config.primary_threshold if self.config else 0.75:
