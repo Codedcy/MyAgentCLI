@@ -442,12 +442,17 @@ class AgentEngine:
             # ── No tool calls — text response complete ───────────
             full_text = "".join(text_buffer)
 
-            # Record assistant response in message history
-            if full_text:
-                messages.append({"role": "assistant", "content": full_text})
-
             # Detect intent signals (stop / correct / insert / continue)
+            # Must check BEFORE stripping marker — _detect_intent needs the marker.
             intent = self._detect_intent(full_text)
+
+            # Strip the [INTENT: xxx] marker line from text before recording
+            # in message history, so it doesn't pollute the visible conversation.
+            clean_text = self._strip_intent_marker(full_text)
+
+            # Record assistant response in message history
+            if clean_text:
+                messages.append({"role": "assistant", "content": clean_text})
             if intent and intent != "continue":
                 yield IntentSignal(intent=intent)
                 if intent == "stop":
@@ -494,9 +499,9 @@ class AgentEngine:
                     continue
 
             # Detect AskUserQuestion — stop this turn; wait for user reply
-            if self._is_question(full_text):
+            if self._is_question(clean_text):
                 self._persist_turn(session, messages)
-                yield AskUserQuestion(question=full_text)
+                yield AskUserQuestion(question=clean_text)
                 return
 
             # ── Goal check ──────────────────────────────────────
@@ -584,22 +589,54 @@ class AgentEngine:
             return getattr(self.config.model, "thinking", "Think High")
         return "Think High"
 
+    # Structured intent marker prefix (spec §二: model signals intent via cues)
+    _INTENT_MARKER_PREFIX = "[INTENT:"
+
     def _detect_intent(self, text: str) -> str | None:
         """Detect user intent signals in model response.
 
-        Design spec defines four intent types:
-          - stop: halt current operation
-          - correct: redirect approach (direction correction)
-          - insert: add new sub-task before continuing
-          - continue: resume after interruption
+        Primary method: parses structured [INTENT: xxx] markers that the model
+        emits as the first line of its response (instructed via L0 system prompt).
+        This is the model-driven approach required by §二 — no hard-coded keyword
+        guessing.
+
+        Fallback: For very short responses (< 30 chars) that match common
+        continue phrases, treats as "continue". This handles edge cases where
+        the model produces a terse acknowledgment after interruption.
 
         Returns one of: "stop", "correct", "insert", "continue", or None.
         """
         if not text:
             return None
-        text_lower = text.lower().strip()
 
-        # Detect brief continue phrases (< 30 chars) — high priority
+        # ── Primary: parse structured [INTENT: ...] marker ──────────
+        stripped = text.strip()
+        valid_intents = {"stop", "correct", "insert", "continue"}
+        if stripped.startswith(self._INTENT_MARKER_PREFIX):
+            # Extract the intent value: [INTENT: stop]\n...
+            first_line = stripped.split("\n", 1)[0]
+            try:
+                # Parse "[INTENT: stop]" → "stop"
+                intent_part = first_line[len(self._INTENT_MARKER_PREFIX):].rstrip("]").strip()
+                if intent_part in valid_intents:
+                    return intent_part
+            except (ValueError, IndexError):
+                pass
+
+        # Also scan for marker anywhere in the text (model may not always
+        # put it as the very first line despite instructions)
+        for line in stripped.split("\n"):
+            line = line.strip()
+            if line.startswith(self._INTENT_MARKER_PREFIX):
+                try:
+                    intent_part = line[len(self._INTENT_MARKER_PREFIX):].rstrip("]").strip()
+                    if intent_part in valid_intents:
+                        return intent_part
+                except (ValueError, IndexError):
+                    pass
+
+        # ── Thin fallback: brief continue phrases only ──────────────
+        text_lower = stripped.lower()
         if len(text) < 30:
             continue_phrases = [
                 "continue", "go on", "继续", "proceed", "resume",
@@ -608,34 +645,23 @@ class AgentEngine:
             if any(p in text_lower for p in continue_phrases):
                 return "continue"
 
-        # Detect stop
-        stop_phrases = [
-            "i'll stop", "stopping now", "task complete",
-            "all done", "i am done", "已完成", "任务完成",
-        ]
-        if any(p in text_lower for p in stop_phrases):
-            return "stop"
-
-        # Detect correct (direction correction)
-        correct_phrases = [
-            "let me correct", "i need to correct", "actually,",
-            "let me reconsider", "i should approach", "correction:",
-            "let me reconsider", "let's try a different",
-            "更正", "纠正", "改一下",
-        ]
-        if any(p in text_lower for p in correct_phrases):
-            return "correct"
-
-        # Detect insert (new sub-task)
-        insert_phrases = [
-            "let me add", "i should also", "additionally,",
-            "one more thing", "i need to insert", "before i continue",
-            "插入任务", "新任务", "额外任务",
-        ]
-        if any(p in text_lower for p in insert_phrases):
-            return "insert"
-
         return None
+
+    def _strip_intent_marker(self, text: str) -> str:
+        """Strip [INTENT: xxx] marker line(s) from model response text.
+
+        Removes the structured intent marker line so it doesn't appear
+        in the user-visible conversation or get stored in message history.
+        """
+        if not text:
+            return text
+        result_lines = []
+        for line in text.split("\n"):
+            stripped_line = line.strip()
+            if stripped_line.startswith(self._INTENT_MARKER_PREFIX):
+                continue  # Skip intent marker lines
+            result_lines.append(line)
+        return "\n".join(result_lines)
 
     def _is_question(self, text: str) -> bool:
         """Detect if text appears to be a question to the user."""

@@ -75,7 +75,27 @@ web access, sub-agent orchestration, and task tracking.
 - The user may interrupt you with natural language to stop, correct, or insert new tasks.
   Interpret their intent from context — do not expect structured commands.
 - Always persist important findings to memory for future sessions.
-- Be thorough but concise. Verify your work before claiming completion."""
+- Be thorough but concise. Verify your work before claiming completion.
+
+## Intent Signaling
+When you determine that the user's latest message expresses an intent to interrupt
+or redirect your current work, signal this by prefixing your response with one of
+these structured markers on its own line:
+
+  [INTENT: stop]    — User wants you to halt the current operation immediately.
+  [INTENT: correct] — User wants to correct your approach or redirect your work.
+  [INTENT: insert]  — User wants to insert a new sub-task before continuing.
+  [INTENT: continue] — User wants you to resume/continue after an interruption.
+
+Use these markers ONLY when the user's message clearly expresses the corresponding
+intent. Do NOT use them for routine conversational transitions. The marker must be
+the very first line of your response, followed by your natural language reply.
+
+You may also use a virtual tool call `skill_invoke` to activate a skill from the
+Available Skills list (see below). Emit `tool_call(name="skill_invoke",
+params={"skill": "<name>"})` when you determine a listed skill matches the current
+task. This tool call is intercepted by the engine and does not count against your
+tool usage limit."""
 
     def __init__(self, tool_registry, memory_store, skill_registry, config=None):
         self.tool_registry = tool_registry
