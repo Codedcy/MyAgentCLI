@@ -39,7 +39,13 @@ class Session:
 
     def add_message(self, msg: Message) -> None:
         self._messages.append(msg)
-        self.turn_count += 1
+        # gap-19-09: Only count conversation turns (user/assistant messages).
+        # Per spec §三, a "turn" is a conversation round (user→assistant exchange).
+        # Tool call results are part of the same turn and should not inflate
+        # the count. This prevents the dream engine's 50-round threshold from
+        # triggering prematurely due to tool-call-heavy conversations.
+        if msg.role in ("user", "assistant"):
+            self.turn_count += 1
 
 
 @dataclass
