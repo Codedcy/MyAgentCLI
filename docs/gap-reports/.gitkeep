@@ -1,0 +1,4 @@
+# Gap reports from close-design-gaps workflow
+# Each round produces:
+#   YYYY-MM-DD-gap-round-N.md          — gap findings
+#   YYYY-MM-DD-gap-round-N-fix-plan.md — fix plan
