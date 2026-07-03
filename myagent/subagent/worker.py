@@ -57,6 +57,15 @@ class SubAgentWorker:
 
     MAX_ITERATIONS = 30
 
+    # Context window guard constants (gap-20-01: sub-agent context compression).
+    # Sub-agents inherit the same 1M token context window as the main agent per
+    # spec §三. At ~4 chars/token, 750KB ≈ 75% usage triggers compression;
+    # 900KB ≈ 90% usage is the hard limit.
+    _CONTEXT_SOFT_LIMIT_CHARS = 750_000   # 75% — trigger compression
+    _CONTEXT_HARD_LIMIT_CHARS = 900_000   # 90% — hard truncation
+    _CONTEXT_KEEP_HEAD = 2                # keep first N messages after system
+    _CONTEXT_KEEP_TAIL = 10               # keep last N messages
+
     def __init__(
         self,
         prompt: str,
@@ -163,6 +172,14 @@ class SubAgentWorker:
         while iteration < self.MAX_ITERATIONS:
             iteration += 1
             self._current_iteration = iteration
+
+            # ── Context compression guard (gap-20-01) ──────────
+            # Sub-agents inherit the same 1M token context window as the main
+            # agent per spec §三. Without compression, a sub-agent with a large
+            # prompt and many tool calls could silently exhaust the context window.
+            # We apply lightweight character-based truncation when usage exceeds
+            # 75%, keeping system prompt + head + tail messages.
+            self._compress_context(messages, iteration)
 
             # Report iteration progress to pool/status bar (gap-8-06)
             if self._progress_callback:
@@ -585,6 +602,74 @@ class SubAgentWorker:
                 lines.append(getter())
 
         return lines
+
+    def _compress_context(self, messages: list[dict], iteration: int) -> None:
+        """Lightweight context-size guard for sub-agents (gap-20-01).
+
+        Estimates total message character count and applies truncation when
+        usage exceeds thresholds. Keeps system prompt, first N message-pairs,
+        and last N messages to preserve task context.
+
+        This is intentionally simpler than the main agent's 4-layer compression
+        pipeline — sub-agents run short-lived tasks and don't benefit from
+        progressive compression. Character-based estimation avoids the need
+        for token counting infrastructure in sub-agent workers.
+        """
+        total_chars = sum(len(str(m.get("content", ""))) for m in messages)
+        total_chars += sum(
+            len(str(m.get("role", ""))) for m in messages
+        )
+
+        if total_chars < self._CONTEXT_SOFT_LIMIT_CHARS:
+            return  # Below soft limit — no compression needed
+
+        before_count = len(messages)
+        before_chars = total_chars
+
+        if total_chars >= self._CONTEXT_HARD_LIMIT_CHARS:
+            # Hard limit: aggressive truncation with warning
+            logger.warning(
+                "Sub-agent context at %d chars (hard limit %d) — "
+                "applying aggressive truncation at iteration %d",
+                total_chars, self._CONTEXT_HARD_LIMIT_CHARS, iteration,
+                extra={"category": "subagent", "event": "context_hard_truncation"},
+            )
+            # Keep: system (index 0) + first 2 + last 5
+            system_msg = messages[:1] if messages and messages[0].get("role") == "system" else []
+            non_system = messages[1:] if system_msg else messages
+            head = non_system[:self._CONTEXT_KEEP_HEAD]
+            tail = non_system[-5:] if len(non_system) > 5 + self._CONTEXT_KEEP_HEAD else non_system[self._CONTEXT_KEEP_HEAD:]
+            messages[:] = system_msg + head + tail
+
+            # Inject truncation notice as a user message so the sub-agent knows
+            messages.append({
+                "role": "user",
+                "content": (
+                    f"[Context truncated: {before_chars} → ~"
+                    f"{sum(len(str(m.get('content', ''))) for m in messages)} chars. "
+                    f"Earlier tool results removed. Continue with remaining context.]"
+                ),
+            })
+        else:
+            # Soft limit: moderate truncation, keep more tail context
+            logger.info(
+                "Sub-agent context at %d chars (soft limit %d) — "
+                "applying moderate truncation at iteration %d",
+                total_chars, self._CONTEXT_SOFT_LIMIT_CHARS, iteration,
+                extra={"category": "subagent", "event": "context_compression"},
+            )
+            system_msg = messages[:1] if messages and messages[0].get("role") == "system" else []
+            non_system = messages[1:] if system_msg else messages
+            head = non_system[:self._CONTEXT_KEEP_HEAD]
+            tail = non_system[-self._CONTEXT_KEEP_TAIL:] if len(non_system) > self._CONTEXT_KEEP_TAIL + self._CONTEXT_KEEP_HEAD else non_system[self._CONTEXT_KEEP_HEAD:]
+            messages[:] = system_msg + head + tail
+
+            after_chars = sum(len(str(m.get("content", ""))) for m in messages)
+            logger.info(
+                "Sub-agent context compressed: %d → %d messages, %d → %d chars",
+                before_count, len(messages), before_chars, after_chars,
+                extra={"category": "subagent", "event": "context_compressed"},
+            )
 
     def _classify_event(self, event) -> str:
         """Classify an LLM stream event by type.
