@@ -48,40 +48,11 @@ class BashTool:
             config_timeout_ms = context.config.tools.shell_timeout_seconds * 1000
         timeout_ms = params.get("timeout", config_timeout_ms)
         run_in_background = params.get("run_in_background", False)
-        dangerously_disable_sandbox = params.get("dangerouslyDisableSandbox", False)
 
-        # Permission check: skip only if sandbox is explicitly disabled
-        if not dangerously_disable_sandbox and context.permissions is not None:
-            try:
-                result = context.permissions.check(
-                    tool_name="bash",
-                    params=params,
-                )
-                if result.name == "DENY":
-                    return ToolResult(
-                        error="Permission denied: bash execution blocked by sandbox.",
-                        metadata={"permission": "denied"},
-                    )
-                if result.name == "ASK":
-                    allowed = await context.permissions.confirm(
-                        tool_name="bash",
-                        params=params,
-                    )
-                    if not allowed:
-                        return ToolResult(
-                            error="Permission denied: bash execution blocked by sandbox.",
-                            metadata={"permission": "denied"},
-                        )
-            except Exception as e:
-                logger.warning(
-                    "Permission check failed for bash: %s", str(e),
-                    extra={"category": "tool", "tool_name": "bash"},
-                )
-                # If permission system errors, deny by default for safety
-                return ToolResult(
-                    error=f"Permission check error: {e}",
-                    metadata={"permission": "error"},
-                )
+        # Permission checks are handled centrally by the engine's _execute_tool
+        # before calling tool.execute(). The dangerouslyDisableSandbox flag is
+        # also handled by the engine. Tool implementations trust the engine's
+        # pre-check and do not re-prompt the user (per spec §五).
 
         try:
             timeout_sec = min(timeout_ms, 600000) / 1000.0

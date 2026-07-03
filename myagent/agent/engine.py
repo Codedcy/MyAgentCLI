@@ -781,9 +781,17 @@ class AgentEngine:
         if not tool:
             return ToolResult(error=f"Unknown tool: {tc.name}")
 
-        # Check permissions before executing
-        level = self._get_tool_level(tc.name)
-        if self.permissions:
+        # Check permissions before executing.
+        # If the tool call includes dangerouslyDisableSandbox=True, bypass the
+        # centralized permission check (per spec §五: "dangerouslyDisableSandbox
+        # flag should bypass the engine check"). The tool implementation itself
+        # does not re-check (gap-r14-03).
+        skip_perm_check = (
+            tc.params.get("dangerouslyDisableSandbox", False)
+            if isinstance(tc.params, dict) else False
+        )
+        if self.permissions and not skip_perm_check:
+            level = self._get_tool_level(tc.name)
             perm_result = self.permissions.check(tc.name, level=level, params=tc.params)
             if perm_result.name == "DENY":
                 logger.info(
