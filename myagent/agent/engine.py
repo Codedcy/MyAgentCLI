@@ -919,21 +919,81 @@ class AgentEngine:
         from myagent.permissions.controller import TOOL_LEVEL_MAP
         return TOOL_LEVEL_MAP.get(tool_name, 3)
 
+    # Known model context window sizes (in tokens).
+    # Used as fallback when the LLM provider does not expose its own window.
+    _CONTEXT_WINDOW_MAP: dict[str, int] = {
+        "deepseek-v4-pro": 1_000_000,
+        "deepseek-chat": 65536,
+        "gpt-4o": 128000,
+        "gpt-4-turbo": 128000,
+        "gpt-3.5-turbo": 16385,
+        "claude-3-opus": 200000,
+        "claude-3-sonnet": 200000,
+        "claude-3-haiku": 200000,
+        "claude-3.5-sonnet": 200000,
+    }
+
     def _estimate_context_usage(self, messages: list[dict], tools: list[dict] | None = None) -> float:
         """Estimate context window usage as a fraction [0.0, 1.0].
 
-        Uses character count / estimated token ratio, compared against a
-        nominal 1M token context window. Adds tool definition overhead.
+        Derives the context window from the active model configuration
+        (using a known-window map, defaulting to 1M). Token counting
+        prefers litellm's token_counter via LLMProvider when available,
+        falling back to a character-based estimate with a language-aware
+        ratio (3.5 chars/token for mixed-content default).
         """
-        total_chars = sum(len(m.get("content", "")) for m in messages)
-        total_chars += sum(len(m.get("role", "")) for m in messages)
-        if tools:
-            import json
-            total_chars += len(json.dumps(tools, ensure_ascii=False))
-        # Rough estimate: ~3 chars per token for mixed Chinese/English
-        estimated_tokens = total_chars / 3
-        context_window = 1_000_000  # DeepSeek V4 Pro nominal context
+        # ── Token estimation ────────────────────────────────────
+        if self.llm is not None:
+            try:
+                estimated_tokens = self.llm.token_count(messages)
+            except Exception:
+                estimated_tokens = self._char_based_token_estimate(messages, tools)
+        else:
+            estimated_tokens = self._char_based_token_estimate(messages, tools)
+
+        # ── Context window lookup ───────────────────────────────
+        model_name = None
+        if self.config and hasattr(self.config, 'model'):
+            model_name = getattr(self.config.model, 'model', None)
+        context_window = self._CONTEXT_WINDOW_MAP.get(model_name or "", 1_000_000)
+
         return min(estimated_tokens / context_window, 1.0)
+
+    def _char_based_token_estimate(self, messages: list[dict], tools: list[dict] | None = None) -> int:
+        """Character-based token estimate as a fallback when litellm is unavailable.
+
+        Uses a weighted ratio: Chinese characters ~1.5 chars/token,
+        ASCII ~4 chars/token. Mixed content defaults to ~3.5.
+        """
+        import json as _json
+        total_chars = 0
+        total_cjk = 0
+        total_ascii = 0
+        for m in messages:
+            content = m.get("content", "") or ""
+            for ch in content:
+                total_chars += 1
+                cp = ord(ch)
+                # CJK Unified Ideographs (U+4E00–U+9FFF) and common extensions
+                if 0x4E00 <= cp <= 0x9FFF or 0x3400 <= cp <= 0x4DBF or 0x20000 <= cp <= 0x2A6DF:
+                    total_cjk += 1
+                elif cp < 128:
+                    total_ascii += 1
+            total_chars += len(m.get("role", "") or "")
+        if tools:
+            tools_json = _json.dumps(tools, ensure_ascii=False)
+            total_chars += len(tools_json)
+            for ch in tools_json:
+                cp = ord(ch)
+                if 0x4E00 <= cp <= 0x9FFF or 0x3400 <= cp <= 0x4DBF:
+                    total_cjk += 1
+                elif cp < 128:
+                    total_ascii += 1
+
+        # Weighted estimate: CJK ~1.5 chars/token, ASCII ~4 chars/token
+        other_chars = total_chars - total_cjk - total_ascii
+        estimated = (total_cjk / 1.5) + (total_ascii / 4.0) + (other_chars / 3.5)
+        return max(int(estimated), 1)
 
     def _persist_turn(self, session, messages: list[dict]) -> None:
         """Persist the current messages state to the session store (gap-04).
