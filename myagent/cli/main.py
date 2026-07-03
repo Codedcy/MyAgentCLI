@@ -246,6 +246,13 @@ async def async_main(argv: list[str] | None = None) -> int:
         session_id = None if args.resume == "__latest__" else args.resume
         session = await session_mgr.resume(session_id, project_dir)
         if session:
+            # Reset task list with session persistence path (gap-12)
+            if hasattr(session, 'project_name') and session_store:
+                from myagent.tools.builtin.session_tools import reset_task_list
+                sess_dir = session_store._session_dir(
+                    session.project_name, session.project_hash, session.id
+                )
+                reset_task_list(persist_path=sess_dir / "tasks.json")
             repl = REPLEngine(
                 engine=engine, commands=commands, session_mgr=session_mgr,
                 config=config, project_dir=project_dir,

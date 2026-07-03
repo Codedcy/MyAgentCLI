@@ -109,6 +109,15 @@ class REPLEngine:
         # Start session
         if self._session_mgr and self._current_session is None:
             self._current_session = await self._session_mgr.start_new(self._project_dir)
+            # Reset task list for the new session (gap-12)
+            if hasattr(self._current_session, 'project_name') and self._session_mgr.session_store:
+                from myagent.tools.builtin.session_tools import reset_task_list
+                sess_dir = self._session_mgr.session_store._session_dir(
+                    self._current_session.project_name,
+                    self._current_session.project_hash,
+                    self._current_session.id,
+                )
+                reset_task_list(persist_path=sess_dir / "tasks.json")
 
         # Shared Rich Live layout for status bar + output (gap-2-07)
         self._live = None
