@@ -143,6 +143,7 @@ class ConfigSetTool:
                 ),
             },
             "value": {
+                "type": ["string", "number", "boolean", "array", "object"],
                 "description": (
                     "The new value. Numbers passed as int/float, booleans as bool, "
                     "strings as string. For list keys like auto_allow.commands, "
