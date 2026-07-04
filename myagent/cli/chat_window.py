@@ -68,7 +68,7 @@ class ChatWindowController:
         self._on_submit: Callable[[str], Any] | None = None
         self._on_exit: Callable[[], Any] | None = None
         self._on_interrupt: Callable[[], Any] | None = None
-        self._ask_future: asyncio.Future[str] | None = None
+        self._ask_future: asyncio.Future[str | None] | None = None
 
         self._input_actions = ChatInputActions(
             submit=self._handle_submit,
@@ -126,8 +126,10 @@ class ChatWindowController:
             raise
         finally:
             self._is_running = False
+            self._finish_pending_ask(None)
             if started and self._on_exit is not None:
                 await self._call_async(self._on_exit)
+            self._app = None
 
     def append_user_input(self, text: str) -> None:
         """Append user-submitted text to the visible transcript."""
@@ -169,10 +171,26 @@ class ChatWindowController:
     def request_stop(self) -> None:
         """Request the full-screen application to exit."""
 
+        was_running = self._is_running
         self._is_running = False
+        self._finish_pending_ask(None)
+        if not was_running:
+            return
         exit_app = getattr(self._app, "exit", None)
         if callable(exit_app):
-            exit_app()
+            try:
+                exit_app()
+            except Exception as exc:
+                logger.exception(
+                    "Chat window stop failed",
+                    extra={
+                        "category": "error",
+                        "component": "agent",
+                        "context": "cli_chat_window_stop",
+                        "exception_type": type(exc).__name__,
+                        "traceback": traceback.format_exc(),
+                    },
+                )
 
     def set_agent_running(self, running: bool) -> None:
         """Tell input handling whether Ctrl+C should interrupt an active run."""
@@ -187,7 +205,7 @@ class ChatWindowController:
 
         self.append_system(prompt)
         loop = asyncio.get_running_loop()
-        future: asyncio.Future[str] = loop.create_future()
+        future: asyncio.Future[str | None] = loop.create_future()
         self._ask_future = future
         try:
             done, _ = await asyncio.wait({future}, timeout=timeout)
@@ -210,12 +228,13 @@ class ChatWindowController:
             lexer=self.lexer,
             wrap_lines=False,
         )
+        self._input_field.buffer.on_text_changed += self._on_input_text_changed
         return Layout(HSplit([body, self._input_field]))
 
     def _body_text(self) -> str:
         columns, rows = self._current_terminal_size()
         input_text = self._current_input_text()
-        input_height = self.input_controller.input_height_for_text(input_text)
+        input_height = self._sync_input_height(input_text)
         return self._render_body_for_size(
             terminal_columns=columns,
             terminal_rows=max(1, rows - input_height),
@@ -356,7 +375,7 @@ class ChatWindowController:
             return
         self.append_user_input(normalized)
         if self._ask_future is not None and not self._ask_future.done():
-            self._ask_future.set_result(normalized)
+            self._finish_pending_ask(normalized)
             return
         if self._on_submit is not None:
             self._call_background(self._on_submit, normalized)
@@ -365,6 +384,8 @@ class ChatWindowController:
         insert_text = getattr(buffer, "insert_text", None)
         if callable(insert_text):
             insert_text("\n")
+        self._sync_input_height()
+        self.refresh()
 
     def _handle_interrupt(self) -> bool:
         if not self._agent_running:
@@ -403,6 +424,23 @@ class ChatWindowController:
             return ""
         buffer = getattr(self._input_field, "buffer", None)
         return getattr(buffer, "text", "") or ""
+
+    def _on_input_text_changed(self, buffer: Any) -> None:
+        self._sync_input_height(getattr(buffer, "text", "") or "")
+        self.refresh()
+
+    def _sync_input_height(self, text: str | None = None) -> int:
+        if text is None:
+            text = self._current_input_text()
+        height = self.input_controller.input_height_for_text(text)
+        if self._input_field is not None:
+            self._input_field.window.height = height
+        return height
+
+    def _finish_pending_ask(self, value: str | None) -> None:
+        future = self._ask_future
+        if future is not None and not future.done():
+            future.set_result(value)
 
     def _chat_config(self) -> Any:
         ui_config = getattr(self.config, "ui", None)
@@ -445,18 +483,5 @@ class ChatWindowController:
         result = callback(*args)
         if inspect.isawaitable(result):
             await result
-
-    def _log_exception(self, message: str, exc: BaseException, *, context: str) -> None:
-        logger.exception(
-            message,
-            extra={
-                "category": "error",
-                "component": "agent",
-                "context": context,
-                "exception_type": type(exc).__name__,
-                "traceback": traceback.format_exc(),
-            },
-        )
-
 
 __all__ = ["ChatWindowController"]

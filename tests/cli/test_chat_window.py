@@ -47,6 +47,21 @@ class FakeApplication:
         self._exit_event.set()
 
 
+class ExitOnceApplication(FakeApplication):
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._already_exited = False
+
+    async def run_async(self) -> None:
+        self._already_exited = True
+
+    def exit(self) -> None:
+        if self._already_exited:
+            raise RuntimeError("Application is not running")
+        self._already_exited = True
+        super().exit()
+
+
 def make_config(
     *,
     collapse_below_columns: int = 120,
@@ -289,6 +304,36 @@ async def test_run_starts_full_screen_application_and_request_stop_exits_it(
     assert controller.is_running is False
 
 
+@pytest.mark.asyncio
+async def test_stopping_with_pending_ask_returns_none_promptly() -> None:
+    controller = make_controller()
+
+    ask_task = asyncio.create_task(controller.ask("Stop now?", timeout=60))
+    await asyncio.sleep(0)
+
+    controller.request_stop()
+
+    assert await asyncio.wait_for(ask_task, timeout=0.2) is None
+
+
+@pytest.mark.asyncio
+async def test_request_stop_is_safe_after_app_exit_and_when_repeated(monkeypatch) -> None:
+    import myagent.cli.chat_window as chat_window
+
+    FakeApplication.instances = []
+    monkeypatch.setattr(chat_window, "Application", ExitOnceApplication)
+    controller = make_controller()
+
+    await controller.run(lambda text: None)
+
+    assert controller.is_running is False
+    controller.request_stop()
+    controller.request_stop()
+
+    app = FakeApplication.instances[0]
+    assert app.exit_calls == 0
+
+
 def test_set_agent_running_changes_ctrl_c_behavior_through_input_controller() -> None:
     controller = make_controller()
     interrupts: list[str] = []
@@ -313,6 +358,33 @@ def test_set_agent_running_changes_ctrl_c_behavior_through_input_controller() ->
 
     assert interrupts == ["interrupt"]
     assert idle_buffer.reset_calls == 1
+
+
+def test_live_text_area_height_updates_for_multiline_drafts() -> None:
+    controller = make_controller(
+        config=make_config_with_chat_lines(input_min_lines=1, input_max_lines=3)
+    )
+    controller._build_layout()
+    assert controller._input_field is not None
+
+    controller._input_field.buffer.text = "one"
+    controller._body_text()
+    assert controller._input_field.window.height == 1
+
+    controller._input_field.buffer.text = "one\ntwo\nthree\nfour"
+    controller._body_text()
+    assert controller._input_field.window.height == 3
+
+
+def make_config_with_chat_lines(
+    *,
+    input_min_lines: int,
+    input_max_lines: int,
+) -> SimpleNamespace:
+    config = make_config()
+    config.ui.chat_window.input_min_lines = input_min_lines
+    config.ui.chat_window.input_max_lines = input_max_lines
+    return config
 
 
 @pytest.mark.asyncio
