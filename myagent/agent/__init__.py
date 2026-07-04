@@ -15,6 +15,7 @@ from myagent.agent.engine import (
 )
 from myagent.agent.goal import GoalCheckResult, GoalTracker
 from myagent.agent.project import ProjectContext, ProjectDetector
+from myagent.agent.runtime_status import RuntimeStatusModel, RuntimeStatusSnapshot
 from myagent.agent.session import SessionManager
 
 __all__ = [
@@ -29,6 +30,8 @@ __all__ = [
     "Interrupted",
     "ProjectContext",
     "ProjectDetector",
+    "RuntimeStatusModel",
+    "RuntimeStatusSnapshot",
     "SessionManager",
     "TextChunk",
     "ThinkingChunk",
