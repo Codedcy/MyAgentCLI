@@ -136,6 +136,15 @@ def test_default_rail_mode_keeps_compact_markers_on_single_lines():
     assert "!" in text
 
 
+def test_preferred_width_uses_full_width_or_marker_aware_rail_width():
+    pane = AgentInspectorPane(StatusPaneConfig(width=44, collapse_below_columns=120))
+
+    assert pane.preferred_width(terminal_columns=160) == 44
+
+    pane.update(subagents_active=123456789)
+    assert pane.preferred_width(terminal_columns=80) == len("SA 123456789") + 2
+
+
 def test_disabled_status_pane_returns_none():
     pane = AgentInspectorPane(StatusPaneConfig(enabled=False))
 

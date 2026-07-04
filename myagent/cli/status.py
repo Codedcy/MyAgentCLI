@@ -83,6 +83,17 @@ class AgentInspectorPane:
 
         self._expanded = bool(expanded)
 
+    def preferred_width(self, terminal_columns: int | None = None) -> int:
+        """Return the width this pane needs for the current render mode."""
+
+        if not self._is_enabled():
+            return 0
+
+        status = self._current_status()
+        if self._should_render_rail(terminal_columns):
+            return self._rail_width(self._rail_markers(status))
+        return self._pane_width()
+
     def get_renderable(
         self,
         terminal_columns: int | None = None,
@@ -151,17 +162,21 @@ class AgentInspectorPane:
         panel_cls: Any,
         text_cls: Any,
     ):
+        markers = self._rail_markers(status)
+        return panel_cls(
+            group_cls(*(text_cls(marker) for marker in markers)),
+            width=self._rail_width(markers),
+            padding=(0, 0),
+        )
+
+    def _rail_markers(self, status: dict[str, Any]) -> list[str]:
         markers = [
             self._rail_token_indicator(status),
             f"SA {status['subagents_active']}",
         ]
         if status["health"]["last_error"] or status["health"]["retry_info"]:
             markers.append("!")
-        return panel_cls(
-            group_cls(*(text_cls(marker) for marker in markers)),
-            width=self._rail_width(markers),
-            padding=(0, 0),
-        )
+        return markers
 
     def _session_lines(self, status: dict[str, Any], sections: list[str]) -> list[str]:
         session = status["session"]

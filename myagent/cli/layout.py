@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import TYPE_CHECKING, Any
 
 from rich.layout import Layout
@@ -14,6 +15,8 @@ if TYPE_CHECKING:
     from rich.console import Console, RenderableType
 
 logger = logging.getLogger("myagent.cli.layout")
+ANSI_PATTERN = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+OUTPUT_CONTROL_PATTERN = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 
 
 class AgentLayoutController:
@@ -28,10 +31,10 @@ class AgentLayoutController:
         self._status_layout = Layout(name="status", size=self._full_status_width())
         self.layout.split_row(self._output_layout, self._status_layout)
         self._live: Any | None = None
+        self._live_failed = False
         self._output_lines: list[str] = []
         self._line_open = False
         self._inspector_expanded = bool(getattr(status_pane, "_expanded", True))
-        self.refresh()
 
     @property
     def is_live(self) -> bool:
@@ -42,7 +45,7 @@ class AgentLayoutController:
     def start(self) -> None:
         """Start the Rich Live display if it is not already active."""
 
-        if self._live is not None:
+        if self._live is not None or self._live_failed:
             return
         self.refresh()
         live = Live(
@@ -76,9 +79,12 @@ class AgentLayoutController:
     def append_output(self, text: str, end: str = "\n") -> None:
         """Append streamed output text to the output buffer."""
 
+        use_direct_fallback = self._live_failed and self._live is None
         self._append_payload(f"{text}{end}")
         self._trim_output_lines()
         self.refresh()
+        if use_direct_fallback:
+            self._print_direct(text, end=end)
 
     def set_output_lines(self, lines: list[str]) -> None:
         """Replace buffered output lines with a copy of the provided lines."""
@@ -108,6 +114,7 @@ class AgentLayoutController:
         try:
             self._live.update(self.layout)
         except Exception:
+            self._detach_failed_live()
             logger.exception(
                 "Rich layout refresh failed; falling back to console output",
                 extra={
@@ -152,7 +159,10 @@ class AgentLayoutController:
             self._output_lines = self._output_lines[-300:]
 
     def _output_renderable(self) -> Panel:
-        return Panel(Text("\n".join(self._output_lines)), title="Output")
+        return Panel(
+            Text(self._sanitize_output_text("\n".join(self._output_lines))),
+            title="Output",
+        )
 
     def _get_status_renderable(self, terminal_columns: int) -> RenderableType | None:
         if self.status_pane is None:
@@ -171,6 +181,23 @@ class AgentLayoutController:
             return None
 
     def _status_width(self, terminal_columns: int) -> int:
+        if hasattr(self.status_pane, "preferred_width"):
+            try:
+                preferred_width = self.status_pane.preferred_width(
+                    terminal_columns=terminal_columns,
+                )
+            except Exception:
+                logger.exception(
+                    "Agent inspector preferred width failed",
+                    extra={
+                        "category": "error",
+                        "component": "agent",
+                        "context": "cli_layout_status_width",
+                    },
+                )
+            else:
+                if isinstance(preferred_width, int | float) and preferred_width > 0:
+                    return int(preferred_width)
         if self._uses_rail(terminal_columns):
             return self._int_config("rail_width", 5)
         return self._full_status_width()
@@ -205,6 +232,31 @@ class AgentLayoutController:
         if isinstance(value, int | float):
             return int(value)
         return default
+
+    def _sanitize_output_text(self, text: str) -> str:
+        text = ANSI_PATTERN.sub("", text)
+        return OUTPUT_CONTROL_PATTERN.sub("", text)
+
+    def _print_direct(self, text: str, end: str = "\n") -> None:
+        self.console.print(Text(self._sanitize_output_text(text)), end=end)
+
+    def _detach_failed_live(self) -> None:
+        live = self._live
+        self._live = None
+        self._live_failed = True
+        if live is None:
+            return
+        try:
+            live.stop()
+        except Exception:
+            logger.exception(
+                "Failed Rich Live stop after layout update failure",
+                extra={
+                    "category": "error",
+                    "component": "agent",
+                    "context": "cli_layout_live_stop_after_failure",
+                },
+            )
 
     def _fallback_render_once(self, context: str = "cli_layout_refresh_fallback") -> None:
         try:
