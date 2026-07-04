@@ -43,9 +43,15 @@ class FakeDone:
 
 
 class FakeUsage:
-    prompt_tokens = 100
-    completion_tokens = 50
-    total_tokens = 150
+    def __init__(
+        self,
+        prompt_tokens=100,
+        completion_tokens=50,
+        total_tokens=150,
+    ):
+        self.prompt_tokens = prompt_tokens
+        self.completion_tokens = completion_tokens
+        self.total_tokens = total_tokens
 
 
 def _async_gen(items):
@@ -201,6 +207,98 @@ async def test_react_loop_yields_token_status_from_llm_done_usage():
         "turn_total": 150,
         "session_total": 150,
     }
+
+
+@pytest.mark.asyncio
+async def test_react_loop_accumulates_token_status_across_runs_for_same_session():
+    gen1 = _async_gen([
+        FakeTextDelta("First answer"),
+        FakeDone(FakeUsage(prompt_tokens=100, completion_tokens=50, total_tokens=150)),
+    ])
+    gen2 = _async_gen([
+        FakeTextDelta("Second answer"),
+        FakeDone(FakeUsage(prompt_tokens=120, completion_tokens=80, total_tokens=200)),
+    ])
+    llm = MagicMock()
+    llm.complete = MagicMock(side_effect=[gen1, gen2])
+
+    builder = MagicMock()
+    builder.build = AsyncMock(return_value=LLMRequest(
+        system="test", messages=[], tools=[]
+    ))
+
+    engine = AgentEngine(llm=llm, context_builder=builder)
+    session = SimpleNamespace(
+        id="test",
+        total_tokens=0,
+        get_recent_messages=lambda: [],
+    )
+
+    first_events = [e async for e in engine.run("first", session)]
+    second_events = [e async for e in engine.run("second", session)]
+
+    first_token_updates = [
+        e for e in first_events
+        if isinstance(e, StatusUpdate) and e.scope == "tokens"
+    ]
+    second_token_updates = [
+        e for e in second_events
+        if isinstance(e, StatusUpdate) and e.scope == "tokens"
+    ]
+    assert first_token_updates[-1].data["turn_total"] == 150
+    assert first_token_updates[-1].data["session_total"] == 150
+    assert second_token_updates[-1].data["prompt_tokens"] == 120
+    assert second_token_updates[-1].data["completion_tokens"] == 80
+    assert second_token_updates[-1].data["turn_total"] == 200
+    assert second_token_updates[-1].data["session_total"] == 350
+    assert session.total_tokens == 350
+
+
+@pytest.mark.asyncio
+async def test_react_loop_accumulates_token_status_across_multi_iteration_run():
+    gen1 = _async_gen([
+        FakeToolCall("read", "call-1", {"file_path": "x.py"}),
+        FakeDone(FakeUsage(prompt_tokens=100, completion_tokens=50, total_tokens=150)),
+    ])
+    gen2 = _async_gen([
+        FakeTextDelta("File contents processed"),
+        FakeDone(FakeUsage(prompt_tokens=120, completion_tokens=80, total_tokens=200)),
+    ])
+    llm = MagicMock()
+    llm.complete = MagicMock(side_effect=[gen1, gen2])
+
+    tool = MagicMock()
+    tool.execute = AsyncMock(return_value=ToolResult(output="hello"))
+    registry = MagicMock()
+    registry.get = MagicMock(return_value=tool)
+
+    builder = MagicMock()
+    builder.build = AsyncMock(return_value=LLMRequest(
+        system="test", messages=[], tools=[]
+    ))
+
+    engine = AgentEngine(
+        llm=llm,
+        tool_registry=registry,
+        context_builder=builder,
+    )
+    session = SimpleNamespace(
+        id="test",
+        total_tokens=0,
+        get_recent_messages=lambda: [],
+    )
+
+    events = [e async for e in engine.run("read x.py", session)]
+
+    token_updates = [
+        e for e in events
+        if isinstance(e, StatusUpdate) and e.scope == "tokens"
+    ]
+    assert [update.data["turn_total"] for update in token_updates] == [150, 200]
+    assert [update.data["session_total"] for update in token_updates] == [150, 350]
+    assert token_updates[-1].data["prompt_tokens"] == 120
+    assert token_updates[-1].data["completion_tokens"] == 80
+    assert session.total_tokens == 350
 
 
 @pytest.mark.asyncio

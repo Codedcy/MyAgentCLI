@@ -331,6 +331,15 @@ async def test_process_input_merges_engine_status_updates(layout_spy):
                     "session_total": 150,
                 },
             ),
+            StatusUpdate(
+                scope="tokens",
+                data={
+                    "prompt_tokens": 120,
+                    "completion_tokens": 80,
+                    "turn_total": 200,
+                    "session_total": 350,
+                },
+            ),
             Done(),
         ]
     )
@@ -346,10 +355,10 @@ async def test_process_input_merges_engine_status_updates(layout_spy):
     snapshot = model.snapshot()
     assert snapshot.tokens.context_usage == 0.42
     assert snapshot.tokens.context_window == 200_000
-    assert snapshot.tokens.prompt_tokens == 100
-    assert snapshot.tokens.completion_tokens == 50
-    assert snapshot.tokens.turn_total == 150
-    assert snapshot.tokens.session_total == 150
+    assert snapshot.tokens.prompt_tokens == 120
+    assert snapshot.tokens.completion_tokens == 80
+    assert snapshot.tokens.turn_total == 200
+    assert snapshot.tokens.session_total == 350
 
 
 def test_status_update_merges_context_goal_health_and_tokens(layout_spy):

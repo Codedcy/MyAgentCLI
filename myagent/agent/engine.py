@@ -139,6 +139,7 @@ class AgentEngine:
         self._config_loader = config_loader
         self._memory_store = memory_store
         self.interrupt_event = asyncio.Event()
+        self._session_token_totals: dict[object, int] = {}
 
     async def run(
         self, user_input: str, session, active_skill: str | None = None
@@ -413,7 +414,7 @@ class AgentEngine:
                         usage = getattr(event, "usage", None)
                         if usage:
                             tokens_this_turn = getattr(usage, "total_tokens", 0)
-                            yield self._token_status_update(usage)
+                            yield self._token_status_update(usage, session)
             except Exception as e:
                 # gap-06: preserve partial content on stream interruption
                 partial_text = "".join(text_buffer)
@@ -688,22 +689,60 @@ class AgentEngine:
             },
         )
 
-    def _token_status_update(self, usage) -> StatusUpdate:
+    def _token_status_update(self, usage, session=None) -> StatusUpdate:
         prompt_tokens = getattr(usage, "prompt_tokens", None)
         completion_tokens = getattr(usage, "completion_tokens", None)
         total_tokens = getattr(usage, "total_tokens", None)
         if total_tokens is None:
             total_tokens = (prompt_tokens or 0) + (completion_tokens or 0)
+        turn_total = int(total_tokens or 0)
+        session_total = self._accumulate_session_tokens(session, turn_total)
 
         data: dict[str, object] = {
-            "turn_total": total_tokens,
-            "session_total": total_tokens,
+            "turn_total": turn_total,
+            "session_total": session_total,
         }
         if prompt_tokens is not None:
             data["prompt_tokens"] = prompt_tokens
         if completion_tokens is not None:
             data["completion_tokens"] = completion_tokens
         return StatusUpdate(scope="tokens", data=data)
+
+    def _accumulate_session_tokens(self, session, turn_total: int) -> int:
+        fallback_start = 0
+        if session is not None:
+            existing_total = getattr(session, "total_tokens", None)
+            if (
+                isinstance(existing_total, int | float)
+                and not isinstance(existing_total, bool)
+            ):
+                fallback_start = int(existing_total)
+                session_total = int(existing_total) + turn_total
+                try:
+                    session.total_tokens = session_total
+                    return session_total
+                except Exception:
+                    logger.exception(
+                        "Failed to update session token total",
+                        extra={
+                            "category": "error",
+                            "component": "agent",
+                            "context": "agent_update_session_tokens",
+                        },
+                    )
+
+        key = self._session_token_key(session)
+        session_total = self._session_token_totals.get(key, fallback_start) + turn_total
+        self._session_token_totals[key] = session_total
+        return session_total
+
+    def _session_token_key(self, session) -> object:
+        if session is None:
+            return ("session", None)
+        session_id = getattr(session, "id", None)
+        if isinstance(session_id, str) and session_id:
+            return ("session_id", session_id)
+        return ("session_object", id(session))
 
     def _goal_status_update(
         self,
