@@ -237,7 +237,12 @@ async def test_async_main_one_shot_commands_do_not_build_chat_window_factory(
     config = AppConfig(
         ui=UIConfig(chat_window=ChatWindowConfig(enabled=True))
     )
-    records = _install_light_startup(monkeypatch, config, tmp_path)
+    records = _install_light_startup(
+        monkeypatch,
+        config,
+        tmp_path,
+        explode_heavy_interactive=True,
+    )
 
     def fail_factory(*args, **kwargs):
         raise AssertionError("one-shot command must not build chat window factory")
@@ -315,6 +320,7 @@ def _install_light_startup(
     *,
     resumed_session=None,
     repl_kind: str = "basic",
+    explode_heavy_interactive: bool = False,
 ) -> dict:
     """Replace heavy startup dependencies with small fakes."""
 
@@ -361,6 +367,8 @@ def _install_light_startup(
 
     class FakeToolRegistry:
         def __init__(self):
+            if explode_heavy_interactive:
+                raise AssertionError("one-shot command must not create ToolRegistry")
             self.mcp_clients = []
 
         def register(self, *args, **kwargs):
@@ -485,6 +493,8 @@ def _install_light_startup(
     monkeypatch.setattr(cli_main, "_register_builtin_tools", lambda registry: None)
 
     async def fake_startup_mcp_servers(tool_registry, startup_project_dir):
+        if explode_heavy_interactive:
+            raise AssertionError("one-shot command must not start MCP servers")
         records["mcp_project_dir"] = startup_project_dir
         return []
 
@@ -498,7 +508,12 @@ def _install_light_startup(
         "PermissionController",
         FakePermissionController,
     )
-    monkeypatch.setattr(llm_module, "LLMProvider", lambda *a, **kw: object())
+    def fake_llm_provider(*args, **kwargs):
+        if explode_heavy_interactive:
+            raise AssertionError("one-shot command must not create LLMProvider")
+        return object()
+
+    monkeypatch.setattr(llm_module, "LLMProvider", fake_llm_provider)
     monkeypatch.setattr(persistence_module, "SessionStore", lambda *a, **kw: object())
     monkeypatch.setattr(pool_module, "SubAgentPool", FakeSubAgentPool)
     monkeypatch.setattr(memory_module, "MemoryStore", lambda *a, **kw: object())
@@ -521,7 +536,12 @@ def _install_light_startup(
     monkeypatch.setattr(session_module, "SessionManager", FakeSessionManager)
     monkeypatch.setattr(dream_module, "DreamEngine", FakeDreamEngine)
     monkeypatch.setattr(goal_module, "GoalTracker", FakeGoalTracker)
-    monkeypatch.setattr(engine_module, "AgentEngine", lambda *a, **kw: object())
+    def fake_agent_engine(*args, **kwargs):
+        if explode_heavy_interactive:
+            raise AssertionError("one-shot command must not create AgentEngine")
+        return object()
+
+    monkeypatch.setattr(engine_module, "AgentEngine", fake_agent_engine)
     monkeypatch.setattr(commands_module, "CommandDispatcher", lambda *a, **kw: object())
     monkeypatch.setattr(renderer_module, "Renderer", lambda *a, **kw: object())
     monkeypatch.setattr(repl_module, "REPLEngine", FakeREPLEngine)

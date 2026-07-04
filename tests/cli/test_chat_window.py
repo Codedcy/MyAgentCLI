@@ -48,6 +48,18 @@ class FakeApplication:
         self._exit_event.set()
 
 
+class FakeExitApp:
+    def __init__(self) -> None:
+        self.exit_calls = 0
+        self.invalidate_calls = 0
+
+    def exit(self) -> None:
+        self.exit_calls += 1
+
+    def invalidate(self) -> None:
+        self.invalidate_calls += 1
+
+
 class ExitOnceApplication(FakeApplication):
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
@@ -441,6 +453,68 @@ def test_set_agent_running_changes_ctrl_c_behavior_through_input_controller() ->
 
     assert interrupts == ["interrupt"]
     assert idle_buffer.reset_calls == 1
+
+
+def test_idle_empty_ctrl_c_requires_confirmation_before_exiting() -> None:
+    transcript = TranscriptBuffer()
+    controller = make_controller(transcript=transcript)
+    app = FakeExitApp()
+    controller._app = app
+    controller._is_running = True
+
+    first_buffer = invoke_binding(controller._key_bindings, (Keys.ControlC,), "")
+
+    assert first_buffer.reset_calls == 0
+    assert app.exit_calls == 0
+    assert controller.is_running is True
+    assert app.invalidate_calls == 1
+    assert transcript.visible_entries(10)[-1].role == "system"
+    assert (
+        transcript.visible_entries(10)[-1].plain_text
+        == "Press Ctrl+C again or Ctrl+D to exit."
+    )
+
+    invoke_binding(controller._key_bindings, (Keys.ControlC,), "")
+
+    assert app.exit_calls == 1
+    assert controller.is_running is False
+
+
+def test_ctrl_d_exits_idle_empty_chat_window_without_confirmation() -> None:
+    controller = make_controller()
+    app = FakeExitApp()
+    controller._app = app
+    controller._is_running = True
+
+    invoke_binding(controller._key_bindings, (Keys.ControlD,), "")
+
+    assert app.exit_calls == 1
+    assert controller.is_running is False
+
+
+def test_non_empty_ctrl_c_clears_text_and_cancels_exit_confirmation() -> None:
+    transcript = TranscriptBuffer()
+    controller = make_controller(transcript=transcript)
+    app = FakeExitApp()
+    controller._app = app
+    controller._is_running = True
+
+    invoke_binding(controller._key_bindings, (Keys.ControlC,), "")
+    draft_buffer = invoke_binding(controller._key_bindings, (Keys.ControlC,), "draft")
+    invoke_binding(controller._key_bindings, (Keys.ControlC,), "")
+
+    assert draft_buffer.reset_calls == 1
+    assert draft_buffer.text == ""
+    assert app.exit_calls == 0
+    assert controller.is_running is True
+    assert [
+        entry.plain_text
+        for entry in transcript.visible_entries(10)
+        if entry.role == "system"
+    ] == [
+        "Press Ctrl+C again or Ctrl+D to exit.",
+        "Press Ctrl+C again or Ctrl+D to exit.",
+    ]
 
 
 def test_live_text_area_height_updates_for_multiline_drafts() -> None:

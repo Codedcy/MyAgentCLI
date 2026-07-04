@@ -26,6 +26,7 @@ logger = logging.getLogger("myagent.cli.chat_window")
 DEFAULT_COLUMNS = 100
 DEFAULT_ROWS = 24
 INPUT_PROMPT = "INPUT> "
+EXIT_CONFIRMATION_MESSAGE = "Press Ctrl+C again or Ctrl+D to exit."
 ROLE_LABELS = {
     "assistant": "Agent",
     "error": "Error",
@@ -92,6 +93,7 @@ class ChatWindowController:
         self._on_exit: Callable[[], Any] | None = None
         self._on_interrupt: Callable[[], Any] | None = None
         self._ask_future: asyncio.Future[str | None] | None = None
+        self._exit_confirmation_pending = False
 
         self._input_actions = ChatInputActions(
             submit=self._handle_submit,
@@ -101,6 +103,8 @@ class ChatWindowController:
             toggle_inspector=self._toggle_inspector,
             scroll_lines=self._scroll_lines,
             page=self._page,
+            request_exit_confirmation=self._request_exit_confirmation,
+            cancel_exit_confirmation=self._cancel_exit_confirmation,
         )
         self._key_bindings = self.input_controller.build_key_bindings(
             self._input_actions
@@ -194,6 +198,7 @@ class ChatWindowController:
     def request_stop(self) -> None:
         """Request the full-screen application to exit."""
 
+        self._cancel_exit_confirmation()
         was_running = self._is_running
         self._is_running = False
         self._finish_pending_ask(None)
@@ -435,6 +440,7 @@ class ChatWindowController:
         normalized = self.input_controller.normalize_submit_text(text)
         if not normalized:
             return
+        self._cancel_exit_confirmation()
         self.append_user_input(normalized)
         if self._ask_future is not None and not self._ask_future.done():
             self._finish_pending_ask(normalized)
@@ -443,6 +449,7 @@ class ChatWindowController:
             self._call_background(self._on_submit, normalized)
 
     def _insert_newline(self, buffer: Any) -> None:
+        self._cancel_exit_confirmation()
         insert_text = getattr(buffer, "insert_text", None)
         if callable(insert_text):
             insert_text("\n")
@@ -452,9 +459,20 @@ class ChatWindowController:
     def _handle_interrupt(self) -> bool:
         if not self._agent_running:
             return False
+        self._cancel_exit_confirmation()
         if self._on_interrupt is not None:
             self._call_background(self._on_interrupt)
         return True
+
+    def _request_exit_confirmation(self) -> None:
+        if self._exit_confirmation_pending:
+            self.request_stop()
+            return
+        self._exit_confirmation_pending = True
+        self.append_system(EXIT_CONFIRMATION_MESSAGE)
+
+    def _cancel_exit_confirmation(self) -> None:
+        self._exit_confirmation_pending = False
 
     def _toggle_inspector(self) -> None:
         toggle = getattr(self.status_pane, "toggle", None)
@@ -488,7 +506,10 @@ class ChatWindowController:
         return getattr(buffer, "text", "") or ""
 
     def _on_input_text_changed(self, buffer: Any) -> None:
-        self._sync_input_height(getattr(buffer, "text", "") or "")
+        text = getattr(buffer, "text", "") or ""
+        if text:
+            self._cancel_exit_confirmation()
+        self._sync_input_height(text)
         self.refresh()
 
     def _sync_input_height(self, text: str | None = None) -> int:

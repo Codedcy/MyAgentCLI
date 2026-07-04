@@ -512,4 +512,4 @@ Run: `git commit -m "docs: document chat window ui"`
 - [x] Streaming output, slash command output, `StatusUpdate` routing, AskUserQuestion prompt behavior, and no transient Rich `Live` in chat mode map to Task 6.
 - [x] Default interactive startup, resume, one-shot compatibility, and fallback map to Task 7.
 - [x] Legacy REPL and Inspector compatibility map to Task 8.
-- [ ] README and spec status are complete; full test suite, `--help`, `--list-sessions`, and manual smoke remain for final verification.
+- [ ] README and spec status are complete; automated verification is complete, and manual smoke remains pending.

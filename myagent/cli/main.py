@@ -281,6 +281,35 @@ async def async_main(argv: list[str] | None = None) -> int:
     from myagent.logging.logger import LogManager
     LogManager.setup(config=config.logging)
 
+    from myagent.context.persistence import SessionStore
+    # G4: respect config.session.sessions_dir; resolve ~ and expand env vars
+    sessions_dir_raw = config.session.sessions_dir
+    sessions_dir = Path(sessions_dir_raw).expanduser() if sessions_dir_raw else None
+    session_store = SessionStore(base_dir=sessions_dir, config=config)
+
+    from myagent.agent.session import SessionManager
+    one_shot_command = _is_one_shot_command(args)
+    if one_shot_command:
+        one_shot_session_mgr = SessionManager(
+            session_store,
+            project_ctx,
+            memory_store=None,
+            permissions=None,
+        )
+        if args.list_sessions:
+            sessions = await one_shot_session_mgr.list_sessions(project_dir)
+            _print_sessions_rich(sessions, project_dir)
+            return 0
+
+        if args.session and args.export:
+            path = await one_shot_session_mgr.export_session(
+                args.session,
+                args.export,
+                project_dir,
+            )
+            print(f"Exported to: {path}")
+            return 0
+
     # Wire components
     from myagent.tools.registry import ToolRegistry
     tool_registry = ToolRegistry()
@@ -315,11 +344,6 @@ async def async_main(argv: list[str] | None = None) -> int:
         ),
     )
 
-    from myagent.context.persistence import SessionStore
-    # G4: respect config.session.sessions_dir; resolve ~ and expand env vars
-    sessions_dir_raw = config.session.sessions_dir
-    sessions_dir = Path(sessions_dir_raw).expanduser() if sessions_dir_raw else None
-    session_store = SessionStore(base_dir=sessions_dir, config=config)
     from myagent.subagent.pool import SubAgentPool
     subagent_pool = SubAgentPool(
         config.subagents.max_concurrent, llm=llm, tool_registry=tool_registry,
@@ -360,7 +384,6 @@ async def async_main(argv: list[str] | None = None) -> int:
         tools_config=config.tools,
     )
 
-    from myagent.agent.session import SessionManager
     session_mgr = SessionManager(session_store, project_ctx, memory_store, permissions)
 
     # Dream engine — construct and auto-trigger on startup (gap-04)
@@ -417,18 +440,6 @@ async def async_main(argv: list[str] | None = None) -> int:
         config_loader=loader,
         memory_store=memory_store,
     )
-
-    # Handle one-shot commands
-    one_shot_command = _is_one_shot_command(args)
-    if one_shot_command and args.list_sessions:
-        sessions = await session_mgr.list_sessions(project_dir)
-        _print_sessions_rich(sessions, project_dir)
-        return 0
-
-    if one_shot_command and args.session and args.export:
-        path = await session_mgr.export_session(args.session, args.export, project_dir)
-        print(f"Exported to: {path}")
-        return 0
 
     # Wire CLI components
     from myagent.cli.commands import CommandDispatcher

@@ -61,6 +61,8 @@ class ChatInputActions:
     toggle_inspector: Callable[[], Any]
     scroll_lines: Callable[[int], Any]
     page: Callable[[int], Any]
+    request_exit_confirmation: Callable[[], Any] | None = None
+    cancel_exit_confirmation: Callable[[], Any] | None = None
 
 
 class InputController:
@@ -95,9 +97,14 @@ class InputController:
             if actions.interrupt():
                 return
             if self._buffer_text(buffer):
+                if actions.cancel_exit_confirmation is not None:
+                    actions.cancel_exit_confirmation()
                 self._reset_buffer(buffer)
                 return
-            actions.request_exit()
+            if actions.request_exit_confirmation is not None:
+                actions.request_exit_confirmation()
+            else:
+                actions.request_exit()
 
         @kb.add("c-d")
         def _(event) -> None:

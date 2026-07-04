@@ -194,7 +194,7 @@ def test_ctrl_c_clears_input_when_idle_with_text() -> None:
     assert spy.request_exit_calls == 0
 
 
-def test_ctrl_c_requests_exit_when_idle_with_empty_input() -> None:
+def test_ctrl_c_requests_idle_exit_callback_when_idle_with_empty_input() -> None:
     controller = InputController(SimpleNamespace())
     spy = ActionSpy(interrupt_result=False)
 
