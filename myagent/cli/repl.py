@@ -800,6 +800,7 @@ class REPLEngine:
             if callable(request_stop):
                 request_stop()
             self._chat_window_loop_active = False
+            self._running = True
             await self._run_prompt_session_loop()
         finally:
             self._set_chat_agent_running(False)
@@ -997,6 +998,10 @@ class REPLEngine:
 
                 if result.exit_requested:
                     self._running = False
+                    if self._chat_window_active():
+                        request_stop = getattr(self._chat_window, "request_stop", None)
+                        if callable(request_stop):
+                            request_stop()
                     return
 
                 if result.skill_invoked:

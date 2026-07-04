@@ -1072,6 +1072,58 @@ async def test_status_update_refreshes_chat_without_transcript_entry():
 
 
 @pytest.mark.asyncio
+async def test_exit_command_stops_persistent_chat_window():
+    class ExitCommands:
+        async def dispatch(self, line, ctx):
+            return CommandResult(
+                output="Goodbye!",
+                success=True,
+                exit_requested=True,
+            )
+
+    class PersistentExitChat(FakeChatWindowController):
+        def __init__(self):
+            super().__init__()
+            self.stop_event = asyncio.Event()
+
+        async def run(self, on_submit, on_exit=None, on_interrupt=None):
+            self.is_running = True
+            await on_submit("/exit")
+            await self.stop_event.wait()
+            self.is_running = False
+            if on_exit:
+                result = on_exit()
+                if hasattr(result, "__await__"):
+                    await result
+
+        def request_stop(self):
+            super().request_stop()
+            self.stop_event.set()
+
+    chat = PersistentExitChat()
+    repl = REPLEngine(
+        chat_window_controller=chat,
+        commands=ExitCommands(),
+    )
+    repl._current_session = SimpleNamespace(id="session-1")
+
+    run_task = asyncio.create_task(repl._run_chat_window_loop())
+    completed = False
+    try:
+        await asyncio.wait_for(asyncio.shield(run_task), timeout=0.2)
+        completed = True
+    except TimeoutError:
+        completed = False
+    finally:
+        if not completed:
+            chat.request_stop()
+            await asyncio.wait_for(run_task, timeout=1.0)
+
+    assert completed is True
+    assert chat.request_stop_calls == 1
+
+
+@pytest.mark.asyncio
 async def test_run_uses_chat_window_loop_when_config_enabled(monkeypatch):
     calls = []
 
@@ -1148,6 +1200,49 @@ async def test_run_falls_back_to_prompt_loop_after_chat_startup_exception(
     assert record.component == "agent"
     assert record.exception_type == "RuntimeError"
     assert "chat failed" in record.traceback
+
+
+@pytest.mark.asyncio
+async def test_run_fallback_restores_running_after_chat_on_exit_then_error(
+    monkeypatch,
+    caplog,
+):
+    prompt_running_states = []
+
+    class ExitThenFailChat(FakeChatWindowController):
+        async def run(self, on_submit, on_exit=None, on_interrupt=None):
+            self.is_running = True
+            if on_exit:
+                result = on_exit()
+                if hasattr(result, "__await__"):
+                    await result
+            raise RuntimeError("chat failed after exit")
+
+    async def fake_prompt_loop(self):
+        prompt_running_states.append(self._running)
+        self._running = False
+
+    chat = ExitThenFailChat()
+    monkeypatch.setattr(REPLEngine, "_run_prompt_session_loop", fake_prompt_loop)
+    repl = REPLEngine(
+        config=make_chat_config(enabled=True),
+        chat_window_controller=chat,
+    )
+    repl._console = FakeConsole()
+
+    with caplog.at_level(logging.ERROR, logger="myagent.cli.repl"):
+        await repl.run()
+
+    assert prompt_running_states == [True]
+    record = next(
+        record
+        for record in caplog.records
+        if getattr(record, "context", "") == "cli_chat_window_start"
+    )
+    assert record.category == "error"
+    assert record.component == "agent"
+    assert record.exception_type == "RuntimeError"
+    assert "chat failed after exit" in record.traceback
 
 
 @pytest.mark.asyncio
