@@ -1,0 +1,384 @@
+from __future__ import annotations
+
+import asyncio
+import logging
+from types import SimpleNamespace
+from unittest.mock import Mock
+
+import pytest
+from prompt_toolkit.keys import Keys
+from rich.panel import Panel
+
+from myagent.agent.runtime_status import RuntimeStatusModel
+from myagent.cli.chat_window import ChatWindowController
+from myagent.cli.status import AgentInspectorPane
+from myagent.cli.transcript import TranscriptBuffer
+from myagent.config.schema import ChatWindowConfig, StatusPaneConfig
+
+
+class FakeBuffer:
+    def __init__(self, text: str = "") -> None:
+        self.text = text
+        self.reset_calls = 0
+
+    def reset(self) -> None:
+        self.reset_calls += 1
+        self.text = ""
+
+
+class FakeApplication:
+    instances: list[FakeApplication] = []
+
+    def __init__(self, **kwargs) -> None:
+        self.kwargs = kwargs
+        self.invalidate_calls = 0
+        self.exit_calls = 0
+        self._exit_event = asyncio.Event()
+        FakeApplication.instances.append(self)
+
+    async def run_async(self) -> None:
+        await self._exit_event.wait()
+
+    def invalidate(self) -> None:
+        self.invalidate_calls += 1
+
+    def exit(self) -> None:
+        self.exit_calls += 1
+        self._exit_event.set()
+
+
+def make_config(
+    *,
+    collapse_below_columns: int = 120,
+    follow_output: str = "auto",
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        ui=SimpleNamespace(
+            chat_window=ChatWindowConfig(follow_output=follow_output),
+            status_pane=StatusPaneConfig(
+                width=34,
+                collapse_below_columns=collapse_below_columns,
+                rail_width=8,
+            ),
+        )
+    )
+
+
+def make_controller(
+    *,
+    transcript: TranscriptBuffer | None = None,
+    model: RuntimeStatusModel | None = None,
+    config: SimpleNamespace | None = None,
+    status_pane: object | None = None,
+) -> ChatWindowController:
+    config = config or make_config()
+    model = model or RuntimeStatusModel()
+    pane = status_pane
+    if pane is None:
+        pane = AgentInspectorPane(config.ui.status_pane, status_model=model)
+    return ChatWindowController(
+        config,
+        transcript or TranscriptBuffer(follow_output=config.ui.chat_window.follow_output),
+        status_pane=pane,
+        status_model=model,
+    )
+
+
+def visible_text(buffer: TranscriptBuffer, height: int) -> list[str]:
+    return [entry.plain_text for entry in buffer.visible_entries(height)]
+
+
+def last_non_empty_line(text: str) -> str:
+    lines = [line.rstrip() for line in text.splitlines() if line.strip()]
+    assert lines
+    return lines[-1]
+
+
+def invoke_binding(kb, keys, text: str = "") -> FakeBuffer:
+    buffer = FakeBuffer(text)
+    event = SimpleNamespace(
+        current_buffer=buffer,
+        app=SimpleNamespace(current_buffer=buffer),
+    )
+    for binding in kb.bindings:
+        if binding.keys == tuple(keys):
+            binding.handler(event)
+            return buffer
+    raise AssertionError(f"No binding found for {keys!r}")
+
+
+def test_wide_layout_includes_conversation_bottom_input_and_full_inspector() -> None:
+    model = RuntimeStatusModel()
+    model.update_session(
+        session_id="session-wide",
+        project_name="MyAgentCLI",
+        model="deepseek-v4-pro",
+        thinking="Think High",
+    )
+    model.update_tokens(session_total=1234)
+    controller = make_controller(model=model)
+    controller.append_output("assistant wide response")
+
+    rendered = controller._render_for_size(
+        terminal_columns=140,
+        terminal_rows=10,
+        input_text="draft text",
+    )
+
+    assert "assistant wide response" in rendered
+    assert "INPUT>" in rendered
+    assert "draft text" in rendered
+    assert "Agent Inspector" in rendered
+    assert "session-wide" in rendered
+    assert last_non_empty_line(rendered).startswith("INPUT>")
+    assert "Agent Inspector" not in last_non_empty_line(rendered)
+
+
+def test_narrow_layout_includes_conversation_bottom_input_and_status_rail() -> None:
+    model = RuntimeStatusModel()
+    model.update_tokens(context_usage=0.42)
+    model.upsert_subagent("agent-1", task_name="review", status="running")
+    controller = make_controller(model=model)
+    controller.append_output("narrow conversation")
+
+    rendered = controller._render_for_size(
+        terminal_columns=80,
+        terminal_rows=10,
+        input_text="ask",
+    )
+
+    assert "narrow conversation" in rendered
+    assert "INPUT>" in rendered
+    assert "ask" in rendered
+    assert "Agent Inspector" not in rendered
+    assert "42%" in rendered
+    assert "SA 1" in rendered
+    assert last_non_empty_line(rendered).startswith("INPUT>")
+
+
+def test_status_region_never_covers_the_bottom_input_line() -> None:
+    model = RuntimeStatusModel()
+    model.update_health(retry_info="retry 1/3", last_error="timeout")
+    controller = make_controller(model=model)
+    controller.append_output("conversation body")
+
+    rendered = controller._render_for_size(
+        terminal_columns=140,
+        terminal_rows=6,
+        input_text="bottom draft",
+    )
+
+    last_line = last_non_empty_line(rendered)
+    assert "INPUT>" in last_line
+    assert "bottom draft" in last_line
+    assert "retry 1/3" not in last_line
+    assert "timeout" not in last_line
+
+
+def test_append_methods_update_transcript_and_refresh_once_per_append() -> None:
+    transcript = TranscriptBuffer()
+    controller = make_controller(transcript=transcript)
+    controller.refresh = Mock()
+
+    operations = [
+        (lambda: controller.append_user_input("hello"), "user", "hello"),
+        (lambda: controller.append_output("assistant text"), "assistant", "assistant text"),
+        (
+            lambda: controller.append_output(Panel("panel body", title="Panel Title")),
+            "assistant",
+            "panel body",
+        ),
+        (lambda: controller.append_system("system text"), "system", "system text"),
+        (lambda: controller.append_error("error text"), "error", "error text"),
+    ]
+
+    for operation, role, expected_text in operations:
+        controller.refresh.reset_mock()
+        operation()
+        assert controller.refresh.call_count == 1
+        entry = transcript.visible_entries(100)[-1]
+        assert entry.role == role
+        assert expected_text in entry.plain_text
+
+    panel_entry = transcript.visible_entries(100)[2]
+    assert "Panel Title" in panel_entry.plain_text
+    assert "<rich.panel.Panel object" not in panel_entry.plain_text
+
+
+def test_status_only_refresh_does_not_append_to_transcript() -> None:
+    model = RuntimeStatusModel()
+    transcript = TranscriptBuffer()
+    controller = make_controller(transcript=transcript, model=model)
+
+    model.update_tokens(session_total=999)
+    controller.refresh()
+
+    assert transcript.visible_entries(10) == []
+
+
+def test_page_and_wheel_actions_move_transcript_viewport_and_refresh() -> None:
+    transcript = TranscriptBuffer()
+    controller = make_controller(transcript=transcript)
+    for index in range(8):
+        transcript.append_assistant(f"line-{index}")
+    controller._render_for_size(terminal_columns=100, terminal_rows=4)
+    controller.refresh = Mock()
+
+    controller._page(-1)
+    assert visible_text(transcript, 3) == ["line-2", "line-3", "line-4"]
+    assert controller.refresh.call_count == 1
+
+    controller._page(1)
+    assert visible_text(transcript, 3) == ["line-5", "line-6", "line-7"]
+
+    controller._scroll_lines(-3)
+    assert visible_text(transcript, 3) == ["line-2", "line-3", "line-4"]
+
+    controller._scroll_lines(3)
+    assert visible_text(transcript, 3) == ["line-5", "line-6", "line-7"]
+    assert transcript.unread_count == 0
+
+
+def test_new_output_follows_bottom_only_while_viewport_is_at_bottom() -> None:
+    transcript = TranscriptBuffer(follow_output="auto")
+    controller = make_controller(transcript=transcript)
+    for index in range(5):
+        transcript.append_assistant(f"line-{index}")
+    controller._render_for_size(terminal_columns=100, terminal_rows=4)
+
+    controller.append_output("line-5")
+    assert visible_text(transcript, 3) == ["line-3", "line-4", "line-5"]
+    assert transcript.unread_count == 0
+
+    controller._scroll_lines(-2)
+    before_output = visible_text(transcript, 3)
+    controller.append_output("line-6")
+
+    assert visible_text(transcript, 3) == before_output
+    assert transcript.unread_count == 1
+
+    controller._scroll_lines(100)
+    assert visible_text(transcript, 3) == ["line-4", "line-5", "line-6"]
+    assert transcript.unread_count == 0
+
+
+@pytest.mark.asyncio
+async def test_run_starts_full_screen_application_and_request_stop_exits_it(
+    monkeypatch,
+) -> None:
+    import myagent.cli.chat_window as chat_window
+
+    FakeApplication.instances = []
+    monkeypatch.setattr(chat_window, "Application", FakeApplication)
+    controller = make_controller()
+
+    run_task = asyncio.create_task(controller.run(lambda text: None))
+    while not FakeApplication.instances:
+        await asyncio.sleep(0)
+
+    app = FakeApplication.instances[0]
+    assert controller.is_running is True
+    assert app.kwargs["full_screen"] is True
+    assert "layout" in app.kwargs
+    assert "key_bindings" in app.kwargs
+
+    controller.request_stop()
+    await run_task
+
+    assert app.exit_calls == 1
+    assert controller.is_running is False
+
+
+def test_set_agent_running_changes_ctrl_c_behavior_through_input_controller() -> None:
+    controller = make_controller()
+    interrupts: list[str] = []
+    controller._on_interrupt = lambda: interrupts.append("interrupt")
+
+    controller.set_agent_running(True)
+    running_buffer = invoke_binding(
+        controller._key_bindings,
+        (Keys.ControlC,),
+        "draft",
+    )
+
+    assert interrupts == ["interrupt"]
+    assert running_buffer.reset_calls == 0
+
+    controller.set_agent_running(False)
+    idle_buffer = invoke_binding(
+        controller._key_bindings,
+        (Keys.ControlC,),
+        "draft",
+    )
+
+    assert interrupts == ["interrupt"]
+    assert idle_buffer.reset_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_ask_collects_one_response_through_bottom_input() -> None:
+    transcript = TranscriptBuffer()
+    controller = make_controller(transcript=transcript)
+
+    ask_task = asyncio.create_task(controller.ask("Need a value?", timeout=1))
+    await asyncio.sleep(0)
+    assert transcript.visible_entries(10)[-1].plain_text == "Need a value?"
+
+    controller._handle_submit("chosen value")
+
+    assert await ask_task == "chosen value"
+    assert transcript.visible_entries(10)[-1].role == "user"
+    assert transcript.visible_entries(10)[-1].plain_text == "chosen value"
+
+
+@pytest.mark.asyncio
+async def test_run_logs_and_reraises_startup_exception(monkeypatch, caplog) -> None:
+    import myagent.cli.chat_window as chat_window
+
+    class BrokenApplication:
+        def __init__(self, **kwargs) -> None:
+            raise RuntimeError("terminal unavailable")
+
+    monkeypatch.setattr(chat_window, "Application", BrokenApplication)
+    controller = make_controller()
+    caplog.set_level(logging.ERROR, logger="myagent.cli.chat_window")
+
+    with pytest.raises(RuntimeError, match="terminal unavailable"):
+        await controller.run(lambda text: None)
+
+    record = next(
+        record
+        for record in caplog.records
+        if getattr(record, "context", "") == "cli_chat_window_start"
+    )
+    assert record.category == "error"
+    assert record.component == "agent"
+    assert record.exception_type == "RuntimeError"
+    assert "terminal unavailable" in record.traceback
+
+
+def test_render_exception_is_logged_and_falls_back_to_transcript_only(caplog) -> None:
+    class BrokenStatusPane:
+        def get_renderable(self, terminal_columns=None):
+            raise RuntimeError("status render failed")
+
+        def preferred_width(self, terminal_columns=None) -> int:
+            return 34
+
+    controller = make_controller(status_pane=BrokenStatusPane())
+    controller.append_output("still visible")
+    caplog.set_level(logging.ERROR, logger="myagent.cli.chat_window")
+
+    rendered = controller._render_for_size(terminal_columns=140, terminal_rows=8)
+
+    assert "still visible" in rendered
+    assert "INPUT>" in rendered
+    record = next(
+        record
+        for record in caplog.records
+        if getattr(record, "context", "") == "cli_chat_window_render"
+    )
+    assert record.category == "error"
+    assert record.component == "agent"
+    assert record.exception_type == "RuntimeError"
+    assert "status render failed" in record.traceback

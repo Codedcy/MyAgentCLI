@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import traceback
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -40,6 +42,7 @@ RESERVED_TOGGLE_KEYS = TAB_EQUIVALENT_KEYS | {
     "scroll-down",
     "scroll-up",
 }
+logger = logging.getLogger("myagent.cli.input_controller")
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,7 +155,17 @@ class InputController:
         key = self._inspector_toggle_key()
         try:
             kb.add(key)(toggle_inspector)
-        except ValueError:
+        except ValueError as exc:
+            logger.exception(
+                "Chat inspector toggle key binding failed",
+                extra={
+                    "category": "error",
+                    "component": "agent",
+                    "context": "cli_input_toggle_binding",
+                    "exception_type": type(exc).__name__,
+                    "traceback": traceback.format_exc(),
+                },
+            )
             kb.add(DEFAULT_INSPECTOR_TOGGLE_KEY)(toggle_inspector)
 
     def _line_setting(self, name: str, default: int) -> int:
@@ -161,7 +174,17 @@ class InputController:
             return default
         try:
             return int(value)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError) as exc:
+            logger.exception(
+                "Chat input line setting could not be parsed",
+                extra={
+                    "category": "error",
+                    "component": "agent",
+                    "context": f"cli_input_line_setting_{name}",
+                    "exception_type": type(exc).__name__,
+                    "traceback": traceback.format_exc(),
+                },
+            )
             return default
 
     def _chat_config(self) -> Any:

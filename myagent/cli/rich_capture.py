@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import io
+import logging
+import traceback
 
 from rich.console import Console
 from rich.text import Text
 
 from myagent.cli.layout import ANSI_PATTERN, OUTPUT_CONTROL_PATTERN
+
+logger = logging.getLogger("myagent.cli.rich_capture")
 
 
 def capture_renderable(renderable: object, width: int = 100) -> str:
@@ -47,7 +51,17 @@ def _normalize_width(width: int) -> int:
         return 100
     try:
         return max(1, int(width))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError) as exc:
+        logger.exception(
+            "Rich capture width could not be parsed",
+            extra={
+                "category": "error",
+                "component": "agent",
+                "context": "cli_rich_capture_width",
+                "exception_type": type(exc).__name__,
+                "traceback": traceback.format_exc(),
+            },
+        )
         return 100
 
 
