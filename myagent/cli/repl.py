@@ -706,6 +706,7 @@ class REPLEngine:
                         # Fallback: simple print-based rendering
                         self._render_event_fallback(event)
 
+            layout_started = self._start_layout_for_engine_stream()
             engine_task = _asyncio.ensure_future(_run_engine())
             self._active_engine_task = engine_task
             try:
@@ -722,8 +723,8 @@ class REPLEngine:
                 self._output_to_console("\n[Interrupted by user]")
             finally:
                 self._active_engine_task = None
-
-            self._output_to_console("")  # trailing newline after streaming
+                self._output_to_console("")  # trailing newline after streaming
+                self._stop_layout_after_engine_stream(layout_started)
 
             # gap-19-02: After stream interruption, prompt user to decide
             if stream_interrupted:
@@ -881,6 +882,23 @@ class REPLEngine:
         if getattr(self._layout_controller, "is_live", False):
             return False
         return not getattr(self._layout_controller, "_live_failed", False)
+
+    def _start_layout_for_engine_stream(self) -> bool:
+        if not self._should_start_layout_for_engine_stream():
+            return False
+        self._layout_controller.start()
+        return True
+
+    def _should_start_layout_for_engine_stream(self) -> bool:
+        if self._layout_controller is None:
+            return False
+        status_config = self._status_config()
+        pane_config = getattr(status_config, "status_pane", status_config)
+        return not (hasattr(pane_config, "enabled") and not bool(pane_config.enabled))
+
+    def _stop_layout_after_engine_stream(self, started: bool) -> None:
+        if started and self._layout_controller:
+            self._layout_controller.stop()
 
     def _render_event_fallback(self, event) -> None:
         """Fallback renderer when no Rich Renderer is wired."""

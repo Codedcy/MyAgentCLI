@@ -13,6 +13,7 @@ from myagent.agent.engine import (
     Done,
     Error,
     Interrupted,
+    TextChunk,
     ToolCallEnd,
     ToolCallStart,
 )
@@ -45,11 +46,17 @@ class SpyLayoutController:
         self.status_pane = status_pane
         self.status_config = status_config
         self.append_calls = []
+        self.start_calls = 0
         self.render_once_calls = 0
         self.refresh_calls = 0
         self.stop_calls = 0
         self.toggle_calls = 0
+        self.is_live = False
         SpyLayoutController.instances.append(self)
+
+    def start(self):
+        self.start_calls += 1
+        self.is_live = True
 
     def append_output(self, text, end="\n"):
         self.append_calls.append((text, end))
@@ -62,6 +69,7 @@ class SpyLayoutController:
 
     def stop(self):
         self.stop_calls += 1
+        self.is_live = False
 
     def toggle_inspector(self):
         self.toggle_calls += 1
@@ -166,6 +174,41 @@ async def test_shutdown_stops_layout_controller(layout_spy):
     await repl._shutdown()
 
     assert repl._layout_controller.stop_calls == 1
+
+
+class FakeStreamingEngine:
+    def __init__(self, events):
+        self.events = events
+        self.interrupt_event = SimpleNamespace(clear=lambda: None)
+
+    async def run(self, text, session, active_skill=None):
+        for event in self.events:
+            yield event
+
+
+@pytest.mark.asyncio
+async def test_process_input_uses_live_layout_for_streaming_chunks(layout_spy):
+    engine = FakeStreamingEngine(
+        [
+            TextChunk("hel"),
+            TextChunk("lo"),
+            Done(),
+        ]
+    )
+    repl = REPLEngine(
+        engine=engine,
+        status_pane=FakeStatusPane(),
+        status_model=RuntimeStatusModel(),
+    )
+    repl._current_session = SimpleNamespace(id="session-1")
+
+    await repl.process_input("hello")
+
+    controller = repl._layout_controller
+    assert controller.start_calls == 1
+    assert controller.stop_calls == 1
+    assert controller.append_calls == [("hel", ""), ("lo", ""), ("", "\n"), ("", "\n")]
+    assert controller.render_once_calls == 0
 
 
 def test_done_event_updates_runtime_status_tokens(layout_spy):
