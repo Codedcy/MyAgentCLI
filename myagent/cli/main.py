@@ -82,6 +82,10 @@ def _build_status_components(
 
 def _wire_subagent_status(subagent_pool, status_model: RuntimeStatusModel) -> None:
     """Wire sub-agent lifecycle callbacks into the runtime status model."""
+    if getattr(subagent_pool, "_status_model_wired", False):
+        return
+
+    subagent_pool._status_model_wired = True
     if not hasattr(subagent_pool, "_task_names"):
         subagent_pool._task_names = {}
 
@@ -106,6 +110,7 @@ def _wire_subagent_status(subagent_pool, status_model: RuntimeStatusModel) -> No
     subagent_pool.on_status_change(_on_subagent_status_change)
 
     original_spawn = subagent_pool.spawn
+    subagent_pool._status_spawn_original = original_spawn
 
     async def _spawn_with_task_name(*spawn_args, **spawn_kw):
         prompt = spawn_kw.get("prompt", spawn_args[0] if spawn_args else "")

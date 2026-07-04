@@ -143,6 +143,31 @@ async def test_wire_subagent_status_wraps_spawn_and_records_task_name():
 
 
 @pytest.mark.asyncio
+async def test_wire_subagent_status_is_idempotent():
+    first_model = RuntimeStatusModel()
+    second_model = RuntimeStatusModel()
+    pool = FakeSubagentPool()
+    original_spawn = pool.spawn
+
+    cli_main._wire_subagent_status(pool, first_model)
+    wrapped_spawn = pool.spawn
+    first_callback = pool._callbacks[0]
+    stored_original_spawn = pool._status_spawn_original
+
+    cli_main._wire_subagent_status(pool, second_model)
+    await pool.spawn("Idempotent wiring")
+
+    assert len(pool._callbacks) == 1
+    assert pool._callbacks[0] is first_callback
+    assert pool.spawn is wrapped_spawn
+    assert _same_bound_method(stored_original_spawn, original_spawn)
+    assert pool._status_spawn_original is stored_original_spawn
+    assert pool.spawn_prompts == ["Idempotent wiring"]
+    assert "sub-001" in _subagents_by_id(first_model)
+    assert _subagents_by_id(second_model) == {}
+
+
+@pytest.mark.asyncio
 async def test_wire_subagent_status_updates_runtime_model_for_lifecycle_states():
     status_model = RuntimeStatusModel()
     pool = FakeSubagentPool()
@@ -218,4 +243,11 @@ def _active_subagent_count(status_model: RuntimeStatusModel) -> int:
         1
         for subagent in status_model.snapshot().subagents
         if subagent.status in active_states
+    )
+
+
+def _same_bound_method(left, right) -> bool:
+    return (
+        getattr(left, "__self__", None) is getattr(right, "__self__", None)
+        and getattr(left, "__func__", left) is getattr(right, "__func__", right)
     )
