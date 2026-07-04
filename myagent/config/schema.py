@@ -76,7 +76,7 @@ class StatusPaneConfig:
     max_width: int = 48
     collapse_below_columns: int = 120
     rail_width: int = 5
-    toggle_key: str = "ctrl+i"
+    toggle_key: str = "f2"
     sections: list[str] = field(
         default_factory=lambda: [
             "session",

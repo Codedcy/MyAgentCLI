@@ -3,6 +3,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.keys import Keys
 from rich.console import Console
 
 import myagent.cli.repl as repl_module
@@ -248,7 +250,7 @@ def test_toggle_inspector_delegates_to_layout_controller_and_refreshes(layout_sp
     assert repl._layout_controller.refresh_calls == 1
 
 
-def test_ctrl_i_binding_toggles_inspector_without_touching_buffer(monkeypatch, layout_spy):
+def test_f2_binding_toggles_inspector_without_touching_buffer(monkeypatch, layout_spy):
     class FakeKeyBindings:
         last_instance = None
 
@@ -269,8 +271,23 @@ def test_ctrl_i_binding_toggles_inspector_without_touching_buffer(monkeypatch, l
     buffer = SimpleNamespace(text="draft", reset=lambda: (_ for _ in ()).throw(AssertionError))
     event = SimpleNamespace(app=SimpleNamespace(current_buffer=buffer), current_buffer=buffer)
 
-    kb.bindings[("c-i",)](event)
+    kb.bindings[("f2",)](event)
 
     assert repl._layout_controller.toggle_calls == 1
     assert repl._layout_controller.refresh_calls == 1
     assert buffer.text == "draft"
+
+
+def test_inspector_toggle_key_does_not_capture_tab_completion(layout_spy):
+    tab_bindings = KeyBindings()
+
+    @tab_bindings.add("tab")
+    def _(event):
+        pass
+
+    repl = REPLEngine(status_pane=FakeStatusPane(), status_model=RuntimeStatusModel())
+    repl_bindings = repl._build_key_bindings()
+
+    assert tab_bindings.bindings[0].keys == (Keys.ControlI,)
+    assert (Keys.F2,) in [binding.keys for binding in repl_bindings.bindings]
+    assert (Keys.ControlI,) not in [binding.keys for binding in repl_bindings.bindings]

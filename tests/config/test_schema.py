@@ -2,9 +2,6 @@
 
 from myagent.config.schema import (
     AppConfig,
-    AutoAllowConfig,
-    AutoDenyConfig,
-    CompressionConfig,
     ContextConfig,
     DreamConfig,
     LoggingConfig,
@@ -103,7 +100,7 @@ class TestUIConfig:
         assert c.status_pane.max_width == 48
         assert c.status_pane.collapse_below_columns == 120
         assert c.status_pane.rail_width == 5
-        assert c.status_pane.toggle_key == "ctrl+i"
+        assert c.status_pane.toggle_key == "f2"
         assert c.status_pane.sections == [
             "session",
             "tokens",

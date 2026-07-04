@@ -14,6 +14,9 @@ from myagent.cli.layout import AgentLayoutController
 
 logger = logging.getLogger("myagent.cli.repl")
 
+DEFAULT_INSPECTOR_TOGGLE_KEY = "f2"
+TAB_EQUIVALENT_KEYS = {"c-i", "ctrl+i", "control+i", "control-i", "tab"}
+
 
 class SlashCompleter(Completer):
     """Auto-completion for slash commands, skills, mode values, and file paths.
@@ -247,10 +250,19 @@ class REPLEngine:
         return kb
 
     def _bind_inspector_toggle(self, kb) -> None:
-        @kb.add("c-i")
+        @kb.add(self._inspector_toggle_key())
         def _(event):
             """Toggle the inspector pane without changing the prompt buffer."""
             self._toggle_inspector()
+
+    def _inspector_toggle_key(self) -> str:
+        status_config = self._status_config()
+        pane_config = getattr(status_config, "status_pane", status_config)
+        key = getattr(pane_config, "toggle_key", DEFAULT_INSPECTOR_TOGGLE_KEY)
+        key_text = str(key or DEFAULT_INSPECTOR_TOGGLE_KEY).strip().lower()
+        if key_text in TAB_EQUIVALENT_KEYS:
+            return DEFAULT_INSPECTOR_TOGGLE_KEY
+        return key_text
 
     def _toggle_inspector(self) -> None:
         """Toggle the inspector pane and refresh the layout."""

@@ -26,7 +26,7 @@ Repository convention from `AGENTS.md`: implementation plans must not include co
 - Modify `myagent/cli/status.py`: replace the old status bar renderer with `AgentInspectorPane`, preserving a `StatusBar` compatibility alias during migration.
 - Create `myagent/cli/layout.py`: own the Rich `Layout` and `Live` lifecycle, choose full pane versus rail, buffer output, and expose a toggle hook.
 - Modify `myagent/cli/main.py`: build status components, wire LLM retry callbacks and sub-agent lifecycle callbacks to `RuntimeStatusModel`, and pass the pane into the REPL.
-- Modify `myagent/cli/repl.py`: use `AgentLayoutController`, route streamed output and status events through it, bind `Ctrl+I`, and stop the layout on shutdown.
+- Modify `myagent/cli/repl.py`: use `AgentLayoutController`, route streamed output and status events through it, bind `F2`, and stop the layout on shutdown.
 - Modify `myagent/cli/__init__.py`: export `AgentInspectorPane`, `RuntimeStatusModel` integration surface, and keep `StatusBar` compatibility.
 - Modify `myagent/cli/renderer.py`: ignore status-only events so they do not print as conversation output.
 - Create `tests/agent/test_runtime_status.py`: status model tests.
@@ -64,7 +64,7 @@ Commit after each task. Do not push.
 
 - [ ] **Step 1: Write failing schema tests**
 
-Add tests asserting default `UIConfig().status_pane.enabled is True`, `placement == "right"`, `width == 34`, `min_width == 28`, `max_width == 48`, `collapse_below_columns == 120`, `rail_width == 5`, `toggle_key == "ctrl+i"`, and sections equal `["session", "tokens", "goal", "subagents", "tools", "health"]`. Keep assertions that `show_status_bar` and `status_bar_items` still exist for backward compatibility.
+Add tests asserting default `UIConfig().status_pane.enabled is True`, `placement == "right"`, `width == 34`, `min_width == 28`, `max_width == 48`, `collapse_below_columns == 120`, `rail_width == 5`, `toggle_key == "f2"`, and sections equal `["session", "tokens", "goal", "subagents", "tools", "health"]`. Keep assertions that `show_status_bar` and `status_bar_items` still exist for backward compatibility.
 
 - [ ] **Step 2: Write failing loader compatibility tests**
 
@@ -329,9 +329,9 @@ Expected: FAIL because REPL has no layout controller integration.
 
 Accept `status_pane` and `status_model`. Preserve `status_bar` as an alias for compatibility. Replace direct status-bar one-time printing with `AgentLayoutController.render_once()` when the pane exists. Route `_output_to_console()` through the controller.
 
-- [ ] **Step 5: Add `Ctrl+I` binding**
+- [ ] **Step 5: Add `F2` binding**
 
-Extend the existing prompt_toolkit `KeyBindings` setup so `Ctrl+I` calls `_toggle_inspector()` and refreshes the layout. The binding must not submit or mutate the current input buffer.
+Extend the existing prompt_toolkit `KeyBindings` setup so `F2` calls `_toggle_inspector()` and refreshes the layout. The binding must not submit or mutate the current input buffer.
 
 - [ ] **Step 6: Update status from engine events**
 
@@ -468,7 +468,7 @@ Run: `git commit -m "docs: update inspector pane documentation"`
 - Legacy `ui.show_status_bar` and `ui.status_bar_items` still load and map to pane settings.
 - The CLI renders a fixed right-side Agent Inspector Pane when terminal width is at or above the configured threshold.
 - Narrow terminals automatically show a compact rail.
-- `Ctrl+I` toggles expanded/collapsed Inspector state without submitting the prompt.
+- `F2` toggles expanded/collapsed Inspector state without submitting the prompt.
 - Token, context, goal, sub-agent, tool, retry, and health state update through `RuntimeStatusModel`.
 - The pane renderer has no direct dependency on Agent Engine, Tool Registry, Sub-Agent Pool, or LLM Provider internals.
 - `REPLEngine` owns a single layout controller; no component starts a competing Live display.
