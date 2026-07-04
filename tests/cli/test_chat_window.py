@@ -7,6 +7,7 @@ from unittest.mock import Mock
 
 import pytest
 from prompt_toolkit.keys import Keys
+from prompt_toolkit.utils import get_cwidth
 from rich.panel import Panel
 
 from myagent.agent.runtime_status import RuntimeStatusModel
@@ -338,6 +339,25 @@ def test_unread_marker_overlays_long_last_line_without_adding_row() -> None:
     assert before_output[:2] == after_output[:2]
     assert after_output[-1].endswith("[1 new messages]")
     assert len(after_output[-1]) <= 32
+
+
+def test_unread_marker_overlay_respects_full_width_terminal_cells() -> None:
+    transcript = TranscriptBuffer(follow_output="auto")
+    controller = make_controller(transcript=transcript)
+    for index in range(4):
+        transcript.append_assistant(f"line-{index}")
+    transcript.append_assistant("界" * 20)
+    for index in range(5, 8):
+        transcript.append_assistant(f"line-{index}")
+    controller._render_for_size(terminal_columns=100, terminal_rows=4)
+    controller._scroll_lines(-3)
+
+    controller.append_output("line-8")
+    after_output = controller._conversation_lines(height=3, width=32)
+
+    assert len(after_output) == 3
+    assert after_output[-1].endswith("[1 new messages]")
+    assert get_cwidth(after_output[-1]) <= 32
 
 
 @pytest.mark.asyncio

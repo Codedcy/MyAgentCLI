@@ -13,6 +13,7 @@ from prompt_toolkit.application import Application
 from prompt_toolkit.application.current import get_app_or_none
 from prompt_toolkit.layout import HSplit, Layout, Window
 from prompt_toolkit.layout.controls import FormattedTextControl
+from prompt_toolkit.utils import get_cwidth
 from prompt_toolkit.widgets import TextArea
 
 from myagent.cli.input_controller import ChatInputActions, InputController
@@ -32,6 +33,28 @@ ROLE_LABELS = {
     "tool": "Tool",
     "user": "You",
 }
+
+
+def _clip_cells(text: str, width: int) -> str:
+    """Trim text to a terminal cell width without splitting wide characters."""
+
+    if width <= 0:
+        return ""
+
+    cells = 0
+    clipped: list[str] = []
+    for character in text:
+        character_width = get_cwidth(character)
+        if cells + character_width > width:
+            break
+        clipped.append(character)
+        cells += character_width
+    return "".join(clipped)
+
+
+def _pad_cells(text: str, width: int) -> str:
+    clipped = _clip_cells(text, width)
+    return f"{clipped}{' ' * max(0, width - get_cwidth(clipped))}"
 
 
 class ChatWindowController:
@@ -281,10 +304,10 @@ class ChatWindowController:
             right = status_lines[index] if index < len(status_lines) else ""
             if right:
                 rendered_lines.append(
-                    f"{left[:conversation_width].ljust(conversation_width)} {right}"
+                    f"{_pad_cells(left, conversation_width)} {right}"
                 )
             else:
-                rendered_lines.append(left[:columns])
+                rendered_lines.append(_clip_cells(left, columns))
         return "\n".join(rendered_lines)
 
     def _conversation_lines(self, height: int, width: int) -> list[str]:
@@ -306,13 +329,16 @@ class ChatWindowController:
             lines = ["Conversation"]
 
         clipped = lines[-height:]
-        return [line[:width] for line in clipped] + [""] * max(0, height - len(clipped))
+        return [_clip_cells(line, width) for line in clipped] + [""] * max(
+            0,
+            height - len(clipped),
+        )
 
     def _transcript_line_text(self, line: TranscriptLine, width: int) -> str:
         if line.line_index == 0:
             label = ROLE_LABELS.get(line.entry.role, line.entry.role.title())
-            return f"{label}: {line.text}"[:width]
-        return f"  {line.text}"[:width]
+            return _clip_cells(f"{label}: {line.text}", width)
+        return _clip_cells(f"  {line.text}", width)
 
     def _place_unread_marker(
         self,
@@ -323,25 +349,25 @@ class ChatWindowController:
         if width <= 0:
             return
 
-        marker_text = marker[:width]
+        marker_text = _clip_cells(marker, width)
         if not lines:
             lines.append(marker_text)
             return
 
         separator = "  "
-        candidate = f"{lines[-1]}{separator}{marker}"
-        if len(candidate) <= width:
+        candidate = f"{lines[-1]}{separator}{marker_text}"
+        if get_cwidth(candidate) <= width:
             lines[-1] = candidate
             return
 
-        marker_width = len(marker_text)
-        separator_width = len(separator)
+        marker_width = get_cwidth(marker_text)
+        separator_width = get_cwidth(separator)
         if marker_width + separator_width > width:
             lines[-1] = marker_text
             return
 
         prefix_width = width - marker_width - separator_width
-        prefix = lines[-1][:prefix_width].rstrip()
+        prefix = _clip_cells(lines[-1], prefix_width).rstrip()
         if prefix:
             lines[-1] = f"{prefix}{separator}{marker_text}"
         else:
@@ -355,7 +381,7 @@ class ChatWindowController:
         rendered.extend(f"{' ' * len(INPUT_PROMPT)}{line}" for line in raw_lines[1:])
         if len(rendered) < height:
             rendered.extend("" for _ in range(height - len(rendered)))
-        return [line[:width] for line in rendered]
+        return [_clip_cells(line, width) for line in rendered]
 
     def _status_text(self, terminal_columns: int) -> str:
         if self.status_pane is None:
