@@ -254,6 +254,25 @@ def test_page_and_wheel_actions_move_transcript_viewport_and_refresh() -> None:
     assert transcript.unread_count == 0
 
 
+def test_scroll_moves_within_single_multiline_transcript_entry() -> None:
+    transcript = TranscriptBuffer()
+    controller = make_controller(transcript=transcript)
+    controller.append_output("\n".join(f"line-{index}" for index in range(10)))
+
+    bottom = controller._render_body_for_size(terminal_columns=100, terminal_rows=3)
+    assert "line-7" in bottom
+    assert "line-8" in bottom
+    assert "line-9" in bottom
+
+    controller._scroll_lines(-3)
+    scrolled = controller._render_body_for_size(terminal_columns=100, terminal_rows=3)
+
+    assert "line-4" in scrolled
+    assert "line-5" in scrolled
+    assert "line-6" in scrolled
+    assert "line-9" not in scrolled
+
+
 def test_new_output_follows_bottom_only_while_viewport_is_at_bottom() -> None:
     transcript = TranscriptBuffer(follow_output="auto")
     controller = make_controller(transcript=transcript)

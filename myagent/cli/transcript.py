@@ -21,6 +21,15 @@ class TranscriptEntry:
     is_streaming: bool = False
 
 
+@dataclass(slots=True)
+class TranscriptLine:
+    """A single plain-text line intersecting the current transcript viewport."""
+
+    entry: TranscriptEntry
+    line_index: int
+    text: str
+
+
 class TranscriptBuffer:
     """Owns display-only transcript entries and viewport state."""
 
@@ -153,6 +162,34 @@ class TranscriptBuffer:
             entry_bottom = line_cursor + entry_lines
             if entry_top < bottom_line and entry_bottom > top_line:
                 visible.append(entry)
+            line_cursor = entry_bottom
+
+        return visible
+
+    def visible_lines(self, viewport_height: int) -> list[TranscriptLine]:
+        """Return line-sliced entries intersecting the current viewport."""
+
+        viewport_height = max(1, int(viewport_height))
+        self._clamp_scroll_offset(viewport_height)
+        total_lines = self._total_lines()
+        if total_lines == 0:
+            return []
+
+        bottom_line = total_lines - self._scroll_offset
+        top_line = max(0, bottom_line - viewport_height)
+        visible: list[TranscriptLine] = []
+        line_cursor = 0
+        for entry in self._entries:
+            entry_lines = _display_lines(entry.plain_text)
+            entry_top = line_cursor
+            entry_bottom = line_cursor + len(entry_lines)
+            if entry_top < bottom_line and entry_bottom > top_line:
+                start = max(0, top_line - entry_top)
+                end = min(len(entry_lines), bottom_line - entry_top)
+                visible.extend(
+                    TranscriptLine(entry=entry, line_index=index, text=entry_lines[index])
+                    for index in range(start, end)
+                )
             line_cursor = entry_bottom
 
         return visible
@@ -296,4 +333,4 @@ def _entry_line_count(entry: TranscriptEntry) -> int:
     return len(_display_lines(entry.plain_text))
 
 
-__all__ = ["TranscriptBuffer", "TranscriptEntry"]
+__all__ = ["TranscriptBuffer", "TranscriptEntry", "TranscriptLine"]

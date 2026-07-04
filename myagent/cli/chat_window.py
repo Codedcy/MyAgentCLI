@@ -18,7 +18,7 @@ from prompt_toolkit.widgets import TextArea
 from myagent.cli.input_controller import ChatInputActions, InputController
 from myagent.cli.rich_capture import capture_renderable, sanitize_terminal_text
 from myagent.cli.status import AgentInspectorPane
-from myagent.cli.transcript import TranscriptBuffer, TranscriptEntry
+from myagent.cli.transcript import TranscriptBuffer, TranscriptLine
 
 logger = logging.getLogger("myagent.cli.chat_window")
 
@@ -288,9 +288,10 @@ class ChatWindowController:
         return "\n".join(rendered_lines)
 
     def _conversation_lines(self, height: int, width: int) -> list[str]:
-        lines: list[str] = []
-        for entry in self.transcript.visible_entries(height):
-            lines.extend(self._entry_lines(entry, width))
+        lines = [
+            self._transcript_line_text(line, width)
+            for line in self.transcript.visible_lines(height)
+        ]
         if (
             self.transcript.unread_count
             and not self.transcript.at_bottom(height)
@@ -303,13 +304,11 @@ class ChatWindowController:
         clipped = lines[-height:]
         return [line[:width] for line in clipped] + [""] * max(0, height - len(clipped))
 
-    def _entry_lines(self, entry: TranscriptEntry, width: int) -> list[str]:
-        label = ROLE_LABELS.get(entry.role, entry.role.title())
-        plain_text = sanitize_terminal_text(entry.plain_text)
-        raw_lines = plain_text.splitlines() or [""]
-        rendered = [f"{label}: {raw_lines[0]}"]
-        rendered.extend(f"  {line}" for line in raw_lines[1:])
-        return [line[:width] for line in rendered]
+    def _transcript_line_text(self, line: TranscriptLine, width: int) -> str:
+        if line.line_index == 0:
+            label = ROLE_LABELS.get(line.entry.role, line.entry.role.title())
+            return f"{label}: {line.text}"[:width]
+        return f"  {line.text}"[:width]
 
     def _input_lines(self, text: str, width: int) -> list[str]:
         height = self.input_controller.input_height_for_text(text)
