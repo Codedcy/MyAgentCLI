@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import builtins
 import logging
 from types import SimpleNamespace
@@ -72,12 +73,14 @@ class FakeChatWindowController:
         run_error=None,
         submissions=None,
         ask_response="chat answer",
+        ask_error=None,
     ):
         self.transcript = transcript or TranscriptBuffer()
         self.is_running = running
         self.run_error = run_error
         self.submissions = list(submissions or [])
         self.ask_response = ask_response
+        self.ask_error = ask_error
         self.append_calls = []
         self.tool_calls = []
         self.system_calls = []
@@ -139,6 +142,8 @@ class FakeChatWindowController:
 
     async def ask(self, prompt, timeout):
         self.ask_calls.append((prompt, timeout))
+        if self.ask_error:
+            raise self.ask_error
         return self.ask_response
 
     def request_stop(self):
@@ -897,6 +902,173 @@ def test_start_layout_for_engine_stream_returns_false_while_chat_mode_is_active(
 
     assert repl._start_layout_for_engine_stream() is False
     assert repl._layout_controller.start_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_chat_submissions_are_serialized_and_preserve_active_engine_task():
+    class ControlledEngine:
+        def __init__(self):
+            self.interrupt_event = SimpleNamespace(clear=lambda: None)
+            self.started = []
+            self.first_started = asyncio.Event()
+            self.second_started = asyncio.Event()
+            self.release_first = asyncio.Event()
+
+        async def run(self, text, session, active_skill=None):
+            self.started.append(text)
+            if text == "first":
+                self.first_started.set()
+                yield TextChunk("first")
+                await self.release_first.wait()
+                yield Done()
+                return
+
+            self.second_started.set()
+            yield TextChunk("second")
+            yield Done()
+
+    class ConcurrentSubmitChat(FakeChatWindowController):
+        def __init__(self):
+            super().__init__()
+            self.second_submitted = asyncio.Event()
+            self.first_active_engine_task = None
+
+        async def run(self, on_submit, on_exit=None, on_interrupt=None):
+            self.is_running = True
+            first_task = asyncio.create_task(on_submit("first"))
+            await asyncio.wait_for(engine.first_started.wait(), timeout=1.0)
+            self.first_active_engine_task = repl._active_engine_task
+
+            second_task = asyncio.create_task(on_submit("second"))
+            self.second_submitted.set()
+            await first_task
+            await second_task
+            self.is_running = False
+
+    engine = ControlledEngine()
+    chat = ConcurrentSubmitChat()
+    repl = REPLEngine(
+        chat_window_controller=chat,
+        engine=engine,
+        renderer=Renderer(),
+    )
+    repl._current_session = SimpleNamespace(id="session-1")
+
+    run_task = asyncio.create_task(repl._run_chat_window_loop())
+    await asyncio.wait_for(chat.second_submitted.wait(), timeout=1.0)
+    await asyncio.sleep(0)
+
+    try:
+        assert engine.started == ["first"]
+        assert repl._active_engine_task is chat.first_active_engine_task
+    finally:
+        engine.release_first.set()
+        await asyncio.wait_for(run_task, timeout=1.0)
+
+    assert engine.started == ["first", "second"]
+
+
+@pytest.mark.asyncio
+async def test_ask_timeout_routes_system_message_to_chat_without_console():
+    class AskTimeoutEngine:
+        def __init__(self):
+            self.interrupt_event = SimpleNamespace(clear=lambda: None)
+            self.inputs = []
+
+        async def run(self, text, session, active_skill=None):
+            self.inputs.append(text)
+            if text == "ask":
+                yield AskUserQuestion(question="Need input?")
+            yield Done()
+
+    chat = FakeChatWindowController(ask_response=None)
+    repl = active_chat_repl(
+        chat,
+        engine=AskTimeoutEngine(),
+        renderer=Renderer(),
+    )
+    repl._current_session = SimpleNamespace(id="session-1")
+    repl._console = FakeConsole()
+
+    await repl.process_input("ask")
+
+    assert repl._console.calls == []
+    assert any(
+        "No response within 120s; agent will auto-decide." in message
+        for message in chat.system_calls
+    )
+
+
+@pytest.mark.asyncio
+async def test_ask_failure_routes_system_message_to_chat_without_console():
+    class AskFailureEngine:
+        def __init__(self):
+            self.interrupt_event = SimpleNamespace(clear=lambda: None)
+
+        async def run(self, text, session, active_skill=None):
+            yield AskUserQuestion(question="Need input?")
+            yield Done()
+
+    chat = FakeChatWindowController(ask_error=RuntimeError("ask failed"))
+    repl = active_chat_repl(
+        chat,
+        engine=AskFailureEngine(),
+        renderer=Renderer(),
+    )
+    repl._current_session = SimpleNamespace(id="session-1")
+    repl._console = FakeConsole()
+
+    await repl.process_input("ask")
+
+    assert repl._console.calls == []
+    assert any(
+        "Timeout; agent will auto-decide." in message
+        for message in chat.system_calls
+    )
+
+
+@pytest.mark.asyncio
+async def test_echo_fallback_routes_to_chat_without_console():
+    chat = FakeChatWindowController()
+    repl = active_chat_repl(chat)
+    repl._console = FakeConsole()
+
+    await repl.process_input("hello without engine")
+
+    assert repl._console.calls == []
+    assert chat.system_calls == ["Echo: hello without engine"]
+
+
+@pytest.mark.asyncio
+async def test_status_update_refreshes_chat_without_transcript_entry():
+    model = RuntimeStatusModel()
+    transcript = TranscriptBuffer()
+    chat = FakeChatWindowController(transcript=transcript)
+    engine = FakeStreamingEngine(
+        [
+            StatusUpdate(
+                scope="tokens",
+                data={
+                    "prompt_tokens": 10,
+                    "completion_tokens": 5,
+                    "turn_total": 15,
+                    "session_total": 15,
+                },
+            ),
+            Done(),
+        ]
+    )
+    repl = active_chat_repl(
+        chat,
+        engine=engine,
+        status_model=model,
+    )
+    repl._current_session = SimpleNamespace(id="session-1")
+
+    await repl.process_input("status only")
+
+    assert chat.refresh_calls >= 1
+    assert transcript_entries(transcript) == []
 
 
 @pytest.mark.asyncio

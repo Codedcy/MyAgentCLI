@@ -219,6 +219,7 @@ class REPLEngine:
         self._chat_window = chat_window_controller
         self._chat_window_loop_active = False
         self._chat_streaming = False
+        self._chat_submission_lock: asyncio.Lock | None = None
         self._running = False
         self._current_session = None
         self._console = self._create_console() if self._status_pane else None
@@ -301,6 +302,7 @@ class REPLEngine:
 
         if self._layout_controller:
             self._layout_controller.refresh()
+        self._refresh_chat_window()
 
     def _handle_status_update(self, event) -> None:
         scope = getattr(event, "scope", "")
@@ -656,12 +658,38 @@ class REPLEngine:
 
         return self._append_chat_system_output(content)
 
+    def _output_system_message(
+        self,
+        message: str,
+        console_message: str | None = None,
+    ) -> None:
+        if self._append_chat_system_output(message):
+            return
+        output = console_message if console_message is not None else message
+        if self._console:
+            self._console.print(output)
+        else:
+            print(output)
+
+    def _refresh_chat_window(self) -> None:
+        if not self._chat_window_active():
+            return
+        refresh = getattr(self._chat_window, "refresh", None)
+        if callable(refresh):
+            refresh()
+
     def _set_chat_agent_running(self, running: bool) -> None:
         if not self._chat_window_active():
             return
         set_agent_running = getattr(self._chat_window, "set_agent_running", None)
         if callable(set_agent_running):
             set_agent_running(running)
+
+    async def _process_chat_submission(self, text: str) -> None:
+        if self._chat_submission_lock is None:
+            self._chat_submission_lock = asyncio.Lock()
+        async with self._chat_submission_lock:
+            await self.process_input(text)
 
     async def _handle_chat_interrupt(self) -> None:
         engine_task = getattr(self, "_active_engine_task", None)
@@ -740,6 +768,7 @@ class REPLEngine:
             self._chat_window = controller
             self._chat_window_loop_active = True
             self._chat_streaming = False
+            self._chat_submission_lock = asyncio.Lock()
 
             self._append_chat_system_output(
                 "MyAgentCLI - Type /help for commands, Ctrl+D to exit."
@@ -747,7 +776,7 @@ class REPLEngine:
             self._append_chat_system_output(f"Project: {self._project_dir.name}")
 
             await controller.run(
-                self.process_input,
+                self._process_chat_submission,
                 on_exit=self._handle_chat_exit,
                 on_interrupt=self._handle_chat_interrupt,
             )
@@ -775,6 +804,7 @@ class REPLEngine:
         finally:
             self._set_chat_agent_running(False)
             self._chat_window_loop_active = False
+            self._chat_submission_lock = None
 
     async def _run_prompt_session_loop(self) -> None:
         """Run the legacy prompt_toolkit REPL loop."""
@@ -1099,10 +1129,10 @@ class REPLEngine:
                     if user_answer:
                         await self.process_input(user_answer)
                     else:
-                        if self._console:
-                            self._console.print(
-                                "[dim]No response within 120s; agent will auto-decide.[/dim]"
-                            )
+                        self._output_system_message(
+                            "No response within 120s; agent will auto-decide.",
+                            "[dim]No response within 120s; agent will auto-decide.[/dim]",
+                        )
                         # Send "continue" to let the agent auto-decide
                         await self.process_input("continue")
                 except Exception:
@@ -1114,15 +1144,12 @@ class REPLEngine:
                             "context": "cli_ask_user_prompt",
                         },
                     )
-                    if self._console:
-                        self._console.print(
-                            "[dim]Timeout; agent will auto-decide.[/dim]"
-                        )
+                    self._output_system_message(
+                        "Timeout; agent will auto-decide.",
+                        "[dim]Timeout; agent will auto-decide.[/dim]",
+                    )
         else:
-            if self._console:
-                self._console.print(f"Echo: {text}")
-            else:
-                print(f"Echo: {text}")
+            self._output_system_message(f"Echo: {text}")
 
     async def _prompt_with_timeout(self, prompt_text: str, timeout: float) -> str | None:
         """Prompt the user with a timeout. Returns the response or None if timed out.
