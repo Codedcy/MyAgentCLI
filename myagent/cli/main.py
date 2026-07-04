@@ -7,6 +7,11 @@ import asyncio
 import logging
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from myagent.agent.runtime_status import RuntimeStatusModel
+    from myagent.cli.status import AgentInspectorPane
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -54,6 +59,123 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _build_status_components(
+    config,
+    project_dir: Path,
+) -> tuple[RuntimeStatusModel, AgentInspectorPane | None]:
+    """Create runtime status state and the optional inspector pane."""
+    from myagent.agent.runtime_status import RuntimeStatusModel
+    from myagent.cli.status import AgentInspectorPane
+
+    status_model = RuntimeStatusModel()
+    status_model.update_session(
+        project_name=project_dir.name,
+        model=getattr(config.model, "model", ""),
+        thinking=getattr(config.model, "thinking", ""),
+    )
+
+    status_pane = None
+    if getattr(config.ui.status_pane, "enabled", True):
+        status_pane = AgentInspectorPane(config.ui.status_pane, status_model)
+    return status_model, status_pane
+
+
+def _wire_subagent_status(subagent_pool, status_model: RuntimeStatusModel) -> None:
+    """Wire sub-agent lifecycle callbacks into the runtime status model."""
+    if not hasattr(subagent_pool, "_task_names"):
+        subagent_pool._task_names = {}
+
+    async def _on_subagent_status_change(agent_id, status, handle, pool):
+        status_value = _status_value(status)
+        if status_value == "result_consumed":
+            status_model.remove_subagent(agent_id)
+            task_names = getattr(pool, "_task_names", None)
+            if isinstance(task_names, dict):
+                task_names.pop(agent_id, None)
+            return
+
+        agents = getattr(pool, "_agents", {})
+        seen_agent_ids: set[str] = set()
+        for hid, current_handle in list(agents.items()):
+            seen_agent_ids.add(hid)
+            _upsert_subagent_status(status_model, pool, hid, current_handle)
+
+        if handle is not None and agent_id not in seen_agent_ids:
+            _upsert_subagent_status(status_model, pool, agent_id, handle)
+
+    subagent_pool.on_status_change(_on_subagent_status_change)
+
+    original_spawn = subagent_pool.spawn
+
+    async def _spawn_with_task_name(*spawn_args, **spawn_kw):
+        prompt = spawn_kw.get("prompt", spawn_args[0] if spawn_args else "")
+        handle = await original_spawn(*spawn_args, **spawn_kw)
+        subagent_pool._task_names[handle.id] = _extract_task_name(prompt)
+        await _on_subagent_status_change(
+            handle.id, handle.status, handle, subagent_pool
+        )
+        return handle
+
+    subagent_pool.spawn = _spawn_with_task_name
+
+
+def _upsert_subagent_status(status_model, pool, agent_id: str, handle) -> None:
+    status_value = _status_value(getattr(handle, "status", ""))
+    if status_value == "result_consumed":
+        status_model.remove_subagent(agent_id)
+        return
+
+    task_names = getattr(pool, "_task_names", {})
+    fallback_name = agent_id[:12] + ".." if len(agent_id) > 14 else agent_id
+    task_name = task_names.get(agent_id, fallback_name)
+    progress_pct = _subagent_progress(handle)
+    retry_count = getattr(handle, "_retry_count", 0)
+    max_retries = getattr(handle, "_max_retries", 0)
+    result_summary = ""
+
+    if status_value in {"created", "running"} and retry_count > 0:
+        status_value = "retrying"
+    elif status_value == "completed":
+        result = getattr(handle, "_result_data", None)
+        output = getattr(result, "output", "") if result else ""
+        if output:
+            result_summary = output[:28] + ".." if len(output) > 30 else output
+
+    status_model.upsert_subagent(
+        agent_id,
+        task_name=task_name,
+        status=status_value,
+        progress_pct=progress_pct,
+        result_summary=result_summary,
+        retry_count=retry_count,
+        max_retries=max_retries,
+    )
+
+
+def _subagent_progress(handle) -> float:
+    progress_iter = getattr(handle, "_progress_iter", None)
+    if not progress_iter:
+        return 0.0
+    current, maximum = progress_iter
+    if maximum <= 0:
+        return 0.0
+    return current / maximum
+
+
+def _status_value(status) -> str:
+    return getattr(status, "value", str(status))
+
+
+def _extract_task_name(prompt: str, max_len: int = 20) -> str:
+    """Extract a short task name from the spawn prompt."""
+    if not prompt:
+        return ""
+    first_line = prompt.split("\n")[0].strip()
+    if len(first_line) > max_len:
+        first_line = first_line[:max_len - 2] + ".."
+    return first_line or prompt[:max_len]
+
+
 async def async_main(argv: list[str] | None = None) -> int:
     """Async entry point. Returns exit code."""
     args = parse_args(argv)
@@ -98,20 +220,19 @@ async def async_main(argv: list[str] | None = None) -> int:
     if args.dangerously_skip_permissions:
         permissions.skip_all(True)
 
-    # Status bar must be created before LLMProvider so retry_callback
-    # can reference it. LLMProvider doesn't depend on status_bar.
-    from myagent.cli.status import StatusBar
-    status_bar = StatusBar(config.ui) if config.ui.show_status_bar else None
+    # Status components must be created before LLMProvider so retry_callback
+    # can update the runtime model. REPLEngine's existing status_bar parameter
+    # receives the pane until Task 6 renames the integration.
+    status_model, status_pane = _build_status_components(config, project_dir)
 
     from myagent.llm.provider import LLMProvider
     llm = LLMProvider(
         config.model,
         logging_config=config.logging,
         streaming=config.ui.streaming,
-        retry_callback=(lambda attempt, max_r, delay:
-            status_bar.update(retry_info=f"Retry {attempt}/{max_r} ({delay:.1f}s)")
-            if status_bar else None
-        ) if status_bar else None,
+        retry_callback=lambda attempt, max_r, delay: status_model.update_health(
+            retry_info=f"Retry {attempt}/{max_r} ({delay:.1f}s)"
+        ),
     )
 
     from myagent.context.persistence import SessionStore
@@ -234,117 +355,8 @@ async def async_main(argv: list[str] | None = None) -> int:
     from myagent.cli.renderer import Renderer
     renderer = Renderer(syntax_highlight=config.ui.syntax_highlight)
 
-    # Wire status bar to sub-agent pool state via lifecycle callbacks (gap-r6-08)
-    if status_bar:
-        from myagent.cli.status import SubAgentInfo
-
-        # Store per-agent task names on the pool so callbacks can access them
-        subagent_pool._task_names: dict[str, str] = {}
-
-        async def _on_subagent_status_change(agent_id, status, handle, pool):
-            """Callback invoked on every sub-agent lifecycle transition.
-
-            Rebuilds the SubAgentInfo list from the current pool state and
-            pushes it to the status bar. This covers completions, failures,
-            and interruptions — not just spawn events.
-            """
-            details = []
-            for hid, h in pool._agents.items():
-                # gap-19-08: Gracefully handle missing task names. The name is
-                # stored immediately after spawn returns (synchronously, before
-                # any callback can fire for that agent). If a name is missing,
-                # fall back to the agent ID as a display label.
-                task_name = pool._task_names.get(hid, hid[:12] + ".." if len(hid) > 14 else hid)
-                if h.status.value in ("running", "created"):
-                    # gap-8-06: compute real progress from worker iteration
-                    progress_pct = 0.0
-                    pi = getattr(h, '_progress_iter', None)
-                    if pi:
-                        cur, max_i = pi
-                        if max_i > 0:
-                            progress_pct = (cur / max_i) * 100.0
-                    # gap-18-03: check for retry state
-                    retry_count = getattr(h, '_retry_count', 0)
-                    max_retries = getattr(h, '_max_retries', 0)
-                    if retry_count > 0:
-                        details.append(SubAgentInfo(
-                            agent_id=hid,
-                            task_name=task_name,
-                            status="retrying",
-                            progress_pct=progress_pct,
-                            retry_count=retry_count,
-                            max_retries=max_retries,
-                        ))
-                    else:
-                        details.append(SubAgentInfo(
-                            agent_id=hid,
-                            task_name=task_name,
-                            status="running",
-                            progress_pct=progress_pct,
-                        ))
-                elif h.status.value == "completed":
-                    result = h._result_data
-                    summary = ""
-                    if result and result.output:
-                        output = result.output
-                        summary = output[:28] + ".." if len(output) > 30 else output
-                    details.append(SubAgentInfo(
-                        agent_id=hid,
-                        task_name=task_name,
-                        status="completed",
-                        result_summary=summary,
-                    ))
-                elif h.status.value == "failed":
-                    details.append(SubAgentInfo(
-                        agent_id=hid,
-                        task_name=task_name,
-                        status="failed",
-                    ))
-                elif h.status.value == "interrupted":
-                    details.append(SubAgentInfo(
-                        agent_id=hid,
-                        task_name=task_name,
-                        status="interrupted",
-                    ))
-            status_bar.update(
-                subagents_active=pool.active_count,
-                subagents_details=details,
-            )
-
-        subagent_pool.on_status_change(_on_subagent_status_change)
-
-        # Wrap spawn to capture task names and trigger initial status update
-        _original_spawn = subagent_pool.spawn
-
-        def _extract_task_name(prompt: str, max_len: int = 20) -> str:
-            """Extract a short task name from the spawn prompt."""
-            if not prompt:
-                return ""
-            first_line = prompt.split("\n")[0].strip()
-            if len(first_line) > max_len:
-                first_line = first_line[:max_len - 2] + ".."
-            return first_line or prompt[:max_len]
-
-        async def _spawn_with_task_name(*spawn_args, **spawn_kw):
-            prompt = spawn_kw.get("prompt", spawn_args[0] if spawn_args else "")
-            handle = await _original_spawn(*spawn_args, **spawn_kw)
-            # gap-19-08: Store task name AFTER _original_spawn returns.
-            # This is safe because _original_spawn returns immediately for
-            # background tasks (it creates the asyncio.Task and returns the
-            # handle). The callback that reads _task_names fires asynchronously
-            # when the task actually completes, which happens well after this
-            # point. If a name is missing (e.g., the callback fires before this
-            # line due to a synchronous edge case), the callback gracefully
-            # falls back to displaying the agent ID.
-            subagent_pool._task_names[handle.id] = _extract_task_name(prompt)
-            # Fire initial spawn notification via the same callback
-            await _on_subagent_status_change(
-                handle.id, handle.status, handle, subagent_pool
-            )
-            return handle
-
-        subagent_pool.spawn = _spawn_with_task_name
-
+    # Wire status model to sub-agent pool state via lifecycle callbacks.
+    _wire_subagent_status(subagent_pool, status_model)
     # Start REPL
     from myagent.cli.repl import REPLEngine
 
@@ -379,7 +391,7 @@ async def async_main(argv: list[str] | None = None) -> int:
             repl = REPLEngine(
                 engine=engine, commands=commands, session_mgr=session_mgr,
                 config=config, project_dir=project_dir,
-                renderer=renderer, status_bar=status_bar,
+                renderer=renderer, status_bar=status_pane,
                 dream_engine=dream_engine,
             )
             repl._current_session = session
@@ -392,7 +404,7 @@ async def async_main(argv: list[str] | None = None) -> int:
     repl = REPLEngine(
         engine=engine, commands=commands, session_mgr=session_mgr,
         config=config, project_dir=project_dir,
-        renderer=renderer, status_bar=status_bar,
+        renderer=renderer, status_bar=status_pane,
         dream_engine=dream_engine,
     )
     await repl.run()
