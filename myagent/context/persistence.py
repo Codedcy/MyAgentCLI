@@ -142,38 +142,37 @@ class SessionStore:
             if d.is_dir():
                 ts = d / "transcript.json"
                 if ts.exists():
-                    data = json.loads(ts.read_text())
-                    duration = data.get("duration", 0)
-                    closed = data.get("closed", False)
-                    # gap-8-10: compute live duration for open sessions
-                    if duration == 0 and not closed:
-                        try:
-                            created_at = datetime.fromisoformat(
-                                data.get("created_at", "2026-01-01T00:00:00")
-                            )
-                            duration = (datetime.now() - created_at).total_seconds()
-                        except (TypeError, ValueError):
-                            logger.exception(
-                                "Failed to calculate session summary duration",
-                                extra={
-                                    "category": "error",
-                                    "component": "agent",
-                                    "context": "calculate session summary duration",
-                                },
-                            )
-                            duration = 0
-                    summaries.append(
-                        SessionSummary(
-                            session_id=data.get("session_id", d.name),
-                            created_at=datetime.fromisoformat(
-                                data.get("created_at", "2026-01-01T00:00:00")
-                            ),
-                            first_message=data.get("first_message", ""),
-                            duration=duration,
-                            total_tokens=data.get("total_tokens", 0),
-                            goal_achieved=data.get("goal_achieved"),
+                    try:
+                        data = json.loads(ts.read_text(encoding="utf-8"))
+                        duration = data.get("duration", 0)
+                        closed = data.get("closed", False)
+                        created_at = datetime.fromisoformat(
+                            data.get("created_at", "2026-01-01T00:00:00")
                         )
-                    )
+                        # gap-8-10: compute live duration for open sessions
+                        if duration == 0 and not closed:
+                            duration = (datetime.now() - created_at).total_seconds()
+                        summaries.append(
+                            SessionSummary(
+                                session_id=data.get("session_id", d.name),
+                                created_at=created_at,
+                                first_message=data.get("first_message", ""),
+                                duration=duration,
+                                total_tokens=data.get("total_tokens", 0),
+                                goal_achieved=data.get("goal_achieved"),
+                            )
+                        )
+                    except (json.JSONDecodeError, OSError, TypeError, ValueError):
+                        logger.exception(
+                            "Failed to read session transcript while listing sessions",
+                            extra={
+                                "category": "error",
+                                "component": "agent",
+                                "context": "session_list_read_transcript",
+                                "transcript_path": str(ts),
+                            },
+                        )
+                        continue
         return summaries
 
     async def load_session(

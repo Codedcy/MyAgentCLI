@@ -36,3 +36,25 @@ class TestSessionStore:
 
         summaries = await store.list_sessions("test", "hash002")
         assert len(summaries) == 2
+
+    @pytest.mark.asyncio
+    async def test_list_sessions_skips_corrupt_transcripts(self, tmp_path, caplog):
+        store = SessionStore(base_dir=tmp_path / "sessions")
+        valid = await store.create_session("test", "hash003")
+        corrupt_dir = (
+            tmp_path / "sessions" / "test" / "hash003" / "2026-07-03-empty"
+        )
+        corrupt_dir.mkdir(parents=True)
+        (corrupt_dir / "transcript.json").write_text("", encoding="utf-8")
+
+        summaries = await store.list_sessions("test", "hash003")
+
+        assert [summary.session_id for summary in summaries] == [valid.id]
+        record = next(
+            record
+            for record in caplog.records
+            if record.name == "myagent.context.persistence"
+        )
+        assert record.category == "error"
+        assert record.component == "agent"
+        assert record.context == "session_list_read_transcript"
