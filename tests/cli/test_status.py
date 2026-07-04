@@ -136,6 +136,25 @@ def test_default_rail_mode_keeps_compact_markers_on_single_lines():
     assert "!" in text
 
 
+def test_model_backed_legacy_update_writes_visible_status_to_model():
+    model = RuntimeStatusModel()
+    pane = AgentInspectorPane(
+        StatusPaneConfig(width=44, collapse_below_columns=80),
+        status_model=model,
+    )
+
+    pane.update(tokens=123, retry_info="retrying request")
+
+    snapshot = model.snapshot()
+    assert snapshot.tokens.session_total == 123
+    assert snapshot.health.retry_info == "retrying request"
+
+    text = render_text(pane.get_renderable(terminal_columns=120), width=120)
+
+    assert "123" in text
+    assert "retrying request" in text
+
+
 def test_preferred_width_uses_full_width_or_marker_aware_rail_width():
     pane = AgentInspectorPane(StatusPaneConfig(width=44, collapse_below_columns=120))
 

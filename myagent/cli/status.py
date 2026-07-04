@@ -71,6 +71,14 @@ class AgentInspectorPane:
         if "subagents_active" in kwargs:
             self._legacy_subagents_active_explicit = True
         self._data.update(kwargs)
+        if self.status_model is not None:
+            self._update_status_model_from_legacy_kwargs(kwargs)
+
+    def _update_status_model_from_legacy_kwargs(self, kwargs: dict[str, Any]) -> None:
+        if "tokens" in kwargs:
+            self.status_model.update_tokens(session_total=kwargs["tokens"])
+        if "retry_info" in kwargs:
+            self.status_model.update_health(retry_info=kwargs["retry_info"])
 
     def toggle(self) -> bool:
         """Toggle between full and rail rendering, returning expanded state."""
