@@ -296,7 +296,11 @@ class ChatWindowController:
             self.transcript.unread_count
             and not self.transcript.at_bottom(height)
         ):
-            lines.append(f"[{self.transcript.unread_count} new messages]")
+            self._place_unread_marker(
+                lines,
+                f"[{self.transcript.unread_count} new messages]",
+                width,
+            )
 
         if not lines:
             lines = ["Conversation"]
@@ -309,6 +313,21 @@ class ChatWindowController:
             label = ROLE_LABELS.get(line.entry.role, line.entry.role.title())
             return f"{label}: {line.text}"[:width]
         return f"  {line.text}"[:width]
+
+    def _place_unread_marker(
+        self,
+        lines: list[str],
+        marker: str,
+        width: int,
+    ) -> None:
+        if not lines:
+            lines.append(marker[:width])
+            return
+
+        separator = "  "
+        candidate = f"{lines[-1]}{separator}{marker}"
+        if len(candidate) <= width:
+            lines[-1] = candidate
 
     def _input_lines(self, text: str, width: int) -> list[str]:
         height = self.input_controller.input_height_for_text(text)

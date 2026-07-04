@@ -296,6 +296,29 @@ def test_new_output_follows_bottom_only_while_viewport_is_at_bottom() -> None:
     assert transcript.unread_count == 0
 
 
+def test_unread_marker_does_not_evict_scrolled_transcript_lines() -> None:
+    transcript = TranscriptBuffer(follow_output="auto")
+    controller = make_controller(transcript=transcript)
+    for index in range(8):
+        transcript.append_assistant(f"line-{index}")
+    controller._render_for_size(terminal_columns=100, terminal_rows=4)
+    controller._scroll_lines(-3)
+
+    before_output = controller._conversation_lines(height=3, width=100)
+    controller.append_output("line-8")
+    after_output = controller._conversation_lines(height=3, width=100)
+
+    assert before_output == [
+        "Agent: line-2",
+        "Agent: line-3",
+        "Agent: line-4",
+    ]
+    assert "Agent: line-2" in after_output
+    assert "Agent: line-3" in after_output
+    assert any(line.startswith("Agent: line-4") for line in after_output)
+    assert any("[1 new messages]" in line for line in after_output)
+
+
 @pytest.mark.asyncio
 async def test_run_starts_full_screen_application_and_request_stop_exits_it(
     monkeypatch,
