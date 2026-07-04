@@ -198,6 +198,8 @@ class SpyLayoutController:
 
 
 class FakeLive:
+    instances = []
+
     def __init__(self, renderable, *, console, refresh_per_second=10, transient=False):
         self.renderable = renderable
         self.console = console
@@ -206,6 +208,7 @@ class FakeLive:
         self.started = False
         self.stop_calls = 0
         self.updates = []
+        FakeLive.instances.append(self)
 
     def start(self):
         self.started = True
@@ -362,6 +365,7 @@ async def test_process_input_uses_live_layout_for_streaming_chunks(layout_spy):
 async def test_process_input_preserves_renderer_panel_output(monkeypatch):
     console = Console(record=True, width=140, height=40)
     monkeypatch.setattr(REPLEngine, "_create_console", lambda _self: console)
+    FakeLive.instances = []
     monkeypatch.setattr(layout_module, "Live", FakeLive)
     engine = FakeStreamingEngine(
         [
@@ -384,6 +388,9 @@ async def test_process_input_preserves_renderer_panel_output(monkeypatch):
     await repl.process_input("use a tool")
     repl._layout_controller.render_once()
 
+    assert len(FakeLive.instances) == 1
+    assert FakeLive.instances[0].started is False
+    assert FakeLive.instances[0].stop_calls == 1
     text = console.export_text(styles=False)
     assert "Tool: read" in text
     assert "<rich.panel.Panel object" not in text
@@ -836,6 +843,43 @@ async def test_process_input_routes_chat_stream_tool_and_error_entries():
     assert any("Tool: read" in entry.plain_text for entry in tool_entries)
     assert any("read ok" in entry.plain_text for entry in tool_entries)
     assert [entry.plain_text for entry in error_entries] == ["boom"]
+
+
+@pytest.mark.asyncio
+async def test_process_input_in_active_chat_window_never_constructs_rich_live(
+    monkeypatch,
+):
+    class ExplodingLive:
+        instances = 0
+
+        def __init__(self, *args, **kwargs):
+            ExplodingLive.instances += 1
+            raise AssertionError("chat-window process_input must not construct Live")
+
+    monkeypatch.setattr(layout_module, "Live", ExplodingLive)
+    transcript = TranscriptBuffer()
+    chat = make_real_chat_controller(transcript=transcript)
+    engine = FakeStreamingEngine([TextChunk("hel"), TextChunk("lo"), Done()])
+    model = RuntimeStatusModel()
+    pane = AgentInspectorPane(StatusPaneConfig(), status_model=model)
+    repl = active_chat_repl(
+        chat,
+        engine=engine,
+        renderer=Renderer(),
+        status_pane=pane,
+        status_model=model,
+    )
+    repl._current_session = SimpleNamespace(id="session-1")
+
+    await repl.process_input("hello")
+
+    assert ExplodingLive.instances == 0
+    assert repl._layout_controller.is_live is False
+    assistant_entries = [
+        entry for entry in transcript_entries(transcript) if entry.role == "assistant"
+    ]
+    assert len(assistant_entries) == 1
+    assert assistant_entries[0].plain_text == "hello"
 
 
 @pytest.mark.asyncio

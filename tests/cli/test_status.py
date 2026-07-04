@@ -346,6 +346,26 @@ def test_statusbar_alias_and_legacy_update_subagent_details_still_render():
     assert "legacy string detail" in text
 
 
+def test_statusbar_alias_preserves_inspector_toggle_and_rail_width_behavior():
+    pane = StatusBar(
+        StatusPaneConfig(width=44, collapse_below_columns=120, rail_width=5)
+    )
+    pane.update(tokens=500, thinking="Think Max", subagents_active=123456789)
+
+    wide_text = render_text(pane.get_renderable(terminal_columns=160), width=160)
+
+    assert StatusBar is AgentInspectorPane
+    assert "Agent Inspector" in wide_text
+    assert "Think Max" in wide_text
+
+    assert pane.toggle() is False
+    rail_text = render_text(pane.get_renderable(terminal_columns=160), width=160)
+
+    assert "Agent Inspector" not in rail_text
+    assert "SA 123456789" in rail_text
+    assert pane.preferred_width(terminal_columns=160) == len("SA 123456789") + 2
+
+
 def test_cli_package_exports_agent_inspector_and_statusbar_alias():
     import myagent.cli as cli
 

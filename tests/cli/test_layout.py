@@ -217,6 +217,20 @@ def test_rail_layout_uses_status_pane_marker_aware_width():
     assert controller.layout["status"].size == len("SA 123456789") + 2
 
 
+def test_disabled_status_pane_keeps_output_rendering_available():
+    config = StatusPaneConfig(enabled=False)
+    controller, console = build_controller(width=160, status_config=config)
+
+    controller.set_output_lines(["output survives disabled inspector"])
+    controller.render_once()
+
+    text = console.export_text(styles=False)
+    assert controller.layout["output"].visible is True
+    assert controller.layout["status"].visible is False
+    assert "output survives disabled inspector" in text
+    assert "Agent Inspector" not in text
+
+
 def test_output_rendering_strips_ansi_and_unsafe_controls_but_keeps_layout_text():
     config = StatusPaneConfig(enabled=False)
     controller, _console = build_controller(width=160, status_config=config)
