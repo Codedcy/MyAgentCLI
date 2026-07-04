@@ -101,7 +101,7 @@ def _build_chat_window_factory(
             follow_output=getattr(chat_config, "follow_output", "auto"),
         )
         return ChatWindowController(
-            chat_config,
+            config,
             transcript,
             status_pane=status_pane,
             status_model=status_model,
@@ -110,6 +110,12 @@ def _build_chat_window_factory(
         )
 
     return _factory
+
+
+def _is_one_shot_command(args: argparse.Namespace) -> bool:
+    """Return whether parsed args should exit without starting the REPL."""
+
+    return bool(args.list_sessions or (args.session and args.export))
 
 
 def _sync_status_model_session(status_model: RuntimeStatusModel, session) -> None:
@@ -413,12 +419,13 @@ async def async_main(argv: list[str] | None = None) -> int:
     )
 
     # Handle one-shot commands
-    if args.list_sessions:
+    one_shot_command = _is_one_shot_command(args)
+    if one_shot_command and args.list_sessions:
         sessions = await session_mgr.list_sessions(project_dir)
         _print_sessions_rich(sessions, project_dir)
         return 0
 
-    if args.session and args.export:
+    if one_shot_command and args.session and args.export:
         path = await session_mgr.export_session(args.session, args.export, project_dir)
         print(f"Exported to: {path}")
         return 0

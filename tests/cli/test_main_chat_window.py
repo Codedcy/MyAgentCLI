@@ -6,8 +6,10 @@ import importlib
 from pathlib import Path
 from types import SimpleNamespace
 
+import prompt_toolkit.application
 import pytest
 
+import myagent.cli.chat_window as chat_window_module
 from myagent.agent.runtime_status import RuntimeStatusModel
 from myagent.cli.chat_window import ChatWindowController
 from myagent.cli.status import AgentInspectorPane
@@ -53,7 +55,7 @@ def test_build_chat_window_factory_returns_controller_with_shared_status():
     )
 
     assert isinstance(controller, ChatWindowController)
-    assert controller.config is config.ui.chat_window
+    assert controller.config is config
     assert isinstance(controller.transcript, TranscriptBuffer)
     assert controller.transcript.max_lines == 123
     assert controller.transcript.follow_output == "manual"
@@ -63,6 +65,24 @@ def test_build_chat_window_factory_returns_controller_with_shared_status():
     assert controller.lexer is lexer
 
 
+def test_build_chat_window_factory_uses_full_config_for_status_and_input():
+    config = AppConfig(
+        ui=UIConfig(
+            status_pane=StatusPaneConfig(enabled=False, toggle_key="f4"),
+            chat_window=ChatWindowConfig(enabled=True),
+        )
+    )
+    status_model = RuntimeStatusModel()
+
+    factory = cli_main._build_chat_window_factory(config, None, status_model)
+    controller = factory()
+
+    assert controller.config is config
+    assert controller.status_pane.config is config.ui.status_pane
+    assert controller.status_pane.get_renderable() is None
+    assert controller.input_controller._inspector_toggle_key() == "f4"
+
+
 def test_build_chat_window_factory_returns_none_when_disabled():
     config = AppConfig(
         ui=UIConfig(chat_window=ChatWindowConfig(enabled=False))
@@ -70,6 +90,46 @@ def test_build_chat_window_factory_returns_none_when_disabled():
     status_model = RuntimeStatusModel()
 
     assert cli_main._build_chat_window_factory(config, None, status_model) is None
+
+
+def test_is_one_shot_command_identifies_list_and_export_boundaries():
+    assert cli_main._is_one_shot_command(
+        cli_main.parse_args(["--list-sessions"])
+    ) is True
+    assert cli_main._is_one_shot_command(
+        cli_main.parse_args(["--session", "2026-07-05-existing"])
+    ) is True
+    assert cli_main._is_one_shot_command(cli_main.parse_args([])) is False
+    assert cli_main._is_one_shot_command(
+        cli_main.parse_args(["--resume", "2026-07-05-existing"])
+    ) is False
+
+
+@pytest.mark.asyncio
+async def test_async_main_help_exits_before_startup_wiring(monkeypatch):
+    def fail_build_factory(*args, **kwargs):
+        raise AssertionError("help must exit before chat factory wiring")
+
+    class FailChatWindowController:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("help must not instantiate chat window")
+
+    class FailApplication:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("help must not start prompt_toolkit application")
+
+    monkeypatch.setattr(cli_main, "_build_chat_window_factory", fail_build_factory)
+    monkeypatch.setattr(
+        chat_window_module,
+        "ChatWindowController",
+        FailChatWindowController,
+    )
+    monkeypatch.setattr(prompt_toolkit.application, "Application", FailApplication)
+
+    with pytest.raises(SystemExit) as exc:
+        await cli_main.async_main(["--help"])
+
+    assert exc.value.code == 0
 
 
 @pytest.mark.asyncio
@@ -182,17 +242,70 @@ async def test_async_main_one_shot_commands_do_not_build_chat_window_factory(
     def fail_factory(*args, **kwargs):
         raise AssertionError("one-shot command must not build chat window factory")
 
+    class FailChatWindowController:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("one-shot command must not instantiate chat window")
+
+    class FailApplication:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError(
+                "one-shot command must not start prompt_toolkit application"
+            )
+
     monkeypatch.setattr(
         cli_main,
         "_build_chat_window_factory",
         fail_factory,
         raising=False,
     )
+    monkeypatch.setattr(
+        chat_window_module,
+        "ChatWindowController",
+        FailChatWindowController,
+    )
+    monkeypatch.setattr(prompt_toolkit.application, "Application", FailApplication)
 
     result = await cli_main.async_main([*argv, "--project-dir", str(tmp_path)])
 
     assert result == 0
     assert records["repl_kwargs"] == []
+
+
+@pytest.mark.asyncio
+async def test_async_main_chat_startup_fallback_preserves_session_lifecycle(
+    tmp_path,
+    monkeypatch,
+):
+    config = AppConfig(
+        ui=UIConfig(chat_window=ChatWindowConfig(enabled=True))
+    )
+    records = _install_light_startup(
+        monkeypatch,
+        config,
+        tmp_path,
+        repl_kind="chat_startup_fallback",
+    )
+
+    def failing_chat_factory(**kwargs):
+        records["factory_kwargs"] = kwargs
+        raise RuntimeError("chat startup failed")
+
+    monkeypatch.setattr(
+        cli_main,
+        "_build_chat_window_factory",
+        lambda *args: failing_chat_factory,
+        raising=False,
+    )
+
+    result = await cli_main.async_main(["--project-dir", str(tmp_path)])
+
+    assert result == 0
+    assert records["prompt_loop_ran"] is True
+    assert records["session_events"] == [
+        ("start", tmp_path),
+        ("end", records["started_session"]),
+    ]
+    assert records["repl_kwargs"][0]["chat_window_factory"] is failing_chat_factory
 
 
 def _install_light_startup(
@@ -201,6 +314,7 @@ def _install_light_startup(
     project_dir: Path,
     *,
     resumed_session=None,
+    repl_kind: str = "basic",
 ) -> dict:
     """Replace heavy startup dependencies with small fakes."""
 
@@ -208,6 +322,7 @@ def _install_light_startup(
         "repl_kwargs": [],
         "repl_instances": [],
         "subagent_session": None,
+        "session_events": [],
     }
 
     import myagent.agent.engine as engine_module
@@ -282,10 +397,26 @@ def _install_light_startup(
 
     class FakeSessionManager:
         def __init__(self, *args, **kwargs):
+            self.session_store = None
             pass
 
         def estimate_total_rounds(self, since_timestamp=None):
             return 0
+
+        async def start_new(self, start_project_dir):
+            session = SimpleNamespace(
+                id="2026-07-05-new",
+                project_name=start_project_dir.name,
+                project_hash="project-hash",
+                goal=None,
+                goal_achieved=None,
+            )
+            records["started_session"] = session
+            records["session_events"].append(("start", start_project_dir))
+            return session
+
+        async def end_session(self, session):
+            records["session_events"].append(("end", session))
 
         async def list_sessions(self, listed_project_dir):
             records["listed_project_dir"] = listed_project_dir
@@ -323,10 +454,24 @@ def _install_light_startup(
         def __init__(self, **kwargs):
             records["repl_kwargs"].append(kwargs)
             records["repl_instances"].append(self)
+            self._session_mgr = kwargs.get("session_mgr")
+            self._project_dir = kwargs.get("project_dir")
+            self._chat_window_factory = kwargs.get("chat_window_factory")
             self._current_session = None
 
         async def run(self):
             records["repl_ran"] = True
+            if repl_kind == "chat_startup_fallback":
+                if self._session_mgr is not None and self._current_session is None:
+                    self._current_session = await self._session_mgr.start_new(
+                        self._project_dir
+                    )
+                try:
+                    self._chat_window_factory()
+                except RuntimeError:
+                    records["prompt_loop_ran"] = True
+                if self._session_mgr is not None and self._current_session is not None:
+                    await self._session_mgr.end_session(self._current_session)
 
     monkeypatch.setattr(loader_module, "ConfigLoader", FakeConfigLoader)
     monkeypatch.setattr(project_module, "ProjectDetector", FakeProjectDetector)
