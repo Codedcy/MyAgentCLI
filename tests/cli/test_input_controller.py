@@ -1,10 +1,19 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from types import SimpleNamespace
+from typing import get_type_hints
 
+import pytest
 from prompt_toolkit.keys import Keys
 
 from myagent.cli.input_controller import ChatInputActions, InputController
+from myagent.config.schema import (
+    AppConfig,
+    ChatWindowConfig,
+    StatusPaneConfig,
+    UIConfig,
+)
 
 
 class FakeBuffer:
@@ -83,6 +92,16 @@ def invoke_binding(kb, keys, text: str = "") -> FakeBuffer:
 
 def binding_keys(kb):
     return [binding.keys for binding in kb.bindings]
+
+
+def test_interrupt_action_contract_is_explicit_bool_and_documented() -> None:
+    hints = get_type_hints(ChatInputActions)
+
+    assert hints["interrupt"] == Callable[[], bool]
+    assert "True" in ChatInputActions.__doc__
+    assert "active run" in ChatInputActions.__doc__
+    assert "False" in ChatInputActions.__doc__
+    assert "idle behavior" in ChatInputActions.__doc__
 
 
 def test_normalize_submit_text_trims_surrounding_whitespace_only() -> None:
@@ -236,6 +255,31 @@ def test_home_and_end_are_not_bound_by_chat_window_controller() -> None:
     assert (Keys.End,) not in keys
 
 
+@pytest.mark.parametrize(
+    ("toggle_key", "owned_key"),
+    [
+        ("enter", (Keys.ControlM,)),
+        ("c-c", (Keys.ControlC,)),
+        ("c-d", (Keys.ControlD,)),
+    ],
+)
+def test_controller_owned_toggle_key_collisions_fall_back_to_f2(
+    toggle_key,
+    owned_key,
+) -> None:
+    config = SimpleNamespace(status_pane=SimpleNamespace(toggle_key=toggle_key))
+    controller = InputController(config)
+    spy = ActionSpy()
+
+    kb = controller.build_key_bindings(spy.actions())
+    keys = binding_keys(kb)
+    invoke_binding(kb, (Keys.F2,))
+
+    assert keys.count(owned_key) == 1
+    assert (Keys.F2,) in keys
+    assert spy.toggle_inspector_calls == 1
+
+
 def test_input_height_respects_minimum_lines_from_direct_config() -> None:
     controller = InputController(
         SimpleNamespace(input_min_lines=3, input_max_lines=6)
@@ -274,3 +318,37 @@ def test_input_height_uses_nested_ui_chat_window_config() -> None:
     )
 
     assert controller.input_height_for_text("one") == 2
+
+
+def test_input_height_uses_real_chat_window_config_dataclass() -> None:
+    controller = InputController(ChatWindowConfig(input_min_lines=2, input_max_lines=4))
+
+    assert controller.input_height_for_text("one") == 2
+    assert controller.input_height_for_text("\n".join(str(i) for i in range(10))) == 4
+
+
+def test_key_bindings_use_real_ui_config_dataclass() -> None:
+    config = UIConfig(status_pane=StatusPaneConfig(toggle_key="f3"))
+    controller = InputController(config)
+    spy = ActionSpy()
+
+    invoke_binding(controller.build_key_bindings(spy.actions()), (Keys.F3,))
+
+    assert spy.toggle_inspector_calls == 1
+
+
+def test_input_controller_uses_real_app_config_dataclass() -> None:
+    config = AppConfig(
+        ui=UIConfig(
+            chat_window=ChatWindowConfig(input_min_lines=3, input_max_lines=5),
+            status_pane=StatusPaneConfig(toggle_key="f4"),
+        )
+    )
+    controller = InputController(config)
+    spy = ActionSpy()
+    kb = controller.build_key_bindings(spy.actions())
+
+    invoke_binding(kb, (Keys.F4,))
+
+    assert controller.input_height_for_text("one") == 3
+    assert spy.toggle_inspector_calls == 1

@@ -14,16 +14,46 @@ DEFAULT_INPUT_MAX_LINES = 6
 DEFAULT_INSPECTOR_TOGGLE_KEY = "f2"
 SCROLL_LINES_PER_WHEEL_EVENT = 3
 TAB_EQUIVALENT_KEYS = {"c-i", "ctrl+i", "control+i", "control-i", "tab"}
-RESERVED_TOGGLE_KEYS = {"home", "end"}
+RESERVED_TOGGLE_KEYS = TAB_EQUIVALENT_KEYS | {
+    "c-c",
+    "c-d",
+    "c-m",
+    "control-c",
+    "control-d",
+    "control-m",
+    "control+c",
+    "control+d",
+    "control+m",
+    "ctrl+c",
+    "ctrl+d",
+    "ctrl+m",
+    "end",
+    "enter",
+    "esc",
+    "escape",
+    "home",
+    "page-down",
+    "page-up",
+    "pagedown",
+    "pageup",
+    "return",
+    "scroll-down",
+    "scroll-up",
+}
 
 
 @dataclass(frozen=True, slots=True)
 class ChatInputActions:
-    """Callbacks used by the chat input key bindings."""
+    """Callbacks used by the chat input key bindings.
+
+    ``interrupt`` returns True when an active run was interrupted; Ctrl+C then
+    stops without idle behavior. It returns False when no active run exists, so
+    the controller may clear non-empty input or request exit for empty input.
+    """
 
     submit: Callable[[str], Any]
     insert_newline: Callable[[Any], Any]
-    interrupt: Callable[[], Any]
+    interrupt: Callable[[], bool]
     request_exit: Callable[[], Any]
     toggle_inspector: Callable[[], Any]
     scroll_lines: Callable[[int], Any]
