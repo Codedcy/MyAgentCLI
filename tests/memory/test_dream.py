@@ -11,6 +11,7 @@ import pytest
 
 from myagent.memory.dream import DreamEngine, DreamResult, TranscriptFindings
 from myagent.memory.store import MemoryStore
+from myagent.permissions.controller import PermissionController, PermissionResult
 from myagent.tools.base import ToolResult
 from myagent.tools.builtin.memory_tools import MemoryWriteTool
 
@@ -105,6 +106,95 @@ class TestDreamEngine:
         assert memory_store.get_session_writes().created == ["dream-note"]
         assert result.memories_created == 1
         assert (memory_store.project_dir / "MEMORY.md").exists()
+
+    @pytest.mark.asyncio
+    async def test_dream_permissions_allow_memory_write_without_confirm(
+        self, tmp_path
+    ):
+        project_dir = tmp_path / "project"
+        memory_store = MemoryStore(
+            project_memory_dir=project_dir / ".myagent" / "memory",
+            user_memory_dir=tmp_path / "user-memory",
+        )
+
+        class ConfirmTrackingPermissions(PermissionController):
+            def __init__(self):
+                super().__init__()
+                self.confirm_calls = 0
+
+            async def confirm(self, tool_name: str, params: dict | None = None):
+                self.confirm_calls += 1
+                return False
+
+        base_permissions = ConfirmTrackingPermissions()
+        engine = DreamEngine(
+            state_dir=tmp_path / "state",
+            memory_store=memory_store,
+            permissions=base_permissions,
+            project_dir=project_dir,
+        )
+
+        ctx = engine._build_subagent_tool_context()
+        content = (
+            "---\n"
+            "name: dream-note\n"
+            "description: Dream note\n"
+            "metadata: {}\n"
+            "---\n\n"
+            "Dream can update memories silently.\n"
+        )
+        params = {
+            "file_path": str(memory_store.project_dir / "dream-note.md"),
+            "content": content,
+        }
+
+        assert base_permissions.check("memory_write", level=1, params=params) == (
+            PermissionResult.ASK
+        )
+        assert ctx.permissions.check("memory_write", level=1, params=params) == (
+            PermissionResult.ALLOW
+        )
+        assert base_permissions.confirm_calls == 0
+
+        tool_result = await MemoryWriteTool().execute(params, ctx)
+
+        assert tool_result.error is None
+        assert base_permissions.confirm_calls == 0
+        assert memory_store.get_session_writes().created == ["dream-note"]
+        assert (memory_store.project_dir / "MEMORY.md").exists()
+
+    def test_dream_permissions_do_not_silently_allow_side_effect_tools(
+        self, tmp_path
+    ):
+        project_dir = tmp_path / "project"
+        memory_store = MemoryStore(
+            project_memory_dir=project_dir / ".myagent" / "memory",
+            user_memory_dir=tmp_path / "user-memory",
+        )
+        engine = DreamEngine(
+            state_dir=tmp_path / "state",
+            memory_store=memory_store,
+            permissions=PermissionController(default_mode="allow_all"),
+            project_dir=project_dir,
+        )
+
+        ctx = engine._build_subagent_tool_context()
+
+        assert ctx.permissions.check(
+            "write",
+            level=1,
+            params={"file_path": str(project_dir / "code.py"), "content": "x"},
+        ) == PermissionResult.DENY
+        assert ctx.permissions.check(
+            "web_fetch",
+            level=0,
+            params={"url": "https://example.com"},
+        ) == PermissionResult.DENY
+        assert ctx.permissions.check(
+            "mcp_external_tool",
+            level=3,
+            params={},
+        ) == PermissionResult.DENY
 
     def test_dream_subagent_prompt_renders_json_summary_template(self, tmp_path):
         engine = DreamEngine(state_dir=tmp_path)

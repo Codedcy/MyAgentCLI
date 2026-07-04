@@ -31,6 +31,100 @@ class TranscriptFindings:
     text: list[str] = field(default_factory=list)
 
 
+class DreamPermissionController:
+    """Non-interactive, least-privilege permission policy for Dream sub-agents."""
+
+    _READ_TOOLS = {"read", "glob"}
+
+    def __init__(
+        self,
+        delegate=None,
+        memory_store=None,
+        project_dir: Path | None = None,
+    ):
+        self._delegate = delegate
+        self._memory_store = memory_store
+        self._project_dir = Path(project_dir) if project_dir is not None else None
+
+    def check(
+        self,
+        tool_name: str,
+        level: int | None = None,
+        params: dict | None = None,
+    ):
+        """Allow only Dream memory maintenance tools without prompting."""
+        from myagent.permissions.controller import PermissionResult
+
+        params = params or {}
+        if tool_name == "memory_write":
+            if self._path_is_in_memory_roots(params.get("file_path")):
+                return self._allow_unless_delegate_denies(tool_name, level, params)
+            return PermissionResult.DENY
+
+        if tool_name in self._READ_TOOLS:
+            path_key = "file_path" if tool_name == "read" else "path"
+            if self._path_is_in_memory_roots(params.get(path_key)):
+                return self._allow_unless_delegate_denies(tool_name, level, params)
+            return PermissionResult.DENY
+
+        return PermissionResult.DENY
+
+    async def confirm(self, tool_name: str, params: dict | None = None) -> bool:
+        """Never open an interactive prompt from a Dream background task."""
+        return False
+
+    def _allow_unless_delegate_denies(self, tool_name: str, level, params: dict):
+        from myagent.permissions.controller import PermissionResult
+
+        if self._delegate is None:
+            return PermissionResult.ALLOW
+
+        delegate_result = self._delegate.check(
+            tool_name,
+            level=level,
+            params=params,
+        )
+        if getattr(delegate_result, "name", None) == "DENY":
+            return PermissionResult.DENY
+        return PermissionResult.ALLOW
+
+    def _path_is_in_memory_roots(self, raw_path) -> bool:
+        if raw_path is None:
+            return False
+
+        path = Path(str(raw_path))
+        if not path.is_absolute():
+            if self._project_dir is None:
+                return False
+            path = self._project_dir / path
+
+        try:
+            resolved_path = path.resolve()
+            roots = [
+                Path(root).resolve()
+                for root in (
+                    getattr(self._memory_store, "project_dir", None),
+                    getattr(self._memory_store, "user_dir", None),
+                )
+                if root is not None
+            ]
+        except OSError:
+            logger.exception(
+                "Dream permission path check failed",
+                extra={
+                    "category": "error",
+                    "component": "memory",
+                    "context": "dream.permission_path_check",
+                },
+            )
+            return False
+
+        return any(
+            resolved_path == root or resolved_path.is_relative_to(root)
+            for root in roots
+        )
+
+
 class DreamEngine:
     """Background memory consolidation engine.
 
@@ -370,7 +464,13 @@ class DreamEngine:
                 base_context,
                 session_id="dream",
                 project_dir=project_dir,
-                permissions=permissions,
+                permissions=DreamPermissionController(
+                    delegate=permissions,
+                    memory_store=self.memory_store or getattr(
+                        base_context, "memory_store", None
+                    ),
+                    project_dir=project_dir,
+                ),
                 config=config,
                 subagent_pool=self._subagent_pool,
                 working_dir=project_dir,
@@ -388,7 +488,11 @@ class DreamEngine:
         return ToolContext(
             session_id="dream",
             project_dir=project_dir,
-            permissions=permissions,
+            permissions=DreamPermissionController(
+                delegate=permissions,
+                memory_store=self.memory_store,
+                project_dir=project_dir,
+            ),
             config=config,
             subagent_pool=self._subagent_pool,
             working_dir=project_dir,

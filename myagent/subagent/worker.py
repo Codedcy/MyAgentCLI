@@ -300,12 +300,18 @@ class SubAgentWorker:
         """Execute one tool call with sub-agent permission and logging rules."""
         ctx = self._tool_context_for_call()
         params_summary = self._params_summary(tc.params)
+        t0 = time.monotonic()
 
         permissions = getattr(ctx, "permissions", None)
         if permissions:
             level = self._get_tool_level(tc.name)
             perm_result = permissions.check(tc.name, level=level, params=tc.params)
             if perm_result.name == "DENY":
+                error = (
+                    f"Permission denied: {tc.name} requires level {level} "
+                    "access."
+                )
+                duration_ms = (time.monotonic() - t0) * 1000
                 logger.info(
                     "Tool '%s' DENIED by permission controller",
                     tc.name,
@@ -314,14 +320,12 @@ class SubAgentWorker:
                         "tool_name": tc.name,
                         "params_summary": params_summary,
                         "permission_result": "denied",
+                        "duration_ms": round(duration_ms, 1),
+                        "result_size_chars": 0,
+                        "error": error,
                     },
                 )
-                return ToolResult(
-                    error=(
-                        f"Permission denied: {tc.name} requires level {level} "
-                        "access."
-                    )
-                )
+                return ToolResult(error=error)
             if perm_result.name == "ASK":
                 try:
                     allowed = await permissions.confirm(tc.name, tc.params)
@@ -337,6 +341,8 @@ class SubAgentWorker:
                     )
                     allowed = False
                 if not allowed:
+                    error = f"User denied permission for '{tc.name}'."
+                    duration_ms = (time.monotonic() - t0) * 1000
                     logger.info(
                         "Tool '%s' DENIED by user",
                         tc.name,
@@ -345,12 +351,14 @@ class SubAgentWorker:
                             "tool_name": tc.name,
                             "params_summary": params_summary,
                             "permission_result": "denied",
+                            "duration_ms": round(duration_ms, 1),
+                            "result_size_chars": 0,
+                            "error": error,
                         },
                     )
-                    return ToolResult(error=f"User denied permission for '{tc.name}'.")
+                    return ToolResult(error=error)
 
         try:
-            t0 = time.monotonic()
             result = await tool.execute(tc.params, ctx)
             duration_ms = (time.monotonic() - t0) * 1000
             logger.info(

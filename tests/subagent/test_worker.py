@@ -142,6 +142,60 @@ class TestSubAgentWorker:
         tool.execute.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_run_logs_permission_deny_tool_contract(self, tmp_path, caplog):
+        gen1 = _async_gen([
+            FakeToolCall(
+                "write",
+                "call-1",
+                {"file_path": "x.py", "content": "x" * 250},
+            ),
+            FakeDone(),
+        ])
+        gen2 = _async_gen([FakeTextDelta("Denied handled"), FakeDone()])
+        llm = MagicMock()
+        llm.complete = MagicMock(side_effect=[gen1, gen2])
+
+        tool = MagicMock()
+        tool.execute = AsyncMock(return_value=ToolResult(output="should not run"))
+        registry = MagicMock()
+        registry.get = MagicMock(return_value=tool)
+
+        permissions = MagicMock()
+        permissions.check.return_value = PermissionResult.DENY
+        permissions.confirm = AsyncMock(return_value=True)
+        ctx = ToolContext(
+            session_id="subagent",
+            project_dir=tmp_path,
+            permissions=permissions,
+            config=None,
+        )
+
+        caplog.set_level("INFO", logger="myagent.subagent")
+        worker = SubAgentWorker(
+            prompt="Write x.py",
+            tools=["write"],
+            llm=llm,
+            tool_registry=registry,
+            tool_context=ctx,
+        )
+
+        await worker.run()
+
+        tool.execute.assert_not_called()
+        tool_records = [
+            record for record in caplog.records
+            if getattr(record, "category", None) == "tool"
+            and getattr(record, "tool_name", None) == "write"
+        ]
+        assert tool_records
+        record = tool_records[-1]
+        assert record.permission_result == "denied"
+        assert len(record.params_summary) <= 200
+        assert isinstance(record.duration_ms, float)
+        assert record.result_size_chars == 0
+        assert record.error == "Permission denied: write requires level 1 access."
+
+    @pytest.mark.asyncio
     async def test_run_asks_permission_and_skips_tool_when_user_denies(self, tmp_path):
         gen1 = _async_gen([
             FakeToolCall("bash", "call-1", {"command": "pytest"}),
@@ -184,6 +238,57 @@ class TestSubAgentWorker:
         )
         permissions.confirm.assert_awaited_once_with("bash", {"command": "pytest"})
         tool.execute.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_run_logs_user_deny_tool_contract(self, tmp_path, caplog):
+        gen1 = _async_gen([
+            FakeToolCall("bash", "call-1", {"command": "pytest"}),
+            FakeDone(),
+        ])
+        gen2 = _async_gen([FakeTextDelta("User denial handled"), FakeDone()])
+        llm = MagicMock()
+        llm.complete = MagicMock(side_effect=[gen1, gen2])
+
+        tool = MagicMock()
+        tool.execute = AsyncMock(return_value=ToolResult(output="should not run"))
+        registry = MagicMock()
+        registry.get = MagicMock(return_value=tool)
+
+        permissions = MagicMock()
+        permissions.check.return_value = PermissionResult.ASK
+        permissions.confirm = AsyncMock(return_value=False)
+        ctx = ToolContext(
+            session_id="subagent",
+            project_dir=tmp_path,
+            permissions=permissions,
+            config=None,
+        )
+
+        caplog.set_level("INFO", logger="myagent.subagent")
+        worker = SubAgentWorker(
+            prompt="Run tests",
+            tools=["bash"],
+            llm=llm,
+            tool_registry=registry,
+            tool_context=ctx,
+        )
+
+        await worker.run()
+
+        permissions.confirm.assert_awaited_once_with("bash", {"command": "pytest"})
+        tool.execute.assert_not_called()
+        tool_records = [
+            record for record in caplog.records
+            if getattr(record, "category", None) == "tool"
+            and getattr(record, "tool_name", None) == "bash"
+        ]
+        assert tool_records
+        record = tool_records[-1]
+        assert record.permission_result == "denied"
+        assert len(record.params_summary) <= 200
+        assert isinstance(record.duration_ms, float)
+        assert record.result_size_chars == 0
+        assert record.error == "User denied permission for 'bash'."
 
     @pytest.mark.asyncio
     async def test_run_logs_successful_tool_execution_contract(
