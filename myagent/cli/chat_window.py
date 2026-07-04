@@ -320,14 +320,32 @@ class ChatWindowController:
         marker: str,
         width: int,
     ) -> None:
+        if width <= 0:
+            return
+
+        marker_text = marker[:width]
         if not lines:
-            lines.append(marker[:width])
+            lines.append(marker_text)
             return
 
         separator = "  "
         candidate = f"{lines[-1]}{separator}{marker}"
         if len(candidate) <= width:
             lines[-1] = candidate
+            return
+
+        marker_width = len(marker_text)
+        separator_width = len(separator)
+        if marker_width + separator_width > width:
+            lines[-1] = marker_text
+            return
+
+        prefix_width = width - marker_width - separator_width
+        prefix = lines[-1][:prefix_width].rstrip()
+        if prefix:
+            lines[-1] = f"{prefix}{separator}{marker_text}"
+        else:
+            lines[-1] = marker_text
 
     def _input_lines(self, text: str, width: int) -> list[str]:
         height = self.input_controller.input_height_for_text(text)

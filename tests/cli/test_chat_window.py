@@ -319,6 +319,27 @@ def test_unread_marker_does_not_evict_scrolled_transcript_lines() -> None:
     assert any("[1 new messages]" in line for line in after_output)
 
 
+def test_unread_marker_overlays_long_last_line_without_adding_row() -> None:
+    transcript = TranscriptBuffer(follow_output="auto")
+    controller = make_controller(transcript=transcript)
+    for index in range(4):
+        transcript.append_assistant(f"line-{index}")
+    transcript.append_assistant("x" * 80)
+    for index in range(5, 8):
+        transcript.append_assistant(f"line-{index}")
+    controller._render_for_size(terminal_columns=100, terminal_rows=4)
+    controller._scroll_lines(-3)
+
+    before_output = controller._conversation_lines(height=3, width=32)
+    controller.append_output("line-7")
+    after_output = controller._conversation_lines(height=3, width=32)
+
+    assert len(before_output) == len(after_output) == 3
+    assert before_output[:2] == after_output[:2]
+    assert after_output[-1].endswith("[1 new messages]")
+    assert len(after_output[-1]) <= 32
+
+
 @pytest.mark.asyncio
 async def test_run_starts_full_screen_application_and_request_stop_exits_it(
     monkeypatch,
