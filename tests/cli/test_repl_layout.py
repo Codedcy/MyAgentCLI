@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 import logging
 from types import SimpleNamespace
 
@@ -7,6 +8,7 @@ import pytest
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
 from rich.console import Console
+from rich.panel import Panel
 
 import myagent.cli.layout as layout_module
 import myagent.cli.repl as repl_module
@@ -21,10 +23,14 @@ from myagent.agent.engine import (
     ToolCallStart,
 )
 from myagent.agent.runtime_status import RuntimeStatusModel
+from myagent.cli.chat_window import ChatWindowController
+from myagent.cli.commands import CommandResult
 from myagent.cli.renderer import Renderer
 from myagent.cli.repl import REPLEngine
+from myagent.cli.rich_capture import capture_renderable, sanitize_terminal_text
 from myagent.cli.status import AgentInspectorPane
-from myagent.config.schema import StatusPaneConfig
+from myagent.cli.transcript import TranscriptBuffer
+from myagent.config.schema import ChatWindowConfig, StatusPaneConfig
 from myagent.llm.provider import Usage
 from myagent.tools.base import ToolResult
 
@@ -55,6 +61,95 @@ class FakeSessionManager:
 
     async def end_session(self, session):
         self.ended_session = session
+
+
+class FakeChatWindowController:
+    def __init__(
+        self,
+        *,
+        transcript=None,
+        running=True,
+        run_error=None,
+        submissions=None,
+        ask_response="chat answer",
+    ):
+        self.transcript = transcript or TranscriptBuffer()
+        self.is_running = running
+        self.run_error = run_error
+        self.submissions = list(submissions or [])
+        self.ask_response = ask_response
+        self.append_calls = []
+        self.tool_calls = []
+        self.system_calls = []
+        self.error_calls = []
+        self.ask_calls = []
+        self.run_calls = []
+        self.request_stop_calls = 0
+        self.agent_running_values = []
+        self.refresh_calls = 0
+
+    async def run(self, on_submit, on_exit=None, on_interrupt=None):
+        self.run_calls.append(
+            {
+                "on_submit": on_submit,
+                "on_exit": on_exit,
+                "on_interrupt": on_interrupt,
+            }
+        )
+        self.is_running = True
+        if self.run_error:
+            raise self.run_error
+        for submitted in self.submissions:
+            await on_submit(submitted)
+        self.is_running = False
+        if on_exit:
+            result = on_exit()
+            if hasattr(result, "__await__"):
+                await result
+
+    def append_output(self, content, end="\n"):
+        self.append_calls.append((content, end))
+        plain_text = (
+            sanitize_terminal_text(content)
+            if isinstance(content, str)
+            else capture_renderable(content)
+        )
+        self.transcript.append_assistant(
+            content if not isinstance(content, str) else plain_text,
+            plain_text=plain_text,
+            end=end,
+        )
+
+    def append_tool(self, content):
+        self.tool_calls.append(content)
+        plain_text = (
+            sanitize_terminal_text(content)
+            if isinstance(content, str)
+            else capture_renderable(content)
+        )
+        self.transcript.append_tool(content, plain_text=plain_text)
+
+    def append_system(self, text):
+        self.system_calls.append(text)
+        self.transcript.append_system(sanitize_terminal_text(text))
+
+    def append_error(self, text):
+        self.error_calls.append(text)
+        self.transcript.append_error(sanitize_terminal_text(text))
+
+    async def ask(self, prompt, timeout):
+        self.ask_calls.append((prompt, timeout))
+        return self.ask_response
+
+    def request_stop(self):
+        self.request_stop_calls += 1
+        self.is_running = False
+
+    def set_agent_running(self, running):
+        self.agent_running_values.append(running)
+
+    def refresh(self):
+        self.refresh_calls += 1
 
 
 class SpyLayoutController:
@@ -633,3 +728,301 @@ def test_inspector_toggle_key_does_not_capture_tab_completion(layout_spy):
     assert tab_bindings.bindings[0].keys == (Keys.ControlI,)
     assert (Keys.F2,) in [binding.keys for binding in repl_bindings.bindings]
     assert (Keys.ControlI,) not in [binding.keys for binding in repl_bindings.bindings]
+
+
+def make_chat_config(*, enabled=True):
+    return SimpleNamespace(
+        ui=SimpleNamespace(
+            chat_window=ChatWindowConfig(enabled=enabled),
+            status_pane=StatusPaneConfig(width=34, collapse_below_columns=80),
+            syntax_highlight=True,
+        )
+    )
+
+
+def make_real_chat_controller(transcript=None):
+    config = make_chat_config(enabled=True)
+    controller = ChatWindowController(
+        config,
+        transcript or TranscriptBuffer(),
+        status_pane=FakeStatusPane(),
+        status_model=RuntimeStatusModel(),
+    )
+    controller.refresh = lambda: None
+    return controller
+
+
+def active_chat_repl(chat_controller, **kwargs):
+    repl = REPLEngine(chat_window_controller=chat_controller, **kwargs)
+    repl._chat_window_loop_active = True
+    return repl
+
+
+def transcript_entries(transcript, height=100):
+    return transcript.visible_entries(height)
+
+
+def test_output_to_console_routes_to_active_chat_window_before_layout_or_console(
+    layout_spy,
+):
+    chat = FakeChatWindowController()
+    repl = active_chat_repl(
+        chat,
+        status_pane=FakeStatusPane(),
+        status_model=RuntimeStatusModel(),
+    )
+    console = FakeConsole()
+    repl._console = console
+
+    repl._output_to_console("streamed", end="")
+
+    assert chat.append_calls == [("streamed", "")]
+    assert repl._layout_controller.append_calls == []
+    assert repl._layout_controller.render_once_calls == 0
+    assert console.calls == []
+
+
+def test_output_to_console_captures_rich_panel_as_chat_transcript_text():
+    transcript = TranscriptBuffer()
+    chat = make_real_chat_controller(transcript=transcript)
+    repl = active_chat_repl(chat)
+
+    repl._output_to_console(Panel("panel body", title="Panel Title"))
+
+    entry = transcript_entries(transcript)[-1]
+    assert entry.role == "assistant"
+    assert "Panel Title" in entry.plain_text
+    assert "panel body" in entry.plain_text
+    assert "<rich.panel.Panel object" not in entry.plain_text
+
+
+@pytest.mark.asyncio
+async def test_process_input_routes_chat_stream_tool_and_error_entries():
+    transcript = TranscriptBuffer()
+    chat = make_real_chat_controller(transcript=transcript)
+    engine = FakeStreamingEngine(
+        [
+            TextChunk("hel"),
+            TextChunk("lo"),
+            ToolCallStart(name="read", call_id="call-1"),
+            ToolCallEnd(call_id="call-1", result=ToolResult(output="read ok")),
+            Error(message="boom"),
+            Done(),
+        ]
+    )
+    repl = active_chat_repl(
+        chat,
+        engine=engine,
+        renderer=Renderer(),
+    )
+    repl._current_session = SimpleNamespace(id="session-1")
+
+    await repl.process_input("hello")
+
+    entries = transcript_entries(transcript)
+    assistant_entries = [entry for entry in entries if entry.role == "assistant"]
+    tool_entries = [entry for entry in entries if entry.role == "tool"]
+    error_entries = [entry for entry in entries if entry.role == "error"]
+    assert len(assistant_entries) == 1
+    assert assistant_entries[0].plain_text == "hello"
+    assert assistant_entries[0].is_streaming is False
+    assert any("Tool: read" in entry.plain_text for entry in tool_entries)
+    assert any("read ok" in entry.plain_text for entry in tool_entries)
+    assert [entry.plain_text for entry in error_entries] == ["boom"]
+
+
+@pytest.mark.asyncio
+async def test_process_input_routes_slash_command_result_to_chat_system_entry():
+    class FakeCommands:
+        async def dispatch(self, line, ctx):
+            return CommandResult(output="Thinking mode: think-high")
+
+    transcript = TranscriptBuffer()
+    chat = make_real_chat_controller(transcript=transcript)
+    repl = active_chat_repl(chat, commands=FakeCommands())
+    repl._current_session = SimpleNamespace(id="session-1")
+
+    await repl.process_input("/mode think-high")
+
+    entry = transcript_entries(transcript)[-1]
+    assert entry.role == "system"
+    assert entry.plain_text == "Thinking mode: think-high"
+
+
+@pytest.mark.asyncio
+async def test_process_input_status_update_updates_model_without_chat_transcript_output():
+    model = RuntimeStatusModel()
+    transcript = TranscriptBuffer()
+    chat = make_real_chat_controller(transcript=transcript)
+    engine = FakeStreamingEngine(
+        [
+            StatusUpdate(
+                scope="tokens",
+                data={
+                    "prompt_tokens": 10,
+                    "completion_tokens": 5,
+                    "turn_total": 15,
+                    "session_total": 15,
+                },
+            ),
+            Done(),
+        ]
+    )
+    repl = active_chat_repl(
+        chat,
+        engine=engine,
+        status_model=model,
+    )
+    repl._current_session = SimpleNamespace(id="session-1")
+
+    await repl.process_input("status only")
+
+    snapshot = model.snapshot()
+    assert snapshot.tokens.prompt_tokens == 10
+    assert snapshot.tokens.completion_tokens == 5
+    assert snapshot.tokens.turn_total == 15
+    assert snapshot.tokens.session_total == 15
+    assert transcript_entries(transcript) == []
+
+
+def test_start_layout_for_engine_stream_returns_false_while_chat_mode_is_active(
+    layout_spy,
+):
+    chat = FakeChatWindowController()
+    repl = active_chat_repl(
+        chat,
+        status_pane=FakeStatusPane(),
+        status_model=RuntimeStatusModel(),
+    )
+
+    assert repl._start_layout_for_engine_stream() is False
+    assert repl._layout_controller.start_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_run_uses_chat_window_loop_when_config_enabled(monkeypatch):
+    calls = []
+
+    async def fake_chat_loop(self):
+        calls.append("chat")
+        self._running = False
+
+    async def fake_prompt_loop(self):
+        calls.append("prompt")
+        self._running = False
+
+    monkeypatch.setattr(REPLEngine, "_run_chat_window_loop", fake_chat_loop)
+    monkeypatch.setattr(REPLEngine, "_run_prompt_session_loop", fake_prompt_loop)
+    repl = REPLEngine(config=make_chat_config(enabled=True))
+    repl._console = FakeConsole()
+
+    await repl.run()
+
+    assert calls == ["chat"]
+
+
+@pytest.mark.asyncio
+async def test_run_uses_prompt_session_loop_when_chat_window_disabled(monkeypatch):
+    calls = []
+
+    async def fake_chat_loop(self):
+        calls.append("chat")
+        self._running = False
+
+    async def fake_prompt_loop(self):
+        calls.append("prompt")
+        self._running = False
+
+    monkeypatch.setattr(REPLEngine, "_run_chat_window_loop", fake_chat_loop)
+    monkeypatch.setattr(REPLEngine, "_run_prompt_session_loop", fake_prompt_loop)
+    repl = REPLEngine(config=make_chat_config(enabled=False))
+    repl._console = FakeConsole()
+
+    await repl.run()
+
+    assert calls == ["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_run_falls_back_to_prompt_loop_after_chat_startup_exception(
+    monkeypatch,
+    caplog,
+):
+    prompt_calls = 0
+
+    async def fake_prompt_loop(self):
+        nonlocal prompt_calls
+        prompt_calls += 1
+        self._running = False
+
+    chat = FakeChatWindowController(run_error=RuntimeError("chat failed"))
+    monkeypatch.setattr(REPLEngine, "_run_prompt_session_loop", fake_prompt_loop)
+    repl = REPLEngine(
+        config=make_chat_config(enabled=True),
+        chat_window_controller=chat,
+    )
+    repl._console = FakeConsole()
+
+    with caplog.at_level(logging.ERROR, logger="myagent.cli.repl"):
+        await repl.run()
+
+    assert prompt_calls == 1
+    record = next(
+        record
+        for record in caplog.records
+        if getattr(record, "context", "") == "cli_chat_window_start"
+    )
+    assert record.category == "error"
+    assert record.component == "agent"
+    assert record.exception_type == "RuntimeError"
+    assert "chat failed" in record.traceback
+
+
+@pytest.mark.asyncio
+async def test_prompt_with_timeout_uses_chat_window_ask_when_active():
+    chat = FakeChatWindowController(ask_response="from chat")
+    repl = active_chat_repl(chat)
+
+    result = await repl._prompt_with_timeout("Need a value? ", timeout=12.0)
+
+    assert result == "from chat"
+    assert chat.ask_calls == [("Need a value? ", 12.0)]
+
+
+@pytest.mark.asyncio
+async def test_prompt_with_timeout_uses_prompt_toolkit_when_chat_inactive(monkeypatch):
+    chat = FakeChatWindowController(running=False)
+    repl = REPLEngine(chat_window_controller=chat)
+    prompt_calls = []
+
+    def fake_prompt(prompt_text, multiline=False):
+        prompt_calls.append((prompt_text, multiline))
+        return "typed"
+
+    monkeypatch.setattr("prompt_toolkit.shortcuts.prompt", fake_prompt)
+
+    result = await repl._prompt_with_timeout("Need a value? ", timeout=1.0)
+
+    assert result == "typed"
+    assert prompt_calls == [("Need a value? ", False)]
+    assert chat.ask_calls == []
+
+
+@pytest.mark.asyncio
+async def test_prompt_with_timeout_keeps_simple_input_fallback_when_chat_inactive(
+    monkeypatch,
+):
+    real_import = builtins.__import__
+    repl = REPLEngine()
+
+    def fake_import(name, *args, **kwargs):
+        if name == "prompt_toolkit.shortcuts":
+            raise ImportError("prompt toolkit unavailable")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    monkeypatch.setattr("builtins.input", lambda prompt_text: "fallback typed")
+
+    result = await repl._prompt_with_timeout("Need a value? ", timeout=1.0)
+
+    assert result == "fallback typed"

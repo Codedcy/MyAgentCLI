@@ -1,10 +1,11 @@
-"""REPL engine — prompt_toolkit interactive loop."""
+"""REPL engine - prompt_toolkit interactive loop."""
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
 import logging
+import traceback
 from pathlib import Path
 
 from prompt_toolkit.completion import Completer
@@ -49,7 +50,7 @@ class SlashCompleter(Completer):
 
         text = document.text_before_cursor
 
-        # ── Slash command completions ─────────────────────────────
+        # Slash command completions.
         if text.startswith("/"):
             yield from self._get_slash_completions(text)
             # Also provide file-path completions for slash command args
@@ -59,7 +60,7 @@ class SlashCompleter(Completer):
                 yield from self._get_path_completions(document, text)
             return
 
-        # ── File-path completions for natural language input ──────
+        # File-path completions for natural language input.
         # Complete when the last word looks like a file path
         words = text.split()
         if words:
@@ -129,12 +130,12 @@ class SlashCompleter(Completer):
             # Determine the directory to search and the prefix to match
             base_dir = Path(expanded)
             if base_dir.is_dir() and last.endswith("/"):
-                # User typed a directory followed by / — list its contents
+                # User typed a directory followed by /; list its contents.
                 search_dir = base_dir
                 prefix = ""
                 start_pos = 0
             else:
-                # User typed a partial path — complete the last component
+                # User typed a partial path; complete the last component.
                 search_dir = base_dir.parent if base_dir.parent != base_dir else Path(".")
                 prefix = base_dir.name
                 start_pos = -len(prefix)
@@ -190,6 +191,8 @@ class REPLEngine:
         status_model=None,
         status_bar=None,
         dream_engine=None,
+        chat_window_factory=None,
+        chat_window_controller=None,
     ):
         self._engine = engine
         self._commands = commands
@@ -212,6 +215,10 @@ class REPLEngine:
         ):
             self._status_pane.status_model = self._status_model
         self._dream_engine = dream_engine
+        self._chat_window_factory = chat_window_factory
+        self._chat_window = chat_window_controller
+        self._chat_window_loop_active = False
+        self._chat_streaming = False
         self._running = False
         self._current_session = None
         self._console = self._create_console() if self._status_pane else None
@@ -503,6 +510,169 @@ class REPLEngine:
                 goal_waiting_for_user=False,
             )
 
+    def _chat_window_config(self):
+        ui_config = getattr(self._config, "ui", None)
+        if ui_config is not None:
+            chat_window = getattr(ui_config, "chat_window", None)
+            if chat_window is not None:
+                return chat_window
+        if hasattr(self._config, "chat_window"):
+            return self._config.chat_window
+        if hasattr(self._config, "enabled"):
+            return self._config
+        return None
+
+    def _should_use_chat_window(self) -> bool:
+        """Whether this REPL run should start the full-screen chat window."""
+
+        chat_config = self._chat_window_config()
+        if chat_config is None:
+            return False
+        return bool(getattr(chat_config, "enabled", False))
+
+    def _chat_window_active(self) -> bool:
+        """Whether output should be routed to the chat window transcript."""
+
+        if self._chat_window is None:
+            return False
+        return bool(
+            self._chat_window_loop_active
+            or getattr(self._chat_window, "is_running", False)
+        )
+
+    def _build_slash_completer(self):
+        skill_registry = self._engine.skill_registry if self._engine else None
+        return SlashCompleter(skill_registry=skill_registry)
+
+    def _build_prompt_lexer(self):
+        ui_config = getattr(self._config, "ui", None)
+        if not bool(getattr(ui_config, "syntax_highlight", True)):
+            return None
+        try:
+            from prompt_toolkit.lexers import PygmentsLexer
+            from pygments.lexers.python import PythonLexer
+            return PygmentsLexer(PythonLexer)
+        except ImportError:
+            logger.exception(
+                "Pygments unavailable for REPL syntax highlighting",
+                extra={
+                    "category": "error",
+                    "component": "agent",
+                    "context": "import pygments lexer",
+                },
+            )
+            return None
+
+    def _create_chat_window_controller(self):
+        from myagent.cli.chat_window import ChatWindowController
+        from myagent.cli.transcript import TranscriptBuffer
+
+        chat_config = self._chat_window_config()
+        transcript = TranscriptBuffer(
+            max_lines=getattr(chat_config, "scrollback_lines", 2000),
+            follow_output=getattr(chat_config, "follow_output", "auto"),
+        )
+        kwargs = {
+            "config": self._config,
+            "transcript": transcript,
+            "status_pane": self._status_pane,
+            "status_model": self._status_model,
+            "completer": self._build_slash_completer(),
+            "lexer": self._build_prompt_lexer(),
+        }
+        if self._chat_window_factory is not None:
+            return self._chat_window_factory(**kwargs)
+        return ChatWindowController(**kwargs)
+
+    def _capture_chat_text(self, content: object) -> str:
+        from myagent.cli.rich_capture import capture_renderable, sanitize_terminal_text
+
+        if isinstance(content, str):
+            return sanitize_terminal_text(content)
+        width = getattr(self._chat_window, "_last_terminal_columns", 100)
+        return capture_renderable(content, width=width)
+
+    def _append_chat_output(self, text: object, end: str = "\n") -> bool:
+        """Append assistant output to the active chat window if possible."""
+
+        if not self._chat_window_active():
+            return False
+        if isinstance(text, str) and text == "" and end != "" and not self._chat_streaming:
+            return True
+
+        append_output = getattr(self._chat_window, "append_output", None)
+        if not callable(append_output):
+            return False
+
+        append_output(text, end=end)
+        self._chat_streaming = end == ""
+        return True
+
+    def _append_chat_system_output(self, content: object) -> bool:
+        if not self._chat_window_active():
+            return False
+        text = self._capture_chat_text(content)
+        if not text:
+            return True
+        append_system = getattr(self._chat_window, "append_system", None)
+        if not callable(append_system):
+            return False
+        append_system(text)
+        self._chat_streaming = False
+        return True
+
+    def _append_chat_error_output(self, content: object) -> bool:
+        if not self._chat_window_active():
+            return False
+        text = self._capture_chat_text(content)
+        if not text:
+            return True
+        append_error = getattr(self._chat_window, "append_error", None)
+        if not callable(append_error):
+            return False
+        append_error(text)
+        self._chat_streaming = False
+        return True
+
+    def _append_chat_tool_output(self, content: object) -> bool:
+        if not self._chat_window_active():
+            return False
+
+        append_tool = getattr(self._chat_window, "append_tool", None)
+        if callable(append_tool):
+            append_tool(content)
+            self._chat_streaming = False
+            return True
+
+        transcript = getattr(self._chat_window, "transcript", None)
+        transcript_append_tool = getattr(transcript, "append_tool", None)
+        if callable(transcript_append_tool):
+            transcript_append_tool(content, plain_text=self._capture_chat_text(content))
+            refresh = getattr(self._chat_window, "refresh", None)
+            if callable(refresh):
+                refresh()
+            self._chat_streaming = False
+            return True
+
+        return self._append_chat_system_output(content)
+
+    def _set_chat_agent_running(self, running: bool) -> None:
+        if not self._chat_window_active():
+            return
+        set_agent_running = getattr(self._chat_window, "set_agent_running", None)
+        if callable(set_agent_running):
+            set_agent_running(running)
+
+    async def _handle_chat_interrupt(self) -> None:
+        engine_task = getattr(self, "_active_engine_task", None)
+        if engine_task and not engine_task.done():
+            if hasattr(self._engine, "interrupt_event"):
+                self._engine.interrupt_event.set()
+            engine_task.cancel()
+
+    async def _handle_chat_exit(self) -> None:
+        self._running = False
+
     async def run(self) -> None:
         """Start the REPL loop."""
         self._running = True
@@ -544,18 +714,69 @@ class REPLEngine:
             self._dream_checker_task = asyncio.create_task(self._periodic_dream_check())
 
         # Initialize Rich Live for output display during engine processing.
-        # We do NOT start Live here — Rich Live is a full-screen display that
+        # We do NOT start Live here. Rich Live is a full-screen display that
         # conflicts with prompt_toolkit's terminal control. Instead, we render
         # the initial greeting once, then let prompt_toolkit take full control.
         # Live is only used transiently during process_input() for status+output.
         self._live = None
         self._output_lines: list[str] = []
 
-        # Show initial greeting
-        self._console.print("MyAgentCLI — Type /help for commands, Ctrl+D to exit.")
+        try:
+            if self._should_use_chat_window():
+                await self._run_chat_window_loop()
+            else:
+                await self._run_prompt_session_loop()
+        finally:
+            await self._shutdown()
+        return
+
+
+    async def _run_chat_window_loop(self) -> None:
+        """Run the full-screen chat window and route submissions to the REPL."""
+
+        controller = self._chat_window or self._create_chat_window_controller()
+        self._chat_window = controller
+        self._chat_window_loop_active = True
+        self._chat_streaming = False
+
+        self._append_chat_system_output(
+            "MyAgentCLI - Type /help for commands, Ctrl+D to exit."
+        )
+        self._append_chat_system_output(f"Project: {self._project_dir.name}")
+
+        try:
+            await controller.run(
+                self.process_input,
+                on_exit=self._handle_chat_exit,
+                on_interrupt=self._handle_chat_interrupt,
+            )
+        except Exception as exc:
+            logger.exception(
+                "Chat window startup failed; falling back to prompt session",
+                extra={
+                    "category": "error",
+                    "component": "agent",
+                    "context": "cli_chat_window_start",
+                    "exception_type": type(exc).__name__,
+                    "traceback": traceback.format_exc(),
+                },
+            )
+            self._set_chat_agent_running(False)
+            request_stop = getattr(controller, "request_stop", None)
+            if callable(request_stop):
+                request_stop()
+            self._chat_window_loop_active = False
+            await self._run_prompt_session_loop()
+        finally:
+            self._set_chat_agent_running(False)
+            self._chat_window_loop_active = False
+
+    async def _run_prompt_session_loop(self) -> None:
+        """Run the legacy prompt_toolkit REPL loop."""
+
+        self._console.print("MyAgentCLI - Type /help for commands, Ctrl+D to exit.")
         self._console.print(f"Project: [bold]{self._project_dir.name}[/bold]")
 
-        # Show initial status pane as a one-time render (not Live)
         if self._layout_controller:
             self._layout_controller.render_once()
         elif self._status_bar:
@@ -563,7 +784,7 @@ class REPLEngine:
                 status_renderable = self._status_bar.get_renderable()
                 if status_renderable:
                     self._console.print(status_renderable)
-                self._console.print()  # blank line before prompt
+                self._console.print()
             except Exception:
                 logger.exception(
                     "Initial status render failed",
@@ -581,22 +802,17 @@ class REPLEngine:
             history_file = Path.home() / ".myagent" / ".history"
             history_file.parent.mkdir(parents=True, exist_ok=True)
 
-            # Key bindings: Ctrl+C interrupts running engine or clears buffer
             kb = KeyBindings()
 
             @kb.add("c-c")
             def _(event):
-                # If engine is running in background, interrupt it (gap-10)
-                engine_task = getattr(self, '_active_engine_task', None)
+                engine_task = getattr(self, "_active_engine_task", None)
                 if engine_task and not engine_task.done():
-                    if hasattr(self._engine, 'interrupt_event'):
+                    if hasattr(self._engine, "interrupt_event"):
                         self._engine.interrupt_event.set()
                     engine_task.cancel()
                     event.app.current_buffer.reset()
                     return
-                # Idle — trigger exit confirmation flow (gap-8-05)
-                # Use app.exit() with sentinel to break out of prompt_async
-                # so the main loop can show "Exit? (y/n)" confirmation
                 event.app.exit(result=self._SENTINEL_CTRL_C)
 
             @kb.add("enter")
@@ -612,36 +828,12 @@ class REPLEngine:
 
             self._bind_inspector_toggle(kb)
 
-            # Build completer (gap-2-05)
-            skill_registry = (
-                self._engine.skill_registry if self._engine else None
-            )
-            completer = SlashCompleter(skill_registry=skill_registry)
-
-            # Build lexer for syntax highlighting (G4)
-            lexer = None
-            if self._config and getattr(self._config.ui, "syntax_highlight", True):
-                try:
-                    from prompt_toolkit.lexers import PygmentsLexer
-                    from pygments.lexers.python import PythonLexer
-                    lexer = PygmentsLexer(PythonLexer)
-                except ImportError:
-                    logger.exception(
-                        "Pygments unavailable for REPL syntax highlighting",
-                        extra={
-                            "category": "error",
-                            "component": "agent",
-                            "context": "import pygments lexer",
-                        },
-                    )
-                    pass  # Pygments not available; skip syntax highlighting
-
             session = PromptSession(
                 history=FileHistory(str(history_file)),
                 multiline=True,
                 key_bindings=kb,
-                completer=completer,
-                lexer=lexer,
+                completer=self._build_slash_completer(),
+                lexer=self._build_prompt_lexer(),
             )
 
             while self._running:
@@ -656,9 +848,6 @@ class REPLEngine:
                             "context": "prompt toolkit keyboard interrupt",
                         },
                     )
-                    # This is a fallback — the key binding handles most Ctrl+C cases.
-                    # If KeyboardInterrupt still fires (e.g. during prompt_toolkit init),
-                    # show the exit confirmation.
                     self._console.print()
                     try:
                         confirm = await session.prompt_async(
@@ -691,7 +880,6 @@ class REPLEngine:
                     self._console.print()
                     break
 
-                # gap-8-05: Ctrl+C on idle — key binding returns sentinel
                 if user_input is self._SENTINEL_CTRL_C:
                     self._console.print()
                     try:
@@ -729,7 +917,6 @@ class REPLEngine:
                     "context": "import prompt_toolkit repl",
                 },
             )
-            # Fallback: simple input without prompt_toolkit
             while self._running:
                 try:
                     user_input = input("myagent> ").strip()
@@ -749,8 +936,6 @@ class REPLEngine:
                     continue
 
                 await self.process_input(user_input)
-
-        await self._shutdown()
 
     async def process_input(self, text: str) -> None:
         """Handle one input line."""
@@ -772,7 +957,8 @@ class REPLEngine:
                     dream_engine=self._dream_engine,
                 )
                 result = await self._commands.dispatch(text, ctx)
-                self._output_to_console(result.output)
+                if not self._append_chat_system_output(result.output):
+                    self._output_to_console(result.output)
 
                 if result.exit_requested:
                     self._running = False
@@ -786,10 +972,12 @@ class REPLEngine:
                     return
                 return
 
-            self._output_to_console(f"Unknown command: {text}")
+            message = f"Unknown command: {text}"
+            if not self._append_chat_system_output(message):
+                self._output_to_console(message)
             return
 
-        # Natural language → AgentEngine
+        # Natural language to AgentEngine
         if self._engine and self._current_session:
             # Inject active skill if set by /skill-name (gap-2-01)
             active_skill = self._active_skill
@@ -810,26 +998,47 @@ class REPLEngine:
                     text, self._current_session, active_skill=active_skill
                 ):
                     self._update_status_from_event(event)
+                    event_type = type(event).__name__
                     if self._renderer:
                         rendered = self._renderer.render_event(event)
-                        if rendered:
-                            event_type = type(event).__name__
-                            if event_type == "TextChunk":
-                                self._output_to_console(rendered, end="")
-                            elif event_type == "ThinkingChunk":
-                                pass  # Thinking content is usually hidden
-                            elif event_type == "AskUserQuestion":
-                                has_pending_question = True
+                        if event_type == "StatusUpdate":
+                            continue
+                        if event_type == "ThinkingChunk":
+                            continue
+                        if event_type == "AskUserQuestion":
+                            has_pending_question = True
+                            if rendered and not self._append_chat_system_output(rendered):
                                 self._output_to_console(rendered)
-                            elif event_type == "Interrupted":
-                                self._output_to_console("\n[Interrupted]")
-                            elif event_type == "IntentSignal":
-                                intent = getattr(event, 'intent', '')
-                                if intent == 'continue':
-                                    stream_interrupted = True
+                            continue
+                        if event_type == "IntentSignal":
+                            intent = getattr(event, 'intent', '')
+                            if intent == 'continue':
+                                stream_interrupted = True
+                            if rendered:
                                 self._output_to_console(rendered)
-                            else:
+                            continue
+                        if event_type == "Interrupted":
+                            self._output_to_console("\n[Interrupted]")
+                            continue
+                        if event_type == "Done":
+                            if self._chat_window_active():
+                                self._output_to_console("")
+                            elif rendered:
                                 self._output_to_console(rendered)
+                            continue
+                        if not rendered:
+                            continue
+                        if event_type == "TextChunk":
+                            self._output_to_console(rendered, end="")
+                        elif event_type in {"ToolCallStart", "ToolCallEnd"}:
+                            if not self._append_chat_tool_output(rendered):
+                                self._output_to_console(rendered)
+                        elif event_type == "Error":
+                            message = getattr(event, "message", rendered)
+                            if not self._append_chat_error_output(message):
+                                self._output_to_console(rendered)
+                        else:
+                            self._output_to_console(rendered)
                     else:
                         # Fallback: simple print-based rendering
                         self._render_event_fallback(event)
@@ -837,6 +1046,7 @@ class REPLEngine:
             layout_started = self._start_layout_for_engine_stream()
             engine_task = _asyncio.ensure_future(_run_engine())
             self._active_engine_task = engine_task
+            self._set_chat_agent_running(True)
             try:
                 await engine_task
             except _asyncio.CancelledError:
@@ -851,6 +1061,7 @@ class REPLEngine:
                 self._output_to_console("\n[Interrupted by user]")
             finally:
                 self._active_engine_task = None
+                self._set_chat_agent_running(False)
                 self._output_to_console("")  # trailing newline after streaming
                 self._stop_layout_after_engine_stream(layout_started)
 
@@ -873,7 +1084,7 @@ class REPLEngine:
                         },
                     )
 
-            # gap-13: 120s timeout for AskUserQuestion — agent auto-decides
+            # gap-13: 120s timeout for AskUserQuestion; agent auto-decides
             if has_pending_question:
                 try:
                     user_answer = await self._prompt_with_timeout(
@@ -885,7 +1096,7 @@ class REPLEngine:
                     else:
                         if self._console:
                             self._console.print(
-                                "[dim]No response within 120s — agent will auto-decide.[/dim]"
+                                "[dim]No response within 120s; agent will auto-decide.[/dim]"
                             )
                         # Send "continue" to let the agent auto-decide
                         await self.process_input("continue")
@@ -900,7 +1111,7 @@ class REPLEngine:
                     )
                     if self._console:
                         self._console.print(
-                            "[dim]Timeout — agent will auto-decide.[/dim]"
+                            "[dim]Timeout; agent will auto-decide.[/dim]"
                         )
         else:
             if self._console:
@@ -914,6 +1125,11 @@ class REPLEngine:
         Uses asyncio.wait_for with the event loop. Falls back to regular
         input if prompt_toolkit is not available.
         """
+        if self._chat_window_active():
+            ask = getattr(self._chat_window, "ask", None)
+            if callable(ask):
+                return await ask(prompt_text, timeout)
+
         try:
             import asyncio as _asyncio
 
@@ -964,6 +1180,9 @@ class REPLEngine:
 
     def _output_to_console(self, text: str, end: str = "\n") -> None:
         """Route output through the shared Live layout or plain console (gap-2-07)."""
+        if self._append_chat_output(text, end=end):
+            return
+
         if self._layout_controller:
             self._layout_controller.append_output(text, end=end)
             if self._should_render_layout_once_after_append():
@@ -1018,6 +1237,8 @@ class REPLEngine:
         return bool(getattr(self._layout_controller, "is_live", False))
 
     def _should_start_layout_for_engine_stream(self) -> bool:
+        if self._chat_window_active():
+            return False
         if self._layout_controller is None:
             return False
         status_config = self._status_config()
@@ -1037,18 +1258,26 @@ class REPLEngine:
         if event_type == "ThinkingChunk":
             return
         if event_type == "ToolCallStart":
+            if self._append_chat_tool_output(f"Tool: {event.name}..."):
+                return
             self._output_to_console(f"\nTool: {event.name}...", end="")
             return
         if event_type == "ToolCallEnd":
             if event.result.error:
+                if self._append_chat_tool_output(f"Error: {event.result.error}"):
+                    return
                 self._output_to_console(f" failed: {event.result.error}")
             else:
+                if self._append_chat_tool_output("done"):
+                    return
                 self._output_to_console(" done")
             return
         if event_type == "Done":
             self._output_to_console("")
             return
         if event_type == "Error":
+            if self._append_chat_error_output(getattr(event, "message", "Error")):
+                return
             self._output_to_console(f"\nError: {event.message}")
             return
         if event_type == "Interrupted":
@@ -1061,16 +1290,16 @@ class REPLEngine:
             case "ThinkingChunk":
                 pass
             case "ToolCallStart":
-                print(f"\n🔧 {event.name}...", end="", flush=True)
+                print(f"\nTool: {event.name}...", end="", flush=True)
             case "ToolCallEnd":
                 if event.result.error:
-                    print(f" ❌ {event.result.error}")
+                    print(f" Error: {event.result.error}")
                 else:
-                    print(" ✅")
+                    print(" done")
             case "Done":
                 print()
             case "Error":
-                print(f"\n❌ Error: {event.message}")
+                print(f"\nError: {event.message}")
             case _:
                 pass
 
@@ -1141,6 +1370,11 @@ class REPLEngine:
             self._dream_checker_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._dream_checker_task
+
+        if self._chat_window_active():
+            request_stop = getattr(self._chat_window, "request_stop", None)
+            if callable(request_stop):
+                request_stop()
 
         # Stop shared layout (gap-2-07)
         if self._layout_controller:
