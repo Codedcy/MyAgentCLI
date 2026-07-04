@@ -969,6 +969,135 @@ async def test_chat_submissions_are_serialized_and_preserve_active_engine_task()
 
 
 @pytest.mark.asyncio
+async def test_chat_loop_waits_for_background_submission_before_normal_exit():
+    class BlockingEngine:
+        def __init__(self):
+            self.interrupt_event = SimpleNamespace(clear=lambda: None)
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def run(self, text, session, active_skill=None):
+            self.started.set()
+            yield TextChunk("blocked")
+            await self.release.wait()
+            yield Done()
+
+    class BackgroundSubmitChat(FakeChatWindowController):
+        def __init__(self):
+            super().__init__()
+            self.submission_task = None
+
+        async def run(self, on_submit, on_exit=None, on_interrupt=None):
+            self.is_running = True
+            self.submission_task = asyncio.create_task(on_submit("blocked"))
+            await asyncio.wait_for(engine.started.wait(), timeout=1.0)
+            self.is_running = False
+            if on_exit:
+                result = on_exit()
+                if hasattr(result, "__await__"):
+                    await result
+
+    engine = BlockingEngine()
+    chat = BackgroundSubmitChat()
+    repl = REPLEngine(
+        chat_window_controller=chat,
+        engine=engine,
+        renderer=Renderer(),
+    )
+    repl._current_session = SimpleNamespace(id="session-1")
+
+    run_task = asyncio.create_task(repl._run_chat_window_loop())
+    await asyncio.wait_for(engine.started.wait(), timeout=1.0)
+    await asyncio.sleep(0)
+
+    try:
+        assert run_task.done() is False
+        assert repl._active_engine_task is not None
+    finally:
+        engine.release.set()
+        await asyncio.wait_for(run_task, timeout=1.0)
+
+    assert chat.submission_task.done()
+    assert repl._active_engine_task is None
+
+
+@pytest.mark.asyncio
+async def test_chat_crash_cancels_background_submission_before_prompt_fallback(
+    monkeypatch,
+    caplog,
+):
+    prompt_active_engine_tasks = []
+    prompt_pending_submission_states = []
+
+    class BlockingEngine:
+        def __init__(self):
+            self.interrupt_event = SimpleNamespace(clear=lambda: None)
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+            self.cancelled = asyncio.Event()
+
+        async def run(self, text, session, active_skill=None):
+            self.started.set()
+            try:
+                yield TextChunk("blocked")
+                await self.release.wait()
+                yield Done()
+            except asyncio.CancelledError:
+                self.cancelled.set()
+                raise
+
+    class CrashingBackgroundSubmitChat(FakeChatWindowController):
+        def __init__(self):
+            super().__init__()
+            self.submission_task = None
+
+        async def run(self, on_submit, on_exit=None, on_interrupt=None):
+            self.is_running = True
+            self.submission_task = asyncio.create_task(on_submit("blocked"))
+            await asyncio.wait_for(engine.started.wait(), timeout=1.0)
+            if on_exit:
+                result = on_exit()
+                if hasattr(result, "__await__"):
+                    await result
+            raise RuntimeError("chat crashed after submit")
+
+    async def fake_prompt_loop(self):
+        prompt_active_engine_tasks.append(self._active_engine_task)
+        prompt_pending_submission_states.append(
+            any(
+                not task.done()
+                for task in getattr(self, "_chat_submission_tasks", ())
+            )
+        )
+        self._running = False
+
+    engine = BlockingEngine()
+    chat = CrashingBackgroundSubmitChat()
+    monkeypatch.setattr(REPLEngine, "_run_prompt_session_loop", fake_prompt_loop)
+    repl = REPLEngine(
+        config=make_chat_config(enabled=True),
+        chat_window_controller=chat,
+        engine=engine,
+        renderer=Renderer(),
+    )
+    repl._current_session = SimpleNamespace(id="session-1")
+    repl._console = FakeConsole()
+
+    try:
+        with caplog.at_level(logging.ERROR, logger="myagent.cli.repl"):
+            await repl.run()
+    finally:
+        engine.release.set()
+        if chat.submission_task is not None:
+            await asyncio.wait_for(chat.submission_task, timeout=1.0)
+
+    assert prompt_active_engine_tasks == [None]
+    assert prompt_pending_submission_states == [False]
+    assert engine.cancelled.is_set()
+    assert repl._active_engine_task is None
+
+
+@pytest.mark.asyncio
 async def test_ask_timeout_routes_system_message_to_chat_without_console():
     class AskTimeoutEngine:
         def __init__(self):

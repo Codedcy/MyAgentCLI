@@ -220,6 +220,7 @@ class REPLEngine:
         self._chat_window_loop_active = False
         self._chat_streaming = False
         self._chat_submission_lock: asyncio.Lock | None = None
+        self._chat_submission_tasks: set[asyncio.Task[None]] = set()
         self._running = False
         self._current_session = None
         self._console = self._create_console() if self._status_pane else None
@@ -685,6 +686,52 @@ class REPLEngine:
         if callable(set_agent_running):
             set_agent_running(running)
 
+    def _submit_chat_input(self, text: str):
+        task = asyncio.create_task(self._process_chat_submission(text))
+        self._chat_submission_tasks.add(task)
+        task.add_done_callback(self._on_chat_submission_done)
+        return self._await_chat_submission_task(task)
+
+    async def _await_chat_submission_task(self, task: asyncio.Task[None]) -> None:
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await task
+
+    def _on_chat_submission_done(self, task: asyncio.Task[None]) -> None:
+        self._chat_submission_tasks.discard(task)
+        if task.cancelled():
+            return
+        try:
+            task.result()
+        except Exception as exc:
+            logger.exception(
+                "Chat submission failed",
+                extra={
+                    "category": "error",
+                    "component": "agent",
+                    "context": "cli_chat_submission",
+                    "exception_type": type(exc).__name__,
+                    "traceback": traceback.format_exc(),
+                },
+            )
+
+    async def _drain_chat_submission_tasks(self, *, cancel: bool) -> None:
+        current_task = asyncio.current_task()
+        while True:
+            tasks = [
+                task
+                for task in self._chat_submission_tasks
+                if task is not current_task
+            ]
+            if not tasks:
+                return
+
+            if cancel:
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+
+            await asyncio.gather(*tasks, return_exceptions=True)
+
     async def _process_chat_submission(self, text: str) -> None:
         if self._chat_submission_lock is None:
             self._chat_submission_lock = asyncio.Lock()
@@ -776,10 +823,11 @@ class REPLEngine:
             self._append_chat_system_output(f"Project: {self._project_dir.name}")
 
             await controller.run(
-                self._process_chat_submission,
+                self._submit_chat_input,
                 on_exit=self._handle_chat_exit,
                 on_interrupt=self._handle_chat_interrupt,
             )
+            await self._drain_chat_submission_tasks(cancel=False)
         except Exception as exc:
             logger.exception(
                 "Chat window startup failed; falling back to prompt session",
@@ -799,10 +847,12 @@ class REPLEngine:
             )
             if callable(request_stop):
                 request_stop()
+            await self._drain_chat_submission_tasks(cancel=True)
             self._chat_window_loop_active = False
             self._running = True
             await self._run_prompt_session_loop()
         finally:
+            await self._drain_chat_submission_tasks(cancel=True)
             self._set_chat_agent_running(False)
             self._chat_window_loop_active = False
             self._chat_submission_lock = None
@@ -1412,6 +1462,7 @@ class REPLEngine:
             request_stop = getattr(self._chat_window, "request_stop", None)
             if callable(request_stop):
                 request_stop()
+        await self._drain_chat_submission_tasks(cancel=True)
 
         # Stop shared layout (gap-2-07)
         if self._layout_controller:
