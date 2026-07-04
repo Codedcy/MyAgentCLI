@@ -887,7 +887,7 @@ class REPLEngine:
         if not self._should_start_layout_for_engine_stream():
             return False
         self._layout_controller.start()
-        return True
+        return bool(getattr(self._layout_controller, "is_live", False))
 
     def _should_start_layout_for_engine_stream(self) -> bool:
         if self._layout_controller is None:

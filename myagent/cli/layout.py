@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
 from typing import TYPE_CHECKING, Any
@@ -48,14 +49,33 @@ class AgentLayoutController:
 
         if self._live is not None or self._live_failed:
             return
-        self.refresh()
-        live = Live(
-            self.layout,
-            console=self.console,
-            refresh_per_second=10,
-            transient=False,
-        )
-        live.start()
+
+        live = None
+        try:
+            self.refresh()
+            live = Live(
+                self.layout,
+                console=self.console,
+                refresh_per_second=10,
+                transient=False,
+            )
+            live.start()
+        except Exception:
+            self._live = None
+            self._live_failed = True
+            if live is not None:
+                with contextlib.suppress(Exception):
+                    live.stop()
+            logger.exception(
+                "Rich layout start failed; falling back to direct console output",
+                extra={
+                    "category": "error",
+                    "component": "agent",
+                    "context": "cli_layout_start",
+                },
+            )
+            return
+
         self._live = live
 
     def stop(self) -> None:

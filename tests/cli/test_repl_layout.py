@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -97,6 +98,11 @@ class FakeLive:
 
     def update(self, renderable):
         self.updates.append(renderable)
+
+
+class StartFailingLive(FakeLive):
+    def start(self):
+        raise RuntimeError("live start failed")
 
 
 @pytest.fixture
@@ -263,6 +269,47 @@ async def test_process_input_preserves_renderer_panel_output(monkeypatch):
     text = console.export_text(styles=False)
     assert "Tool: read" in text
     assert "<rich.panel.Panel object" not in text
+
+
+@pytest.mark.asyncio
+async def test_process_input_continues_when_layout_live_start_fails(
+    monkeypatch,
+    caplog,
+):
+    console = Console(record=True, width=140, height=40)
+    monkeypatch.setattr(REPLEngine, "_create_console", lambda _self: console)
+    monkeypatch.setattr(layout_module, "Live", StartFailingLive)
+    engine = FakeStreamingEngine(
+        [
+            TextChunk("still runs"),
+            Done(),
+        ]
+    )
+    model = RuntimeStatusModel()
+    config = StatusPaneConfig(width=34, collapse_below_columns=80)
+    pane = AgentInspectorPane(config, status_model=model)
+    repl = REPLEngine(
+        engine=engine,
+        status_pane=pane,
+        status_model=model,
+        config=config,
+    )
+    repl._current_session = SimpleNamespace(id="session-1")
+
+    with caplog.at_level(logging.ERROR, logger="myagent.cli.layout"):
+        await repl.process_input("hello")
+
+    text = console.export_text(styles=False)
+    assert repl._layout_controller.is_live is False
+    assert repl._layout_controller._live_failed is True
+    assert "still runs" in text
+    assert any(
+        record.name == "myagent.cli.layout"
+        and getattr(record, "category", None) == "error"
+        and getattr(record, "component", None) == "agent"
+        and getattr(record, "context", None) == "cli_layout_start"
+        for record in caplog.records
+    )
 
 
 def test_done_event_updates_runtime_status_tokens(layout_spy):
