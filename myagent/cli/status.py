@@ -27,6 +27,7 @@ LEGACY_SECTION_MAPPING = {
 }
 ANSI_PATTERN = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 CONTROL_PATTERN = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+NUMBER_PATTERN = re.compile(r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$")
 
 
 @dataclass
@@ -517,16 +518,16 @@ class AgentInspectorPane:
         return " ".join(text.split())
 
     def _format_int(self, value: Any) -> str:
-        try:
-            return f"{int(value):,}"
-        except (TypeError, ValueError):
+        number = self._number_value(value)
+        if number is None or number != number:
             return "0"
+        return f"{int(number):,}"
 
     def _compact_number(self, value: Any) -> str:
-        try:
-            number = int(value)
-        except (TypeError, ValueError):
+        numeric_value = self._number_value(value)
+        if numeric_value is None or numeric_value != numeric_value:
             return "0"
+        number = int(numeric_value)
         if number >= 1_000_000:
             return f"{number / 1_000_000:.1f}m"
         if number >= 1_000:
@@ -534,13 +535,22 @@ class AgentInspectorPane:
         return str(number)
 
     def _percent_text(self, value: Any) -> str:
-        try:
-            number = float(value)
-        except (TypeError, ValueError):
+        number = self._number_value(value)
+        if number is None or number != number:
             number = 0.0
         if number <= 1.0:
             number *= 100
         return f"{number:.0f}%"
+
+    def _number_value(self, value: Any) -> float | None:
+        if value is None or isinstance(value, bool):
+            return None
+        if isinstance(value, int | float):
+            return float(value)
+        text = str(value).strip().replace(",", "")
+        if not NUMBER_PATTERN.fullmatch(text):
+            return None
+        return float(text)
 
 
 StatusBar = AgentInspectorPane

@@ -181,7 +181,7 @@ class SubAgentWorker:
             # 75%, keeping system prompt + head + tail messages.
             self._compress_context(messages, iteration)
 
-            # Report iteration progress to pool/status bar (gap-8-06)
+            # Report iteration progress to pool/runtime status observers (gap-8-06)
             if self._progress_callback:
                 try:
                     self._progress_callback(iteration, self.MAX_ITERATIONS)
@@ -472,7 +472,7 @@ class SubAgentWorker:
                         extra={"category": "llm", "event": "subagent_retry",
                                "retry_count": attempt + 1},
                     )
-                    # Notify pool/status bar about retry (gap-18-03)
+                    # Notify pool/runtime status observers about retry (gap-18-03)
                     if self._retry_callback:
                         try:
                             self._retry_callback(attempt + 1, _SUBAGENT_MAX_RETRIES, delay)

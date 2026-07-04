@@ -1,4 +1,4 @@
-"""CLI layer — REPL, status bar, commands, renderer."""
+"""CLI layer: REPL, Agent Inspector Pane, commands, renderer."""
 
 from myagent.cli.main import main, parse_args
 from myagent.cli.renderer import Renderer

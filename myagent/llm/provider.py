@@ -151,7 +151,7 @@ class LLMProvider:
 
         # Register failure hook with litellm for UI progress updates on retries (gap-33).
         # Even with num_retries=0, litellm calls failure_callback when it raises
-        # retryable exceptions, allowing the status bar to show retry progress.
+        # retryable exceptions, allowing runtime status to show retry progress.
         if self._retry_callback:
             self._register_litellm_failure_hook()
 
@@ -259,7 +259,7 @@ class LLMProvider:
         """Register the retry callback via LiteLLM's failure_callback hook (gap-33).
 
         LiteLLM's built-in retry loop calls failure_callback on each failed
-        attempt before retrying. We hook into this to update the status bar
+        attempt before retrying. We hook into this to update runtime status
         with retry progress. Since litellm.failure_callback is a global list,
         we create a closure that captures self and appends to the list.
         The hook is cleaned up in _deregister_litellm_failure_hook.

@@ -938,7 +938,7 @@ class REPLEngine:
                 # Trim output lines to prevent memory growth
                 if len(self._output_lines) > 500:
                     self._output_lines = self._output_lines[-300:]
-                # Update status bar in the layout
+                # Update the status pane in the layout.
                 if self._status_bar:
                     status_panel = self._status_bar.get_renderable()
                     if status_panel:
@@ -1093,7 +1093,7 @@ class REPLEngine:
                 )
 
     async def _shutdown(self) -> None:
-        """Graceful shutdown: stop status bar, end session, clean up."""
+        """Graceful shutdown: stop status UI, end session, clean up."""
         self._running = False
 
         # G4: Cancel periodic dream checker

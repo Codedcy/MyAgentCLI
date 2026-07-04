@@ -363,7 +363,7 @@ class CommandDispatcher:
         """Request exit — triggers session-end flow per spec section 10.
 
         Per design spec §十, /exit and /quit directly initiate the session-end
-        flow (stop ReAct loop, end session, stop status bar, exit). No --force
+        flow (stop ReAct loop, end session, stop status UI, exit). No --force
         flag is required.
         """
         return CommandResult(output="Goodbye!", success=True, exit_requested=True)

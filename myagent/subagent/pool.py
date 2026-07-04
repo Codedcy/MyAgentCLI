@@ -33,7 +33,7 @@ class SubAgentHandle:
     _result_data: ToolResult | None = None
     _message: str | None = None
     _pending_messages: list = field(default_factory=list)
-    # Retry state for status bar display (gap-18-03)
+    # Retry state for runtime status display (gap-18-03)
     _retry_count: int = 0
     _max_retries: int = 0
     _progress_iter: tuple | None = None  # (cur, max) iteration progress
@@ -66,7 +66,7 @@ def _retry_notify(handle, attempt: int, max_retries: int, pool) -> None:
     """Update handle with retry state and fire status callbacks (gap-18-03).
 
     Called synchronously from SubAgentWorker._stream_llm_with_retry
-    during LLM retry events. The status bar callback registered in main.py
+    during LLM retry events. The runtime status callback registered in main.py
     reads _retry_count/_max_retries from the handle.
     """
     handle._retry_count = attempt
@@ -164,9 +164,9 @@ class SubAgentPool:
     Sub-agents write messages via SubAgentHandle.send_to_main(); the main
     agent drains this queue between ReAct iterations.
 
-    gap-r6-08: Status change callbacks. External components (e.g. status bar)
-    can register async callbacks via on_status_change(). The pool invokes
-    these callbacks on every sub-agent lifecycle transition (completed,
+    gap-r6-08: Status change callbacks. External components such as the
+    Agent Inspector Pane can register async callbacks via on_status_change().
+    The pool invokes these callbacks on every sub-agent lifecycle transition (completed,
     failed, interrupted).
     """
 
@@ -195,7 +195,7 @@ class SubAgentPool:
         self._session = session
         # G10: Outbound message queue for sub→main communication
         self._outbound_queue: asyncio.Queue[dict] = asyncio.Queue()
-        # gap-r6-08: Status change callbacks for external observers (e.g. status bar)
+        # gap-r6-08: Status change callbacks for external runtime status observers.
         self._status_callbacks: list = []
 
     @property
@@ -416,9 +416,9 @@ class SubAgentPool:
     async def _remove_handle_after_delay(self, agent_id: str, delay: float = 3.0) -> None:
         """Remove a handle from _agents dict after a configurable delay.
 
-        The delay gives status bar observers time to render the final
+        The delay gives runtime status observers time to render the final
         state (COMPLETED, FAILED, INTERRUPTED) before the entry is removed.
-        After removal, the status bar callback is re-invoked so the UI
+        After removal, the runtime status callback is re-invoked so the UI
         reflects the updated pool state.
         """
         await asyncio.sleep(delay)
@@ -479,7 +479,7 @@ class SubAgentPool:
                 progress_callback=lambda cur, max_i: setattr(
                     handle, '_progress_iter', (cur, max_i)
                 ),
-                # gap-18-03: retry callback updates handle and notifies status bar
+                # gap-18-03: retry callback updates handle and notifies status observers.
                 retry_callback=lambda attempt, max_r, delay: _retry_notify(
                     handle, attempt, max_r, self
                 ),
@@ -506,7 +506,7 @@ class SubAgentPool:
                 duration_ms = (time.monotonic() - t0) * 1000
                 handle.status = AgentStatus.COMPLETED
                 handle._result_data = ToolResult(output=output)
-                # Notify status bar observers (gap-r6-08)
+                # Notify runtime status observers (gap-r6-08)
                 await self._notify_status_callbacks(handle.id, AgentStatus.COMPLETED, handle)
                 logger.info(
                     "Sub-agent %s completed in %.1fms",
@@ -543,12 +543,12 @@ class SubAgentPool:
                 )
                 handle.status = AgentStatus.FAILED
                 handle._result_data = ToolResult(error=str(e))
-                # Notify status bar observers (gap-r6-08)
+                # Notify runtime status observers (gap-r6-08)
                 await self._notify_status_callbacks(handle.id, AgentStatus.FAILED, handle)
             finally:
                 handle._completion_event.set()
                 # gap-10-2: Remove terminal handles from _agents dict after
-                # a brief delay so status bar observers have time to render
+                # a brief delay so runtime status observers have time to render
                 # the final state. This prevents unbounded growth over long sessions.
                 asyncio.create_task(self._remove_handle_after_delay(handle.id, delay=3.0))
 

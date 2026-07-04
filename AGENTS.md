@@ -9,7 +9,7 @@ MyAgentCLI 是一个个人 AI Agent 助手，CLI 形式。使用 DeepSeek V4 Pro
 ## Tech Stack
 
 - **Language**: Python 3.12+
-- **CLI**: Rich + prompt_toolkit (REPL + 流式输出 + 状态栏)
+- **CLI**: Rich + prompt_toolkit (REPL + 流式输出 + Agent Inspector Pane)
 - **Model Access**: LiteLLM (统一抽象层，主模型 DeepSeek V4 Pro)
 - **MCP**: 子进程通信 (stdio/SSE)
 - **Distribution**: pipx / pip (PyPI)
@@ -75,7 +75,7 @@ See [Design Spec](docs/superpowers/specs/2026-07-02-myagentcli-design.md) for fu
 
 ```
 myagent/
-├── cli/              # CLI layer (REPL, status bar, commands)
+├── cli/              # CLI layer (REPL, Agent Inspector Pane, commands)
 ├── agent/            # Agent engine (ReAct loop, goal tracker)
 ├── tools/            # Built-in tools + MCP bridge
 ├── subagent/         # Sub-agent pool and lifecycle

@@ -8,7 +8,7 @@
 
 ## 核心特性
 
-- **REPL + 流式输出**: Rich + prompt_toolkit，Markdown 渲染，Live 状态栏
+- **REPL + 流式输出**: Rich + prompt_toolkit，Markdown 渲染，固定右侧 Agent Inspector Pane
 - **ReAct Agent 循环**: Think → Decide → Execute → Observe，默认 Think High
 - **Goal 模式**: 设定目标后 Agent 自主拆解、编排、持续推进，支持人工介入
 - **子 Agent 系统**: 独立上下文、并行/流水线编排，最大并发 min(16, CPU-2)
@@ -31,7 +31,8 @@ CLI Layer (Rich + prompt_toolkit)
   ├─ repl.py        — REPL 引擎
   ├─ commands.py    — 斜杠命令 (/mode, /goal, /skills, /dream, ...)
   ├─ renderer.py    — AgentEvent → Rich 渲染
-  └─ status.py      — Live 状态栏
+  ├─ layout.py      — Rich Layout/Live 固定窗格控制器
+  └─ status.py      — Agent Inspector Pane 渲染与兼容 StatusBar alias
 
 Application Layer
   ├─ engine.py      — ReAct 循环（唯一执行模式）
@@ -159,6 +160,26 @@ pytest tests/ -v --cov=myagent --cov-report=term-missing
 7. CLI 参数
 
 完整配置项见 [设计文档 §九](docs/superpowers/specs/2026-07-02-myagentcli-design.md)。
+
+### Agent Inspector Pane 配置
+
+CLI 默认在右侧显示固定 `Agent Inspector Pane`，用于展示会话、token、上下文占用、目标、子 Agent、工具调用和健康状态。终端宽度低于 `collapse_below_columns` 时会自动折叠成窄 rail；`F2` 可在当前布局中展开或收起 Inspector，不会提交当前输入。
+
+```yaml
+ui:
+  status_pane:
+    enabled: true
+    placement: right
+    width: 34
+    min_width: 28
+    max_width: 48
+    collapse_below_columns: 120
+    rail_width: 5
+    toggle_key: f2
+    sections: [session, tokens, goal, subagents, tools, health]
+```
+
+兼容性：旧配置 `ui.show_status_bar` 仍会映射到 `ui.status_pane.enabled`，`ui.status_bar_items` 仍会映射到 `ui.status_pane.sections`。显式配置 `ui.status_pane.*` 时优先使用新配置。
 
 ## 文档
 
