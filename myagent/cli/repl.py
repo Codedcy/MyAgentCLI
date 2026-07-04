@@ -221,6 +221,7 @@ class REPLEngine:
         self._chat_streaming = False
         self._chat_submission_lock: asyncio.Lock | None = None
         self._chat_submission_tasks: set[asyncio.Task[None]] = set()
+        self._chat_submission_cancel_requested = False
         self._running = False
         self._current_session = None
         self._console = self._create_console() if self._status_pane else None
@@ -715,6 +716,8 @@ class REPLEngine:
             )
 
     async def _drain_chat_submission_tasks(self, *, cancel: bool) -> None:
+        if cancel:
+            self._chat_submission_cancel_requested = True
         current_task = asyncio.current_task()
         while True:
             tasks = [
@@ -731,6 +734,22 @@ class REPLEngine:
                         task.cancel()
 
             await asyncio.gather(*tasks, return_exceptions=True)
+
+    def _current_chat_submission_task(self) -> asyncio.Task[None] | None:
+        current_task = asyncio.current_task()
+        if current_task in self._chat_submission_tasks:
+            return current_task
+        return None
+
+    async def _skip_chat_followups_for_submission_teardown(self) -> bool:
+        current_task = self._current_chat_submission_task()
+        if current_task is None:
+            return False
+        if self._chat_submission_cancel_requested or current_task.cancelling():
+            return True
+
+        await asyncio.sleep(0)
+        return self._chat_submission_cancel_requested or current_task.cancelling()
 
     async def _process_chat_submission(self, text: str) -> None:
         if self._chat_submission_lock is None:
@@ -816,6 +835,7 @@ class REPLEngine:
             self._chat_window_loop_active = True
             self._chat_streaming = False
             self._chat_submission_lock = asyncio.Lock()
+            self._chat_submission_cancel_requested = False
 
             self._append_chat_system_output(
                 "MyAgentCLI - Type /help for commands, Ctrl+D to exit."
@@ -856,6 +876,7 @@ class REPLEngine:
             self._set_chat_agent_running(False)
             self._chat_window_loop_active = False
             self._chat_submission_lock = None
+            self._chat_submission_cancel_requested = False
 
     async def _run_prompt_session_loop(self) -> None:
         """Run the legacy prompt_toolkit REPL loop."""
@@ -1157,6 +1178,9 @@ class REPLEngine:
                 self._set_chat_agent_running(False)
                 self._output_to_console("")  # trailing newline after streaming
                 self._stop_layout_after_engine_stream(layout_started)
+
+            if await self._skip_chat_followups_for_submission_teardown():
+                return
 
             # gap-19-02: After stream interruption, prompt user to decide
             if stream_interrupted:
