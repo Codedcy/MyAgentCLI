@@ -69,8 +69,8 @@ class RuntimeStatusSnapshot:
     session: SessionRuntimeStatus = field(default_factory=SessionRuntimeStatus)
     tokens: TokenRuntimeStatus = field(default_factory=TokenRuntimeStatus)
     goal: GoalRuntimeStatus = field(default_factory=GoalRuntimeStatus)
-    subagents: list[SubAgentRuntimeInfo] = field(default_factory=list)
-    tools: list[ToolRuntimeStatus] = field(default_factory=list)
+    subagents: tuple[SubAgentRuntimeInfo, ...] = field(default_factory=tuple)
+    tools: tuple[ToolRuntimeStatus, ...] = field(default_factory=tuple)
     health: HealthRuntimeStatus = field(default_factory=HealthRuntimeStatus)
 
 
@@ -90,8 +90,8 @@ class RuntimeStatusModel:
             session=replace(self._session),
             tokens=replace(self._tokens),
             goal=replace(self._goal),
-            subagents=[replace(info) for info in self._subagents.values()],
-            tools=[replace(status) for status in self._tools.values()],
+            subagents=tuple(replace(info) for info in self._subagents.values()),
+            tools=tuple(replace(status) for status in self._tools.values()),
             health=replace(self._health),
         )
 
@@ -242,6 +242,7 @@ class RuntimeStatusModel:
 
     def clear_transient(self) -> None:
         self._tools.clear()
+        self._goal = replace(self._goal, waiting_for_user=False)
         self._health = replace(self._health, retry_info="", last_error="")
 
 
