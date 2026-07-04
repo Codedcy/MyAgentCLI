@@ -745,11 +745,19 @@ class REPLEngine:
         current_task = self._current_chat_submission_task()
         if current_task is None:
             return False
-        if self._chat_submission_cancel_requested or current_task.cancelling():
+        if (
+            self._chat_submission_cancel_requested
+            or current_task.cancelling()
+            or not getattr(self._chat_window, "is_running", True)
+        ):
             return True
 
         await asyncio.sleep(0)
-        return self._chat_submission_cancel_requested or current_task.cancelling()
+        return (
+            self._chat_submission_cancel_requested
+            or current_task.cancelling()
+            or not getattr(self._chat_window, "is_running", True)
+        )
 
     async def _process_chat_submission(self, text: str) -> None:
         if self._chat_submission_lock is None:

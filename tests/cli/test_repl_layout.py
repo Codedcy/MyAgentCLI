@@ -1080,6 +1080,91 @@ async def test_chat_loop_skips_followups_for_background_submission_after_normal_
 
 
 @pytest.mark.asyncio
+async def test_chat_loop_skips_followups_when_controller_stopped_before_run_returns():
+    class AskThenCompleteEngine:
+        def __init__(self):
+            self.interrupt_event = SimpleNamespace(clear=lambda: None)
+            self.inputs = []
+            self.question_yielded = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def run(self, text, session, active_skill=None):
+            self.inputs.append(text)
+            if text == "ask":
+                yield AskUserQuestion(question="Need input?")
+                self.question_yielded.set()
+                await self.release.wait()
+            yield Done()
+
+    class DelayedReturnStoppedChat(FakeChatWindowController):
+        def __init__(self):
+            super().__init__()
+            self.submission_task = None
+            self.allow_return = asyncio.Event()
+            self.ask_release = asyncio.Event()
+            self.ask_started = asyncio.Event()
+            self.stopped = asyncio.Event()
+
+        async def run(self, on_submit, on_exit=None, on_interrupt=None):
+            self.is_running = True
+            self.submission_task = asyncio.create_task(on_submit("ask"))
+            await asyncio.wait_for(engine.question_yielded.wait(), timeout=1.0)
+            self.request_stop()
+            self.stopped.set()
+            if on_exit:
+                result = on_exit()
+                if hasattr(result, "__await__"):
+                    await result
+            await self.allow_return.wait()
+
+        async def ask(self, prompt, timeout):
+            self.ask_calls.append((prompt, timeout))
+            self.ask_started.set()
+            await self.ask_release.wait()
+            return None
+
+    engine = AskThenCompleteEngine()
+    chat = DelayedReturnStoppedChat()
+    repl = REPLEngine(
+        chat_window_controller=chat,
+        engine=engine,
+        renderer=Renderer(),
+    )
+    repl._current_session = SimpleNamespace(id="session-1")
+    repl._console = FakeConsole()
+
+    run_task = asyncio.create_task(repl._run_chat_window_loop())
+    await asyncio.wait_for(engine.question_yielded.wait(), timeout=1.0)
+    await asyncio.wait_for(chat.stopped.wait(), timeout=1.0)
+    assert chat.is_running is False
+
+    assert chat.submission_task is not None
+    ask_started_task = asyncio.create_task(chat.ask_started.wait())
+    try:
+        engine.release.set()
+        done, _ = await asyncio.wait(
+            {chat.submission_task, ask_started_task},
+            timeout=0.5,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        assert done
+        assert chat.submission_task in done
+        assert ask_started_task not in done
+    finally:
+        chat.ask_release.set()
+        chat.allow_return.set()
+        ask_started_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await ask_started_task
+        await asyncio.wait_for(run_task, timeout=1.0)
+
+    assert chat.ask_calls == []
+    assert engine.inputs == ["ask"]
+    assert chat.submission_task.done()
+    assert repl._chat_submission_tasks == set()
+
+
+@pytest.mark.asyncio
 async def test_chat_crash_cancels_background_submission_before_prompt_fallback(
     monkeypatch,
     caplog,
