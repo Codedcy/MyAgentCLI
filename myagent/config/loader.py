@@ -141,14 +141,18 @@ class ConfigLoader:
         defaults_dict = _dataclass_to_dict(AppConfig())
 
         # Level 2: User AGENT.md
-        user_agent_md = self._load_agent_md(self.user_home / "AGENT.md")
+        user_agent_md = self._normalize_ui_config(
+            self._load_agent_md(self.user_home / "AGENT.md")
+        )
 
         # Level 3: User config
-        user_config = self._load_yaml(self.user_home / "config.yaml")
+        user_config = self._normalize_ui_config(
+            self._load_yaml(self.user_home / "config.yaml")
+        )
 
         # Level 4: Project AGENT.md
-        project_agent_md = self._load_agent_md(
-            self.project_dir / ".myagent" / "AGENT.md"
+        project_agent_md = self._normalize_ui_config(
+            self._load_agent_md(self.project_dir / ".myagent" / "AGENT.md")
         )
 
         # Level 5: Project config
@@ -160,10 +164,10 @@ class ConfigLoader:
                 re.sub(r"~(?=/)", lambda m: os.path.expanduser(m.group(0)),
                        self._config_path)
             )
-            project_config = self._load_yaml(resolved_path)
+            project_config = self._normalize_ui_config(self._load_yaml(resolved_path))
         else:
-            project_config = self._load_yaml(
-                self.project_dir / ".myagent" / "config.yaml"
+            project_config = self._normalize_ui_config(
+                self._load_yaml(self.project_dir / ".myagent" / "config.yaml")
             )
 
         # Merge in priority order (low→high): exactly 7 levels
@@ -171,15 +175,52 @@ class ConfigLoader:
         merged = deep_merge(merged, user_config)
         merged = deep_merge(merged, project_agent_md)
         merged = deep_merge(merged, project_config)
-        merged = deep_merge(merged, self._runtime_overrides)
+        merged = deep_merge(
+            merged,
+            self._normalize_ui_config(self._runtime_overrides),
+        )
 
         # Level 7: CLI args
         if cli_args:
             merged = self._apply_cli_args(merged, cli_args)
 
+        merged = self._normalize_ui_config(merged)
         config = _dict_to_dataclass(merged, AppConfig)
         self._validate(config)
         return config
+
+    @staticmethod
+    def _normalize_ui_config(merged: dict) -> dict:
+        """Normalize legacy UI keys into the status pane config."""
+        if not isinstance(merged, dict):
+            return merged
+
+        ui_config = merged.get("ui")
+        if not isinstance(ui_config, dict):
+            return merged
+
+        normalized = dict(merged)
+        normalized_ui = dict(ui_config)
+        status_pane = normalized_ui.get("status_pane")
+
+        if status_pane is None:
+            status_pane = {}
+        elif isinstance(status_pane, dict):
+            status_pane = dict(status_pane)
+        else:
+            normalized["ui"] = normalized_ui
+            return normalized
+
+        if "enabled" not in status_pane and "show_status_bar" in normalized_ui:
+            status_pane["enabled"] = normalized_ui["show_status_bar"]
+        if "sections" not in status_pane and "status_bar_items" in normalized_ui:
+            status_pane["sections"] = normalized_ui["status_bar_items"]
+
+        if status_pane:
+            normalized_ui["status_pane"] = status_pane
+
+        normalized["ui"] = normalized_ui
+        return normalized
 
     @staticmethod
     def _validate(config: AppConfig) -> None:
@@ -248,6 +289,34 @@ class ConfigLoader:
             logger.warning(
                 "tools.shell_timeout_seconds = %d is too low; minimum is 1",
                 config.tools.shell_timeout_seconds,
+                extra={"category": "system"},
+            )
+
+        status_pane = config.ui.status_pane
+        if status_pane.width < status_pane.min_width:
+            logger.warning(
+                "ui.status_pane.width = %d is below min_width = %d",
+                status_pane.width,
+                status_pane.min_width,
+                extra={"category": "system"},
+            )
+        if status_pane.width > status_pane.max_width:
+            logger.warning(
+                "ui.status_pane.width = %d is above max_width = %d",
+                status_pane.width,
+                status_pane.max_width,
+                extra={"category": "system"},
+            )
+        if status_pane.rail_width < 1:
+            logger.warning(
+                "ui.status_pane.rail_width = %d is too low; minimum is 1",
+                status_pane.rail_width,
+                extra={"category": "system"},
+            )
+        if status_pane.collapse_below_columns < 40:
+            logger.warning(
+                "ui.status_pane.collapse_below_columns = %d is too low; minimum is 40",
+                status_pane.collapse_below_columns,
                 extra={"category": "system"},
             )
 

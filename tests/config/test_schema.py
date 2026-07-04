@@ -96,6 +96,22 @@ class TestToolsConfig:
 class TestUIConfig:
     def test_defaults(self):
         c = UIConfig()
+        assert c.status_pane.enabled is True
+        assert c.status_pane.placement == "right"
+        assert c.status_pane.width == 34
+        assert c.status_pane.min_width == 28
+        assert c.status_pane.max_width == 48
+        assert c.status_pane.collapse_below_columns == 120
+        assert c.status_pane.rail_width == 5
+        assert c.status_pane.toggle_key == "ctrl+i"
+        assert c.status_pane.sections == [
+            "session",
+            "tokens",
+            "goal",
+            "subagents",
+            "tools",
+            "health",
+        ]
         assert c.show_status_bar is True
         assert "subagents" in c.status_bar_items
         assert c.streaming is True

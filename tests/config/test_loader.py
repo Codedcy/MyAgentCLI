@@ -1,5 +1,6 @@
 """Tests for ConfigLoader with 7-level merge."""
 
+import logging
 from pathlib import Path
 
 import pytest
@@ -98,6 +99,92 @@ class TestConfigLoader:
         )
         config = loader.load()
         assert config.ui.status_bar_items == ["tokens"]  # replaced, not appended
+
+    def test_status_pane_enabled_loaded_directly(self, tmp_home_dir, tmp_project_dir):
+        write_yaml(
+            _ua(tmp_home_dir) / "config.yaml",
+            "ui:\n  status_pane:\n    enabled: false\n",
+        )
+        loader = ConfigLoader(
+            project_dir=tmp_project_dir,
+            user_home=_ua(tmp_home_dir),
+        )
+        config = loader.load()
+        assert config.ui.status_pane.enabled is False
+
+    def test_legacy_show_status_bar_maps_to_status_pane_enabled(
+        self, tmp_home_dir, tmp_project_dir
+    ):
+        write_yaml(
+            _ua(tmp_home_dir) / "config.yaml",
+            "ui:\n  show_status_bar: false\n",
+        )
+        loader = ConfigLoader(
+            project_dir=tmp_project_dir,
+            user_home=_ua(tmp_home_dir),
+        )
+        config = loader.load()
+        assert config.ui.status_pane.enabled is False
+
+    def test_legacy_status_bar_items_maps_to_status_pane_sections(
+        self, tmp_home_dir, tmp_project_dir
+    ):
+        write_yaml(
+            _ua(tmp_home_dir) / "config.yaml",
+            "ui:\n  status_bar_items: [tokens]\n",
+        )
+        loader = ConfigLoader(
+            project_dir=tmp_project_dir,
+            user_home=_ua(tmp_home_dir),
+        )
+        config = loader.load()
+        assert config.ui.status_pane.sections == ["tokens"]
+
+    def test_explicit_status_pane_sections_win_over_legacy_status_bar_items(
+        self, tmp_home_dir, tmp_project_dir
+    ):
+        write_yaml(
+            _ua(tmp_home_dir) / "config.yaml",
+            "ui:\n"
+            "  status_bar_items: [tokens]\n"
+            "  status_pane:\n"
+            "    sections: [session, health]\n",
+        )
+        loader = ConfigLoader(
+            project_dir=tmp_project_dir,
+            user_home=_ua(tmp_home_dir),
+        )
+        config = loader.load()
+        assert config.ui.status_pane.sections == ["session", "health"]
+
+    def test_status_pane_validation_warns_for_invalid_dimensions(
+        self, tmp_home_dir, tmp_project_dir, caplog
+    ):
+        write_yaml(
+            _ua(tmp_home_dir) / "config.yaml",
+            "ui:\n"
+            "  status_pane:\n"
+            "    width: 20\n"
+            "    min_width: 30\n"
+            "    max_width: 10\n"
+            "    rail_width: 0\n"
+            "    collapse_below_columns: 39\n",
+        )
+        caplog.set_level(logging.WARNING, logger="myagent.config")
+        loader = ConfigLoader(
+            project_dir=tmp_project_dir,
+            user_home=_ua(tmp_home_dir),
+        )
+
+        loader.load()
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert any("ui.status_pane.width" in message for message in messages)
+        assert any("ui.status_pane.rail_width" in message for message in messages)
+        assert any(
+            "ui.status_pane.collapse_below_columns" in message
+            for message in messages
+        )
 
     def test_missing_config_files_graceful(self, tmp_home_dir, tmp_project_dir):
         """No config files at any level should still load defaults."""

@@ -68,7 +68,30 @@ class ToolsConfig:
 
 
 @dataclass
+class StatusPaneConfig:
+    enabled: bool = True
+    placement: Literal["left", "right"] = "right"
+    width: int = 34
+    min_width: int = 28
+    max_width: int = 48
+    collapse_below_columns: int = 120
+    rail_width: int = 5
+    toggle_key: str = "ctrl+i"
+    sections: list[str] = field(
+        default_factory=lambda: [
+            "session",
+            "tokens",
+            "goal",
+            "subagents",
+            "tools",
+            "health",
+        ]
+    )
+
+
+@dataclass
 class UIConfig:
+    status_pane: StatusPaneConfig = field(default_factory=StatusPaneConfig)
     show_status_bar: bool = True
     status_bar_items: list[str] = field(
         default_factory=lambda: ["subagents", "tokens", "thinking"]
