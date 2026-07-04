@@ -141,18 +141,14 @@ class ConfigLoader:
         defaults_dict = _dataclass_to_dict(AppConfig())
 
         # Level 2: User AGENT.md
-        user_agent_md = self._normalize_ui_config(
-            self._load_agent_md(self.user_home / "AGENT.md")
-        )
+        user_agent_md = self._load_agent_md(self.user_home / "AGENT.md")
 
         # Level 3: User config
-        user_config = self._normalize_ui_config(
-            self._load_yaml(self.user_home / "config.yaml")
-        )
+        user_config = self._load_yaml(self.user_home / "config.yaml")
 
         # Level 4: Project AGENT.md
-        project_agent_md = self._normalize_ui_config(
-            self._load_agent_md(self.project_dir / ".myagent" / "AGENT.md")
+        project_agent_md = self._load_agent_md(
+            self.project_dir / ".myagent" / "AGENT.md"
         )
 
         # Level 5: Project config
@@ -164,27 +160,27 @@ class ConfigLoader:
                 re.sub(r"~(?=/)", lambda m: os.path.expanduser(m.group(0)),
                        self._config_path)
             )
-            project_config = self._normalize_ui_config(self._load_yaml(resolved_path))
+            project_config = self._load_yaml(resolved_path)
         else:
-            project_config = self._normalize_ui_config(
-                self._load_yaml(self.project_dir / ".myagent" / "config.yaml")
+            project_config = self._load_yaml(
+                self.project_dir / ".myagent" / "config.yaml"
             )
 
         # Merge in priority order (low→high): exactly 7 levels
-        merged = deep_merge(defaults_dict, user_agent_md)
+        # Keep raw overlays separate from defaults until after legacy UI
+        # migration so explicit status_pane keys win over legacy UI fields.
+        merged = deep_merge({}, user_agent_md)
         merged = deep_merge(merged, user_config)
         merged = deep_merge(merged, project_agent_md)
         merged = deep_merge(merged, project_config)
-        merged = deep_merge(
-            merged,
-            self._normalize_ui_config(self._runtime_overrides),
-        )
+        merged = deep_merge(merged, self._runtime_overrides)
 
         # Level 7: CLI args
         if cli_args:
             merged = self._apply_cli_args(merged, cli_args)
 
         merged = self._normalize_ui_config(merged)
+        merged = deep_merge(defaults_dict, merged)
         config = _dict_to_dataclass(merged, AppConfig)
         self._validate(config)
         return config
@@ -208,8 +204,12 @@ class ConfigLoader:
         elif isinstance(status_pane, dict):
             status_pane = dict(status_pane)
         else:
-            normalized["ui"] = normalized_ui
-            return normalized
+            logger.warning(
+                "ui.status_pane must be a mapping; ignoring %s value",
+                type(status_pane).__name__,
+                extra={"category": "system"},
+            )
+            status_pane = {}
 
         if "enabled" not in status_pane and "show_status_bar" in normalized_ui:
             status_pane["enabled"] = normalized_ui["show_status_bar"]
@@ -218,9 +218,16 @@ class ConfigLoader:
 
         if status_pane:
             normalized_ui["status_pane"] = status_pane
+        else:
+            normalized_ui.pop("status_pane", None)
 
         normalized["ui"] = normalized_ui
         return normalized
+
+    @staticmethod
+    def _is_status_pane_number(value: object) -> bool:
+        """Return True for numeric status pane sizing values."""
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
 
     @staticmethod
     def _validate(config: AppConfig) -> None:
@@ -293,30 +300,55 @@ class ConfigLoader:
             )
 
         status_pane = config.ui.status_pane
-        if status_pane.width < status_pane.min_width:
+        numeric_values = {}
+        for field_name in [
+            "width",
+            "min_width",
+            "max_width",
+            "rail_width",
+            "collapse_below_columns",
+        ]:
+            value = getattr(status_pane, field_name)
+            if ConfigLoader._is_status_pane_number(value):
+                numeric_values[field_name] = value
+            else:
+                logger.warning(
+                    "ui.status_pane.%s must be numeric; got %s",
+                    field_name,
+                    type(value).__name__,
+                    extra={"category": "system"},
+                )
+
+        width = numeric_values.get("width")
+        min_width = numeric_values.get("min_width")
+        max_width = numeric_values.get("max_width")
+        if width is not None and min_width is not None and width < min_width:
             logger.warning(
-                "ui.status_pane.width = %d is below min_width = %d",
-                status_pane.width,
-                status_pane.min_width,
+                "ui.status_pane.width = %s is below min_width = %s",
+                width,
+                min_width,
                 extra={"category": "system"},
             )
-        if status_pane.width > status_pane.max_width:
+        if width is not None and max_width is not None and width > max_width:
             logger.warning(
-                "ui.status_pane.width = %d is above max_width = %d",
-                status_pane.width,
-                status_pane.max_width,
+                "ui.status_pane.width = %s is above max_width = %s",
+                width,
+                max_width,
                 extra={"category": "system"},
             )
-        if status_pane.rail_width < 1:
+
+        rail_width = numeric_values.get("rail_width")
+        if rail_width is not None and rail_width < 1:
             logger.warning(
-                "ui.status_pane.rail_width = %d is too low; minimum is 1",
-                status_pane.rail_width,
+                "ui.status_pane.rail_width = %s is too low; minimum is 1",
+                rail_width,
                 extra={"category": "system"},
             )
-        if status_pane.collapse_below_columns < 40:
+        collapse_below_columns = numeric_values.get("collapse_below_columns")
+        if collapse_below_columns is not None and collapse_below_columns < 40:
             logger.warning(
-                "ui.status_pane.collapse_below_columns = %d is too low; minimum is 40",
-                status_pane.collapse_below_columns,
+                "ui.status_pane.collapse_below_columns = %s is too low; minimum is 40",
+                collapse_below_columns,
                 extra={"category": "system"},
             )
 

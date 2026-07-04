@@ -157,7 +157,80 @@ class TestConfigLoader:
         config = loader.load()
         assert config.ui.status_pane.sections == ["session", "health"]
 
-    def test_status_pane_validation_warns_for_invalid_dimensions(
+    def test_explicit_status_pane_sections_win_over_higher_priority_legacy_items(
+        self, tmp_home_dir, tmp_project_dir
+    ):
+        write_yaml(
+            _ua(tmp_home_dir) / "config.yaml",
+            "ui:\n"
+            "  status_pane:\n"
+            "    sections: [session, health]\n",
+        )
+        write_yaml(
+            tmp_project_dir / ".myagent" / "config.yaml",
+            "ui:\n  status_bar_items: [tokens]\n",
+        )
+        loader = ConfigLoader(
+            project_dir=tmp_project_dir,
+            user_home=_ua(tmp_home_dir),
+        )
+        config = loader.load()
+        assert config.ui.status_pane.sections == ["session", "health"]
+        assert config.ui.status_bar_items == ["tokens"]
+
+    def test_non_dict_status_pane_warns_and_uses_default(
+        self, tmp_home_dir, tmp_project_dir, caplog
+    ):
+        write_yaml(
+            _ua(tmp_home_dir) / "config.yaml",
+            "ui:\n  status_pane: false\n",
+        )
+        caplog.set_level(logging.WARNING, logger="myagent.config")
+        loader = ConfigLoader(
+            project_dir=tmp_project_dir,
+            user_home=_ua(tmp_home_dir),
+        )
+
+        config = loader.load()
+
+        assert config.ui.status_pane.enabled is True
+        assert config.ui.status_pane.sections == [
+            "session",
+            "tokens",
+            "goal",
+            "subagents",
+            "tools",
+            "health",
+        ]
+        assert any(
+            "ui.status_pane must be a mapping" in record.getMessage()
+            for record in caplog.records
+        )
+
+    def test_non_numeric_status_pane_width_warns_without_breaking_load(
+        self, tmp_home_dir, tmp_project_dir, caplog
+    ):
+        write_yaml(
+            _ua(tmp_home_dir) / "config.yaml",
+            "ui:\n"
+            "  status_pane:\n"
+            "    width: wide\n",
+        )
+        caplog.set_level(logging.WARNING, logger="myagent.config")
+        loader = ConfigLoader(
+            project_dir=tmp_project_dir,
+            user_home=_ua(tmp_home_dir),
+        )
+
+        config = loader.load()
+
+        assert config.ui.status_pane.width == "wide"
+        assert any(
+            "ui.status_pane.width must be numeric" in record.getMessage()
+            for record in caplog.records
+        )
+
+    def test_status_pane_validation_warns_when_width_below_min_width(
         self, tmp_home_dir, tmp_project_dir, caplog
     ):
         write_yaml(
@@ -166,7 +239,54 @@ class TestConfigLoader:
             "  status_pane:\n"
             "    width: 20\n"
             "    min_width: 30\n"
-            "    max_width: 10\n"
+            "    max_width: 48\n",
+        )
+        caplog.set_level(logging.WARNING, logger="myagent.config")
+        loader = ConfigLoader(
+            project_dir=tmp_project_dir,
+            user_home=_ua(tmp_home_dir),
+        )
+
+        loader.load()
+
+        assert any(
+            "ui.status_pane.width = 20 is below min_width = 30"
+            in record.getMessage()
+            for record in caplog.records
+        )
+
+    def test_status_pane_validation_warns_when_width_above_max_width(
+        self, tmp_home_dir, tmp_project_dir, caplog
+    ):
+        write_yaml(
+            _ua(tmp_home_dir) / "config.yaml",
+            "ui:\n"
+            "  status_pane:\n"
+            "    width: 50\n"
+            "    min_width: 28\n"
+            "    max_width: 48\n",
+        )
+        caplog.set_level(logging.WARNING, logger="myagent.config")
+        loader = ConfigLoader(
+            project_dir=tmp_project_dir,
+            user_home=_ua(tmp_home_dir),
+        )
+
+        loader.load()
+
+        assert any(
+            "ui.status_pane.width = 50 is above max_width = 48"
+            in record.getMessage()
+            for record in caplog.records
+        )
+
+    def test_status_pane_validation_warns_for_rail_and_collapse_limits(
+        self, tmp_home_dir, tmp_project_dir, caplog
+    ):
+        write_yaml(
+            _ua(tmp_home_dir) / "config.yaml",
+            "ui:\n"
+            "  status_pane:\n"
             "    rail_width: 0\n"
             "    collapse_below_columns: 39\n",
         )
@@ -178,12 +298,15 @@ class TestConfigLoader:
 
         loader.load()
 
-        messages = [record.getMessage() for record in caplog.records]
-        assert any("ui.status_pane.width" in message for message in messages)
-        assert any("ui.status_pane.rail_width" in message for message in messages)
         assert any(
-            "ui.status_pane.collapse_below_columns" in message
-            for message in messages
+            "ui.status_pane.rail_width = 0 is too low; minimum is 1"
+            in record.getMessage()
+            for record in caplog.records
+        )
+        assert any(
+            "ui.status_pane.collapse_below_columns = 39 is too low; minimum is 40"
+            in record.getMessage()
+            for record in caplog.records
         )
 
     def test_missing_config_files_graceful(self, tmp_home_dir, tmp_project_dir):
