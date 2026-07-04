@@ -8,6 +8,9 @@ import logging
 from pathlib import Path
 
 from prompt_toolkit.completion import Completer
+from prompt_toolkit.key_binding import KeyBindings
+
+from myagent.cli.layout import AgentLayoutController
 
 logger = logging.getLogger("myagent.cli.repl")
 
@@ -180,6 +183,8 @@ class REPLEngine:
         config=None,
         project_dir: Path | None = None,
         renderer=None,
+        status_pane=None,
+        status_model=None,
         status_bar=None,
         dream_engine=None,
     ):
@@ -189,23 +194,184 @@ class REPLEngine:
         self._config = config
         self._project_dir = project_dir or Path.cwd()
         self._renderer = renderer
-        self._status_bar = status_bar
+        self._status_pane = status_pane if status_pane is not None else status_bar
+        self._status_model = (
+            status_model
+            if status_model is not None
+            else getattr(self._status_pane, "status_model", None)
+        )
+        self._status_bar = status_bar if status_bar is not None else self._status_pane
+        if (
+            self._status_pane is not None
+            and self._status_model is not None
+            and hasattr(self._status_pane, "status_model")
+            and getattr(self._status_pane, "status_model", None) is None
+        ):
+            self._status_pane.status_model = self._status_model
         self._dream_engine = dream_engine
         self._running = False
         self._current_session = None
-        self._console = None
+        self._console = self._create_console() if self._status_pane else None
         self._live = None
+        self._layout_controller = self._create_layout_controller()
         self._output_lines: list[str] = []
+        self._dream_checker_task = None
+        self._tool_call_names: dict[str, str] = {}
         # Skill name to inject into the next engine run (gap-2-01).
         self._active_skill: str | None = None
+
+    def _create_console(self):
+        from rich.console import Console
+
+        return Console()
+
+    def _create_layout_controller(self):
+        if self._status_pane is None:
+            return None
+        if self._console is None:
+            self._console = self._create_console()
+        return AgentLayoutController(
+            self._console,
+            self._status_pane,
+            self._status_config(),
+        )
+
+    def _status_config(self):
+        return getattr(self._config, "ui", self._config)
+
+    def _build_key_bindings(self):
+        """Build testable prompt key bindings for REPL-only actions."""
+
+        kb = KeyBindings()
+        self._bind_inspector_toggle(kb)
+        return kb
+
+    def _bind_inspector_toggle(self, kb) -> None:
+        @kb.add("c-i")
+        def _(event):
+            """Toggle the inspector pane without changing the prompt buffer."""
+            self._toggle_inspector()
+
+    def _toggle_inspector(self) -> None:
+        """Toggle the inspector pane and refresh the layout."""
+
+        if self._layout_controller is None:
+            return
+        self._layout_controller.toggle_inspector()
+        self._layout_controller.refresh()
+
+    def _update_status_from_event(self, event) -> None:
+        """Update the runtime status model and legacy status pane from an event."""
+
+        event_type = type(event).__name__
+        if event_type == "Done":
+            self._update_token_status(getattr(event, "usage", None))
+        elif event_type == "ToolCallStart":
+            self._handle_tool_start(event)
+        elif event_type == "ToolCallEnd":
+            self._handle_tool_end(event)
+        elif event_type == "AskUserQuestion":
+            self._update_goal_waiting()
+        elif event_type == "Error":
+            self._update_health_error(getattr(event, "message", "Error"))
+        elif event_type == "Interrupted":
+            self._update_health_error("Interrupted")
+
+        if self._layout_controller:
+            self._layout_controller.refresh()
+
+    def _update_token_status(self, usage) -> None:
+        if usage is None:
+            return
+
+        prompt_tokens = getattr(usage, "prompt_tokens", None)
+        completion_tokens = getattr(usage, "completion_tokens", None)
+        total_tokens = getattr(usage, "total_tokens", None)
+        if total_tokens is None:
+            total_tokens = (prompt_tokens or 0) + (completion_tokens or 0)
+
+        if self._status_model:
+            token_updates = {
+                "turn_total": total_tokens,
+                "session_total": total_tokens,
+            }
+            if prompt_tokens is not None:
+                token_updates["prompt_tokens"] = prompt_tokens
+            if completion_tokens is not None:
+                token_updates["completion_tokens"] = completion_tokens
+            self._status_model.update_tokens(**token_updates)
+
+        if self._status_bar and hasattr(self._status_bar, "update"):
+            self._status_bar.update(tokens=total_tokens)
+
+    def _handle_tool_start(self, event) -> None:
+        name = getattr(event, "name", "")
+        call_id = getattr(event, "call_id", "")
+        if not name:
+            return
+        if call_id:
+            self._tool_call_names[call_id] = name
+        if self._status_model:
+            self._status_model.update_tool(name, status="running")
+        self._update_legacy_status_bar(
+            current_tool=name,
+            tool_status="running",
+            tool_result_summary="",
+        )
+
+    def _handle_tool_end(self, event) -> None:
+        call_id = getattr(event, "call_id", "")
+        name = self._tool_call_names.get(call_id, call_id)
+        if not name:
+            return
+        result = getattr(event, "result", None)
+        error = getattr(result, "error", None)
+        output = getattr(result, "output", "")
+        status = "failed" if error else "completed"
+        summary = self._short_status_summary(error or output)
+        if self._status_model:
+            self._status_model.update_tool(
+                name,
+                status=status,
+                last_result_summary=summary,
+            )
+        self._update_legacy_status_bar(
+            current_tool=name,
+            tool_status=status,
+            tool_result_summary=summary,
+        )
+
+    def _update_goal_waiting(self) -> None:
+        if self._status_model:
+            self._status_model.update_goal(active=True, waiting_for_user=True)
+        self._update_legacy_status_bar(
+            goal_active=True,
+            goal_waiting_for_user=True,
+        )
+
+    def _update_health_error(self, message: str) -> None:
+        summary = self._short_status_summary(message)
+        if self._status_model:
+            self._status_model.update_health(last_error=summary)
+        self._update_legacy_status_bar(last_error=summary)
+
+    def _update_legacy_status_bar(self, **kwargs) -> None:
+        if self._status_bar and hasattr(self._status_bar, "update"):
+            self._status_bar.update(**kwargs)
+
+    def _short_status_summary(self, value, max_chars: int = 200) -> str:
+        text = " ".join(str(value or "").split())
+        if len(text) <= max_chars:
+            return text
+        return text[: max_chars - 3].rstrip() + "..."
 
     async def run(self) -> None:
         """Start the REPL loop."""
         self._running = True
 
         # Initialize Rich console for renderer output
-        from rich.console import Console
-        self._console = Console()
+        if self._console is None:
+            self._console = self._create_console()
 
         # Start session
         if self._session_mgr and self._current_session is None:
@@ -249,8 +415,10 @@ class REPLEngine:
         self._console.print("MyAgentCLI — Type /help for commands, Ctrl+D to exit.")
         self._console.print(f"Project: [bold]{self._project_dir.name}[/bold]")
 
-        # Show initial status bar as a one-time render (not Live)
-        if self._status_bar:
+        # Show initial status pane as a one-time render (not Live)
+        if self._layout_controller:
+            self._layout_controller.render_once()
+        elif self._status_bar:
             try:
                 status_renderable = self._status_bar.get_renderable()
                 if status_renderable:
@@ -269,7 +437,6 @@ class REPLEngine:
         try:
             from prompt_toolkit import PromptSession
             from prompt_toolkit.history import FileHistory
-            from prompt_toolkit.key_binding import KeyBindings
 
             history_file = Path.home() / ".myagent" / ".history"
             history_file.parent.mkdir(parents=True, exist_ok=True)
@@ -302,6 +469,8 @@ class REPLEngine:
             def _(event):
                 """Alt+Enter / Esc+Enter inserts a newline."""
                 event.current_buffer.insert_text("\n")
+
+            self._bind_inspector_toggle(kb)
 
             # Build completer (gap-2-05)
             skill_registry = (
@@ -500,11 +669,7 @@ class REPLEngine:
                 async for event in self._engine.run(
                     text, self._current_session, active_skill=active_skill
                 ):
-                    # G5: Update status bar with live token count from Done events
-                    if type(event).__name__ == "Done":
-                        usage = getattr(event, 'usage', None)
-                        if usage and hasattr(usage, 'total_tokens') and self._status_bar:
-                            self._status_bar.update(tokens=usage.total_tokens)
+                    self._update_status_from_event(event)
                     if self._renderer:
                         rendered = self._renderer.render_event(event)
                         if rendered:
@@ -658,6 +823,10 @@ class REPLEngine:
 
     def _output_to_console(self, text: str, end: str = "\n") -> None:
         """Route output through the shared Live layout or plain console (gap-2-07)."""
+        if self._layout_controller:
+            self._layout_controller.append_output(text, end=end)
+            return
+
         if self._live:
             from rich.panel import Panel
             try:
@@ -694,6 +863,31 @@ class REPLEngine:
 
     def _render_event_fallback(self, event) -> None:
         """Fallback renderer when no Rich Renderer is wired."""
+        event_type = type(event).__name__
+        if event_type == "TextChunk":
+            self._output_to_console(getattr(event, "content", ""), end="")
+            return
+        if event_type == "ThinkingChunk":
+            return
+        if event_type == "ToolCallStart":
+            self._output_to_console(f"\nTool: {event.name}...", end="")
+            return
+        if event_type == "ToolCallEnd":
+            if event.result.error:
+                self._output_to_console(f" failed: {event.result.error}")
+            else:
+                self._output_to_console(" done")
+            return
+        if event_type == "Done":
+            self._output_to_console("")
+            return
+        if event_type == "Error":
+            self._output_to_console(f"\nError: {event.message}")
+            return
+        if event_type == "Interrupted":
+            self._output_to_console("\n[Interrupted]")
+            return
+
         match type(event).__name__:
             case "TextChunk":
                 print(event.content, end="", flush=True)
@@ -781,10 +975,12 @@ class REPLEngine:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._dream_checker_task
 
-        # Stop shared Live layout (gap-2-07)
-        if self._live:
+        # Stop shared layout (gap-2-07)
+        if self._layout_controller:
+            self._layout_controller.stop()
+        elif self._live:
             self._live.stop()
-            self._live = None
+        self._live = None
 
         # End session
         if self._session_mgr and self._current_session:
