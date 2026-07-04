@@ -42,6 +42,21 @@ class FakeConsole:
         self.calls.append((args, kwargs))
 
 
+class FakeSessionManager:
+    def __init__(self, session):
+        self.session_store = None
+        self.session = session
+        self.started_project_dir = None
+        self.ended_session = None
+
+    async def start_new(self, project_dir):
+        self.started_project_dir = project_dir
+        return self.session
+
+    async def end_session(self, session):
+        self.ended_session = session
+
+
 class SpyLayoutController:
     instances = []
 
@@ -416,6 +431,67 @@ def test_status_update_merges_context_goal_health_and_tokens(layout_spy):
     assert snapshot.health.retry_info == "retry 1/3"
 
 
+def test_sync_status_from_session_updates_session_id_and_goal(layout_spy):
+    model = RuntimeStatusModel()
+    repl = REPLEngine(status_pane=FakeStatusPane(), status_model=model)
+    session = SimpleNamespace(
+        id="2026-07-04-real",
+        goal="ship inspector pane",
+        goal_achieved=None,
+    )
+
+    repl._sync_status_from_session(session)
+
+    snapshot = model.snapshot()
+    assert snapshot.session.session_id == "2026-07-04-real"
+    assert snapshot.goal.name == "ship inspector pane"
+    assert snapshot.goal.active is True
+    assert snapshot.goal.achieved is False
+    assert snapshot.goal.waiting_for_user is False
+
+
+@pytest.mark.asyncio
+async def test_run_start_new_syncs_real_session_id(
+    layout_spy,
+    monkeypatch,
+    tmp_path,
+):
+    class FakePromptSession:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def prompt_async(self, *args, **kwargs):
+            raise EOFError
+
+    monkeypatch.setattr("prompt_toolkit.PromptSession", FakePromptSession)
+    monkeypatch.setattr(
+        repl_module.Path,
+        "home",
+        classmethod(lambda cls: tmp_path),
+    )
+    session = SimpleNamespace(
+        id="2026-07-04-started",
+        project_name="Project",
+        project_hash="hash123",
+        goal=None,
+    )
+    session_mgr = FakeSessionManager(session)
+    model = RuntimeStatusModel()
+    project_dir = tmp_path / "Project"
+    repl = REPLEngine(
+        session_mgr=session_mgr,
+        status_pane=FakeStatusPane(),
+        status_model=model,
+        project_dir=project_dir,
+    )
+
+    await repl.run()
+
+    assert session_mgr.started_project_dir == project_dir
+    assert session_mgr.ended_session is session
+    assert model.snapshot().session.session_id == "2026-07-04-started"
+
+
 def test_done_event_updates_runtime_status_tokens(layout_spy):
     model = RuntimeStatusModel()
     repl = REPLEngine(status_pane=FakeStatusPane(), status_model=model)
@@ -429,6 +505,24 @@ def test_done_event_updates_runtime_status_tokens(layout_spy):
     assert snapshot.tokens.completion_tokens == 50
     assert snapshot.tokens.turn_total == 150
     assert snapshot.tokens.session_total == 150
+
+
+def test_done_event_accumulates_session_token_total(layout_spy):
+    model = RuntimeStatusModel()
+    repl = REPLEngine(status_pane=FakeStatusPane(), status_model=model)
+
+    repl._update_status_from_event(
+        Done(usage=Usage(prompt_tokens=100, completion_tokens=50, total_tokens=150))
+    )
+    repl._update_status_from_event(
+        Done(usage=Usage(prompt_tokens=120, completion_tokens=80, total_tokens=200))
+    )
+
+    snapshot = model.snapshot()
+    assert snapshot.tokens.prompt_tokens == 120
+    assert snapshot.tokens.completion_tokens == 80
+    assert snapshot.tokens.turn_total == 200
+    assert snapshot.tokens.session_total == 350
 
 
 def test_tool_call_start_marks_current_tool_running(layout_spy):

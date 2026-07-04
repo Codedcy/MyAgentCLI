@@ -220,6 +220,7 @@ class REPLEngine:
         self._output_lines: list[str] = []
         self._dream_checker_task = None
         self._tool_call_names: dict[str, str] = {}
+        self._done_usage_session_total: int | None = None
         # Skill name to inject into the next engine run (gap-2-01).
         self._active_skill: str | None = None
 
@@ -325,6 +326,8 @@ class REPLEngine:
             )
             if self._status_model and token_updates:
                 self._status_model.update_tokens(**token_updates)
+            if "session_total" in token_updates:
+                self._done_usage_session_total = int(token_updates["session_total"])
             legacy_total = token_updates.get(
                 "session_total",
                 token_updates.get("turn_total"),
@@ -389,11 +392,13 @@ class REPLEngine:
         total_tokens = getattr(usage, "total_tokens", None)
         if total_tokens is None:
             total_tokens = (prompt_tokens or 0) + (completion_tokens or 0)
+        turn_total = int(total_tokens or 0)
+        session_total = self._accumulate_done_usage_total(turn_total)
 
         if self._status_model:
             token_updates = {
-                "turn_total": total_tokens,
-                "session_total": total_tokens,
+                "turn_total": turn_total,
+                "session_total": session_total,
             }
             if prompt_tokens is not None:
                 token_updates["prompt_tokens"] = prompt_tokens
@@ -402,7 +407,16 @@ class REPLEngine:
             self._status_model.update_tokens(**token_updates)
 
         if self._status_bar and hasattr(self._status_bar, "update"):
-            self._status_bar.update(tokens=total_tokens)
+            self._status_bar.update(tokens=session_total)
+
+    def _accumulate_done_usage_total(self, turn_total: int) -> int:
+        if self._done_usage_session_total is None:
+            existing_total = 0
+            if self._status_model:
+                existing_total = self._status_model.snapshot().tokens.session_total
+            self._done_usage_session_total = int(existing_total or 0)
+        self._done_usage_session_total += turn_total
+        return self._done_usage_session_total
 
     def _handle_tool_start(self, event) -> None:
         name = getattr(event, "name", "")
@@ -465,6 +479,30 @@ class REPLEngine:
             return text
         return text[: max_chars - 3].rstrip() + "..."
 
+    def _sync_status_from_session(self, session) -> None:
+        if not self._status_model or session is None:
+            return
+
+        session_id = getattr(session, "id", "")
+        if session_id:
+            self._status_model.update_session(session_id=session_id)
+
+        goal = getattr(session, "goal", None)
+        if goal:
+            achieved = bool(getattr(session, "goal_achieved", False))
+            self._status_model.update_goal(
+                name=goal,
+                active=not achieved,
+                achieved=achieved,
+                waiting_for_user=False,
+            )
+            self._update_legacy_status_bar(
+                goal_name=goal,
+                goal_active=not achieved,
+                goal_achieved=achieved,
+                goal_waiting_for_user=False,
+            )
+
     async def run(self) -> None:
         """Start the REPL loop."""
         self._running = True
@@ -497,6 +535,8 @@ class REPLEngine:
                     self._current_session.id,
                 )
                 reset_task_list(persist_path=sess_dir / "tasks.json")
+
+        self._sync_status_from_session(self._current_session)
 
         # G4: Start periodic dream trigger checker for long-running sessions
         self._dream_checker_task = None

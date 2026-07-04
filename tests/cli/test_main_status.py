@@ -111,6 +111,36 @@ def test_build_status_components_uses_status_pane_enabled_over_legacy_flag(
     assert isinstance(status_pane, AgentInspectorPane)
 
 
+def test_sync_status_model_session_sets_session_id_and_restored_goal():
+    status_model = RuntimeStatusModel()
+    session = SimpleNamespace(
+        id="2026-07-04-resumed",
+        goal="restore task",
+        goal_achieved=None,
+    )
+
+    cli_main._sync_status_model_session(status_model, session)
+
+    snapshot = status_model.snapshot()
+    assert snapshot.session.session_id == "2026-07-04-resumed"
+    assert snapshot.goal.name == "restore task"
+    assert snapshot.goal.active is True
+    assert snapshot.goal.achieved is False
+    assert snapshot.goal.waiting_for_user is False
+
+
+def test_sync_status_model_goal_marks_cli_goal_active():
+    status_model = RuntimeStatusModel()
+
+    cli_main._sync_status_model_goal(status_model, "cli goal")
+
+    snapshot = status_model.snapshot()
+    assert snapshot.goal.name == "cli goal"
+    assert snapshot.goal.active is True
+    assert snapshot.goal.achieved is False
+    assert snapshot.goal.waiting_for_user is False
+
+
 def test_extract_task_name_uses_first_line_and_twenty_char_truncation():
     assert cli_main._extract_task_name("Short task\nignored line") == "Short task"
     assert (

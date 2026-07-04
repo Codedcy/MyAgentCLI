@@ -80,6 +80,43 @@ def _build_status_components(
     return status_model, status_pane
 
 
+def _sync_status_model_session(status_model: RuntimeStatusModel, session) -> None:
+    """Copy known session metadata into the runtime status model."""
+
+    if status_model is None or session is None:
+        return
+
+    session_id = getattr(session, "id", "")
+    if session_id:
+        status_model.update_session(session_id=session_id)
+
+    _sync_status_model_goal(
+        status_model,
+        getattr(session, "goal", None),
+        achieved=getattr(session, "goal_achieved", None),
+    )
+
+
+def _sync_status_model_goal(
+    status_model: RuntimeStatusModel,
+    goal: str | None,
+    *,
+    achieved: bool | None = None,
+) -> None:
+    """Mark an initial CLI or restored session goal in runtime status."""
+
+    if status_model is None or not goal:
+        return
+
+    achieved_flag = bool(achieved)
+    status_model.update_goal(
+        name=goal,
+        active=not achieved_flag,
+        achieved=achieved_flag,
+        waiting_for_user=False,
+    )
+
+
 def _wire_subagent_status(subagent_pool, status_model: RuntimeStatusModel) -> None:
     """Wire sub-agent lifecycle callbacks into the runtime status model."""
     if getattr(subagent_pool, "_status_model_wired", False):
@@ -323,6 +360,7 @@ async def async_main(argv: list[str] | None = None) -> int:
     goal_tracker = GoalTracker(llm=llm)
     if args.goal:
         goal_tracker.set_goal(args.goal)
+        _sync_status_model_goal(status_model, args.goal)
 
     from myagent.agent.engine import AgentEngine
     engine = AgentEngine(
@@ -378,9 +416,15 @@ async def async_main(argv: list[str] | None = None) -> int:
             # Wire session into sub-agent pool so transcripts are persisted
             # and the counter is advanced past existing sub-agent IDs (gap-r14-04)
             subagent_pool.set_session(session, session_store)
+            _sync_status_model_session(status_model, session)
             # Restore goal from resumed session (gap-18-07)
             if session.goal:
                 goal_tracker.set_goal(session.goal)
+                _sync_status_model_goal(
+                    status_model,
+                    session.goal,
+                    achieved=getattr(session, "goal_achieved", None),
+                )
                 import logging
                 logging.getLogger("myagent.cli").info(
                     "Goal restored from resumed session: %s", session.goal[:100],

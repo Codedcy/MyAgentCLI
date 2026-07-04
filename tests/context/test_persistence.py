@@ -1,10 +1,9 @@
 """Tests for SessionStore."""
 
-from datetime import datetime
+import json
 
 import pytest
 
-from myagent.context.builder import Message
 from myagent.context.persistence import SessionStore
 
 
@@ -58,3 +57,78 @@ class TestSessionStore:
         assert record.category == "error"
         assert record.component == "agent"
         assert record.context == "session_list_read_transcript"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("payload", [[], "oops", 123])
+    async def test_list_sessions_skips_non_object_transcripts(
+        self,
+        tmp_path,
+        caplog,
+        payload,
+    ):
+        store = SessionStore(base_dir=tmp_path / "sessions")
+        valid = await store.create_session("test", "hash004")
+        bad_dir = (
+            tmp_path
+            / "sessions"
+            / "test"
+            / "hash004"
+            / f"2026-07-03-{type(payload).__name__}"
+        )
+        bad_dir.mkdir(parents=True)
+        (bad_dir / "transcript.json").write_text(
+            json.dumps(payload),
+            encoding="utf-8",
+        )
+
+        summaries = await store.list_sessions("test", "hash004")
+
+        assert [summary.session_id for summary in summaries] == [valid.id]
+        record = next(
+            record
+            for record in caplog.records
+            if getattr(record, "context", "") == "session_list_invalid_transcript"
+        )
+        assert record.category == "error"
+        assert record.component == "agent"
+        assert record.transcript_path == str(bad_dir / "transcript.json")
+
+    @pytest.mark.asyncio
+    async def test_list_sessions_skips_transcript_with_wrong_field_types(
+        self,
+        tmp_path,
+        caplog,
+    ):
+        store = SessionStore(base_dir=tmp_path / "sessions")
+        valid = await store.create_session("test", "hash005")
+        bad_dir = (
+            tmp_path
+            / "sessions"
+            / "test"
+            / "hash005"
+            / "2026-07-03-wrong-types"
+        )
+        bad_dir.mkdir(parents=True)
+        (bad_dir / "transcript.json").write_text(
+            json.dumps(
+                {
+                    "session_id": ["not", "a", "string"],
+                    "created_at": "2026-07-03T00:00:00",
+                    "first_message": {"not": "text"},
+                    "duration": "soon",
+                    "total_tokens": "many",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        summaries = await store.list_sessions("test", "hash005")
+
+        assert [summary.session_id for summary in summaries] == [valid.id]
+        record = next(
+            record
+            for record in caplog.records
+            if getattr(record, "context", "") == "session_list_invalid_transcript"
+        )
+        assert record.category == "error"
+        assert record.component == "agent"

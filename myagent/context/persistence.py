@@ -144,24 +144,9 @@ class SessionStore:
                 if ts.exists():
                     try:
                         data = json.loads(ts.read_text(encoding="utf-8"))
-                        duration = data.get("duration", 0)
-                        closed = data.get("closed", False)
-                        created_at = datetime.fromisoformat(
-                            data.get("created_at", "2026-01-01T00:00:00")
-                        )
-                        # gap-8-10: compute live duration for open sessions
-                        if duration == 0 and not closed:
-                            duration = (datetime.now() - created_at).total_seconds()
-                        summaries.append(
-                            SessionSummary(
-                                session_id=data.get("session_id", d.name),
-                                created_at=created_at,
-                                first_message=data.get("first_message", ""),
-                                duration=duration,
-                                total_tokens=data.get("total_tokens", 0),
-                                goal_achieved=data.get("goal_achieved"),
-                            )
-                        )
+                        summary = self._summary_from_transcript(d, ts, data)
+                        if summary is not None:
+                            summaries.append(summary)
                     except (json.JSONDecodeError, OSError, TypeError, ValueError):
                         logger.exception(
                             "Failed to read session transcript while listing sessions",
@@ -174,6 +159,78 @@ class SessionStore:
                         )
                         continue
         return summaries
+
+    def _summary_from_transcript(
+        self,
+        session_dir: Path,
+        transcript_path: Path,
+        data,
+    ) -> SessionSummary | None:
+        if not isinstance(data, dict):
+            self._log_invalid_session_transcript(transcript_path, "top_level_not_object")
+            return None
+
+        session_id = data.get("session_id", session_dir.name)
+        first_message = data.get("first_message", "")
+        duration = data.get("duration", 0)
+        total_tokens = data.get("total_tokens", 0)
+        closed = data.get("closed", False)
+        created_at_raw = data.get("created_at", "2026-01-01T00:00:00")
+        goal_achieved = data.get("goal_achieved")
+
+        if not isinstance(session_id, str):
+            self._log_invalid_session_transcript(transcript_path, "session_id_not_string")
+            return None
+        if not isinstance(first_message, str):
+            self._log_invalid_session_transcript(transcript_path, "first_message_not_string")
+            return None
+        if not self._is_number(duration):
+            self._log_invalid_session_transcript(transcript_path, "duration_not_number")
+            return None
+        if not self._is_number(total_tokens):
+            self._log_invalid_session_transcript(transcript_path, "total_tokens_not_number")
+            return None
+        if not isinstance(closed, bool):
+            self._log_invalid_session_transcript(transcript_path, "closed_not_bool")
+            return None
+        if not isinstance(created_at_raw, str):
+            self._log_invalid_session_transcript(transcript_path, "created_at_not_string")
+            return None
+        if goal_achieved is not None and not isinstance(goal_achieved, bool):
+            self._log_invalid_session_transcript(transcript_path, "goal_achieved_not_bool")
+            return None
+
+        created_at = datetime.fromisoformat(created_at_raw)
+        # gap-8-10: compute live duration for open sessions
+        if duration == 0 and not closed:
+            duration = (datetime.now() - created_at).total_seconds()
+        return SessionSummary(
+            session_id=session_id,
+            created_at=created_at,
+            first_message=first_message,
+            duration=float(duration),
+            total_tokens=int(total_tokens),
+            goal_achieved=goal_achieved,
+        )
+
+    def _log_invalid_session_transcript(
+        self,
+        transcript_path: Path,
+        reason: str,
+    ) -> None:
+        logger.error(
+            "Invalid session transcript while listing sessions",
+            extra={
+                "category": "error",
+                "component": "agent",
+                "context": "session_list_invalid_transcript",
+                "transcript_path": str(transcript_path),
+                "reason": reason,
+            },
+        )
+
+    def _is_number(self, value) -> bool:
+        return isinstance(value, int | float) and not isinstance(value, bool)
 
     async def load_session(
         self, project_name: str, project_hash: str, session_id: str
