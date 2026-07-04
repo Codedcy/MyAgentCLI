@@ -847,6 +847,7 @@ class REPLEngine:
                 on_exit=self._handle_chat_exit,
                 on_interrupt=self._handle_chat_interrupt,
             )
+            self._chat_submission_cancel_requested = True
             await self._drain_chat_submission_tasks(cancel=False)
         except Exception as exc:
             logger.exception(
@@ -1191,13 +1192,15 @@ class REPLEngine:
                     )
                     if confirm and confirm.strip().lower() in ("y", "yes", ""):
                         await self.process_input("continue")
-                except Exception:
+                except Exception as exc:
                     logger.exception(
                         "Stream interruption follow-up prompt failed",
                         extra={
                             "category": "error",
                             "component": "agent",
                             "context": "cli_stream_interruption_prompt",
+                            "exception_type": type(exc).__name__,
+                            "traceback": traceback.format_exc(),
                         },
                     )
 
@@ -1217,13 +1220,15 @@ class REPLEngine:
                         )
                         # Send "continue" to let the agent auto-decide
                         await self.process_input("continue")
-                except Exception:
+                except Exception as exc:
                     logger.exception(
                         "Ask-user prompt failed; auto-deciding",
                         extra={
                             "category": "error",
                             "component": "agent",
                             "context": "cli_ask_user_prompt",
+                            "exception_type": type(exc).__name__,
+                            "traceback": traceback.format_exc(),
                         },
                     )
                     self._output_system_message(

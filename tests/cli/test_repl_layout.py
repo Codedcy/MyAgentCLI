@@ -19,6 +19,7 @@ from myagent.agent.engine import (
     Done,
     Error,
     Interrupted,
+    IntentSignal,
     StatusUpdate,
     TextChunk,
     ToolCallEnd,
@@ -1023,6 +1024,62 @@ async def test_chat_loop_waits_for_background_submission_before_normal_exit():
 
 
 @pytest.mark.asyncio
+async def test_chat_loop_skips_followups_for_background_submission_after_normal_exit():
+    class AskThenCompleteEngine:
+        def __init__(self):
+            self.interrupt_event = SimpleNamespace(clear=lambda: None)
+            self.question_yielded = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def run(self, text, session, active_skill=None):
+            yield AskUserQuestion(question="Need input?")
+            self.question_yielded.set()
+            await self.release.wait()
+            yield Done()
+
+    class NormalExitBeforeFollowupChat(FakeChatWindowController):
+        def __init__(self):
+            super().__init__()
+            self.submission_task = None
+
+        async def run(self, on_submit, on_exit=None, on_interrupt=None):
+            self.is_running = True
+            self.submission_task = asyncio.create_task(on_submit("ask"))
+            await asyncio.wait_for(engine.question_yielded.wait(), timeout=1.0)
+            self.is_running = False
+            if on_exit:
+                result = on_exit()
+                if hasattr(result, "__await__"):
+                    await result
+
+        async def ask(self, prompt, timeout):
+            self.ask_calls.append((prompt, timeout))
+            await asyncio.Event().wait()
+            return None
+
+    engine = AskThenCompleteEngine()
+    chat = NormalExitBeforeFollowupChat()
+    repl = REPLEngine(
+        chat_window_controller=chat,
+        engine=engine,
+        renderer=Renderer(),
+    )
+    repl._current_session = SimpleNamespace(id="session-1")
+    repl._console = FakeConsole()
+
+    run_task = asyncio.create_task(repl._run_chat_window_loop())
+    await asyncio.wait_for(engine.question_yielded.wait(), timeout=1.0)
+    engine.release.set()
+
+    await asyncio.wait_for(run_task, timeout=0.5)
+
+    assert chat.ask_calls == []
+    assert chat.submission_task is not None
+    assert chat.submission_task.done()
+    assert repl._chat_submission_tasks == set()
+
+
+@pytest.mark.asyncio
 async def test_chat_crash_cancels_background_submission_before_prompt_fallback(
     monkeypatch,
     caplog,
@@ -1286,7 +1343,42 @@ async def test_ask_timeout_routes_system_message_to_chat_without_console():
 
 
 @pytest.mark.asyncio
-async def test_ask_failure_routes_system_message_to_chat_without_console():
+async def test_stream_interruption_followup_logs_exception_metadata(caplog):
+    class StreamInterruptedEngine:
+        def __init__(self):
+            self.interrupt_event = SimpleNamespace(clear=lambda: None)
+
+        async def run(self, text, session, active_skill=None):
+            yield IntentSignal(intent="continue")
+            yield Done()
+
+    chat = FakeChatWindowController()
+    repl = active_chat_repl(
+        chat,
+        engine=StreamInterruptedEngine(),
+        renderer=Renderer(),
+    )
+    repl._current_session = SimpleNamespace(id="session-1")
+
+    async def fail_prompt(prompt_text, timeout):
+        raise RuntimeError("stream follow-up failed")
+
+    repl._prompt_with_timeout = fail_prompt
+
+    with caplog.at_level(logging.ERROR, logger="myagent.cli.repl"):
+        await repl.process_input("resume stream")
+
+    record = next(
+        record
+        for record in caplog.records
+        if getattr(record, "context", "") == "cli_stream_interruption_prompt"
+    )
+    assert record.exception_type == "RuntimeError"
+    assert "stream follow-up failed" in record.traceback
+
+
+@pytest.mark.asyncio
+async def test_ask_failure_routes_system_message_to_chat_without_console(caplog):
     class AskFailureEngine:
         def __init__(self):
             self.interrupt_event = SimpleNamespace(clear=lambda: None)
@@ -1304,13 +1396,21 @@ async def test_ask_failure_routes_system_message_to_chat_without_console():
     repl._current_session = SimpleNamespace(id="session-1")
     repl._console = FakeConsole()
 
-    await repl.process_input("ask")
+    with caplog.at_level(logging.ERROR, logger="myagent.cli.repl"):
+        await repl.process_input("ask")
 
     assert repl._console.calls == []
     assert any(
         "Timeout; agent will auto-decide." in message
         for message in chat.system_calls
     )
+    record = next(
+        record
+        for record in caplog.records
+        if getattr(record, "context", "") == "cli_ask_user_prompt"
+    )
+    assert record.exception_type == "RuntimeError"
+    assert "ask failed" in record.traceback
 
 
 @pytest.mark.asyncio
