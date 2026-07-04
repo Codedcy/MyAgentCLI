@@ -7,6 +7,7 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
 from rich.console import Console
 
+import myagent.cli.layout as layout_module
 import myagent.cli.repl as repl_module
 from myagent.agent.engine import (
     AskUserQuestion,
@@ -18,6 +19,7 @@ from myagent.agent.engine import (
     ToolCallStart,
 )
 from myagent.agent.runtime_status import RuntimeStatusModel
+from myagent.cli.renderer import Renderer
 from myagent.cli.repl import REPLEngine
 from myagent.cli.status import AgentInspectorPane
 from myagent.config.schema import StatusPaneConfig
@@ -74,6 +76,27 @@ class SpyLayoutController:
     def toggle_inspector(self):
         self.toggle_calls += 1
         return self.toggle_calls % 2 == 1
+
+
+class FakeLive:
+    def __init__(self, renderable, *, console, refresh_per_second=10, transient=False):
+        self.renderable = renderable
+        self.console = console
+        self.refresh_per_second = refresh_per_second
+        self.transient = transient
+        self.started = False
+        self.stop_calls = 0
+        self.updates = []
+
+    def start(self):
+        self.started = True
+
+    def stop(self):
+        self.stop_calls += 1
+        self.started = False
+
+    def update(self, renderable):
+        self.updates.append(renderable)
 
 
 @pytest.fixture
@@ -209,6 +232,37 @@ async def test_process_input_uses_live_layout_for_streaming_chunks(layout_spy):
     assert controller.stop_calls == 1
     assert controller.append_calls == [("hel", ""), ("lo", ""), ("", "\n"), ("", "\n")]
     assert controller.render_once_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_process_input_preserves_renderer_panel_output(monkeypatch):
+    console = Console(record=True, width=140, height=40)
+    monkeypatch.setattr(REPLEngine, "_create_console", lambda _self: console)
+    monkeypatch.setattr(layout_module, "Live", FakeLive)
+    engine = FakeStreamingEngine(
+        [
+            ToolCallStart(name="read", call_id="call-1"),
+            Done(),
+        ]
+    )
+    model = RuntimeStatusModel()
+    config = StatusPaneConfig(width=34, collapse_below_columns=80)
+    pane = AgentInspectorPane(config, status_model=model)
+    repl = REPLEngine(
+        engine=engine,
+        renderer=Renderer(),
+        status_pane=pane,
+        status_model=model,
+        config=config,
+    )
+    repl._current_session = SimpleNamespace(id="session-1")
+
+    await repl.process_input("use a tool")
+    repl._layout_controller.render_once()
+
+    text = console.export_text(styles=False)
+    assert "Tool: read" in text
+    assert "<rich.panel.Panel object" not in text
 
 
 def test_done_event_updates_runtime_status_tokens(layout_spy):

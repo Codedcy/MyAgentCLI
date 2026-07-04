@@ -242,6 +242,20 @@ def test_append_output_streaming_chunks_merge_into_one_line():
     assert controller.layout["output"].renderable.renderable.plain == "hello"
 
 
+def test_append_output_preserves_rich_renderables():
+    from rich.panel import Panel
+
+    controller, console = build_controller(width=160)
+
+    controller.append_output(Panel("tool body", title="Tool Panel"))
+    controller.render_once()
+
+    text = console.export_text(styles=False)
+    assert "Tool Panel" in text
+    assert "tool body" in text
+    assert "<rich.panel.Panel object" not in text
+
+
 def test_constructor_defers_initial_refresh_until_needed():
     class SpyStatusPane:
         def __init__(self):

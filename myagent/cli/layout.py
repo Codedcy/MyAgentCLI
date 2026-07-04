@@ -6,6 +6,7 @@ import logging
 import re
 from typing import TYPE_CHECKING, Any
 
+from rich.console import Group
 from rich.layout import Layout
 from rich.live import Live
 from rich.panel import Panel
@@ -32,7 +33,7 @@ class AgentLayoutController:
         self.layout.split_row(self._output_layout, self._status_layout)
         self._live: Any | None = None
         self._live_failed = False
-        self._output_lines: list[str] = []
+        self._output_lines: list[Any] = []
         self._line_open = False
         self._inspector_expanded = bool(getattr(status_pane, "_expanded", True))
 
@@ -76,11 +77,11 @@ class AgentLayoutController:
                 },
             )
 
-    def append_output(self, text: str, end: str = "\n") -> None:
+    def append_output(self, text: Any, end: str = "\n") -> None:
         """Append streamed output text to the output buffer."""
 
         use_direct_fallback = self._live_failed and self._live is None
-        self._append_payload(f"{text}{end}")
+        self._append_output_item(text, end=end)
         self._trim_output_lines()
         self.refresh()
         if use_direct_fallback:
@@ -154,11 +155,40 @@ class AgentLayoutController:
                 self._output_lines.append(line)
             self._line_open = not has_line_break
 
+    def _append_output_item(self, item: Any, end: str = "\n") -> None:
+        if isinstance(item, str):
+            self._append_payload(f"{item}{end}")
+            return
+        if isinstance(item, Text):
+            self._append_payload(f"{item.plain}{end}")
+            return
+        if isinstance(item, list | tuple):
+            for nested_item in item:
+                self._append_output_item(nested_item, end="\n")
+            return
+
+        self._line_open = False
+        self._output_lines.append(item)
+        if end not in {"", "\n"}:
+            self._append_payload(end)
+
     def _trim_output_lines(self) -> None:
         if len(self._output_lines) > 500:
             self._output_lines = self._output_lines[-300:]
 
     def _output_renderable(self) -> Panel:
+        if not all(isinstance(line, str) for line in self._output_lines):
+            return Panel(
+                Group(
+                    *(
+                        Text(self._sanitize_output_text(line))
+                        if isinstance(line, str)
+                        else line
+                        for line in self._output_lines
+                    )
+                ),
+                title="Output",
+            )
         return Panel(
             Text(self._sanitize_output_text("\n".join(self._output_lines))),
             title="Output",
@@ -237,8 +267,13 @@ class AgentLayoutController:
         text = ANSI_PATTERN.sub("", text)
         return OUTPUT_CONTROL_PATTERN.sub("", text)
 
-    def _print_direct(self, text: str, end: str = "\n") -> None:
-        self.console.print(Text(self._sanitize_output_text(text)), end=end)
+    def _print_direct(self, text: Any, end: str = "\n") -> None:
+        if isinstance(text, str):
+            self.console.print(Text(self._sanitize_output_text(text)), end=end)
+        elif isinstance(text, Text):
+            self.console.print(Text(self._sanitize_output_text(text.plain)), end=end)
+        else:
+            self.console.print(text, end=end)
 
     def _detach_failed_live(self) -> None:
         live = self._live
