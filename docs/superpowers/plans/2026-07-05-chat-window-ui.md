@@ -468,7 +468,7 @@ Change `docs/superpowers/specs/2026-07-05-chat-window-ui-design.md` status from 
 
 Mark completed tasks in this plan so future reviewers can see what shipped.
 
-- [ ] **Step 4: Run full verification**
+- [x] **Step 4: Run full verification**
 
 Run: `ruff check myagent/`
 
