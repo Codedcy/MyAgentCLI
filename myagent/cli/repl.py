@@ -288,9 +288,97 @@ class REPLEngine:
             self._update_health_error(getattr(event, "message", "Error"))
         elif event_type == "Interrupted":
             self._update_health_error("Interrupted")
+        elif event_type == "StatusUpdate":
+            self._handle_status_update(event)
 
         if self._layout_controller:
             self._layout_controller.refresh()
+
+    def _handle_status_update(self, event) -> None:
+        scope = getattr(event, "scope", "")
+        data = getattr(event, "data", {}) or {}
+        if not isinstance(data, dict):
+            return
+
+        if scope == "context":
+            self._merge_token_status(
+                data,
+                {"context_usage", "context_window"},
+            )
+            self._update_legacy_status_bar(
+                **self._filter_status_data(
+                    data,
+                    {"context_usage", "context_window"},
+                )
+            )
+        elif scope == "tokens":
+            token_updates = self._filter_status_data(
+                data,
+                {
+                    "prompt_tokens",
+                    "completion_tokens",
+                    "turn_total",
+                    "session_total",
+                    "context_usage",
+                    "context_window",
+                },
+            )
+            if self._status_model and token_updates:
+                self._status_model.update_tokens(**token_updates)
+            legacy_total = token_updates.get(
+                "session_total",
+                token_updates.get("turn_total"),
+            )
+            if legacy_total is not None:
+                self._update_legacy_status_bar(tokens=legacy_total)
+        elif scope == "goal":
+            goal_updates = self._filter_status_data(
+                data,
+                {
+                    "name",
+                    "active",
+                    "achieved",
+                    "waiting_for_user",
+                    "budget_used",
+                    "budget_limit",
+                },
+            )
+            if self._status_model and goal_updates:
+                self._status_model.update_goal(**goal_updates)
+            self._update_legacy_status_bar(
+                **self._legacy_goal_status_updates(goal_updates)
+            )
+        elif scope == "health":
+            health_updates = self._filter_status_data(
+                data,
+                {"retry_info", "mcp_connected", "last_error"},
+            )
+            if self._status_model and health_updates:
+                self._status_model.update_health(**health_updates)
+            self._update_legacy_status_bar(**health_updates)
+
+    def _merge_token_status(self, data: dict, allowed_keys: set[str]) -> None:
+        token_updates = self._filter_status_data(data, allowed_keys)
+        if self._status_model and token_updates:
+            self._status_model.update_tokens(**token_updates)
+
+    def _filter_status_data(self, data: dict, allowed_keys: set[str]) -> dict:
+        return {key: data[key] for key in allowed_keys if key in data}
+
+    def _legacy_goal_status_updates(self, updates: dict) -> dict:
+        legacy: dict = {}
+        mapping = {
+            "name": "goal_name",
+            "active": "goal_active",
+            "achieved": "goal_achieved",
+            "waiting_for_user": "goal_waiting_for_user",
+            "budget_used": "goal_budget_used",
+            "budget_limit": "goal_budget_limit",
+        }
+        for key, legacy_key in mapping.items():
+            if key in updates:
+                legacy[legacy_key] = updates[key]
+        return legacy
 
     def _update_token_status(self, usage) -> None:
         if usage is None:

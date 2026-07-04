@@ -10,14 +10,12 @@ from myagent.agent.engine import (
     AskUserQuestion,
     Done,
     Error,
-    IntentSignal,
+    StatusUpdate,
     TextChunk,
-    ThinkingChunk,
     ToolCallEnd,
-    ToolCallStart,
 )
 from myagent.agent.goal import GoalCheckResult
-from myagent.context.builder import ContextBuilder, LLMRequest
+from myagent.context.builder import LLMRequest
 from myagent.tools.base import ToolResult
 
 
@@ -144,6 +142,68 @@ async def test_react_loop_iterates_multiple_turns():
 
 
 @pytest.mark.asyncio
+async def test_react_loop_yields_context_status_after_usage_estimate():
+    gen1 = _async_gen([FakeTextDelta("Context-aware answer"), FakeDone(FakeUsage())])
+    llm = MagicMock()
+    llm.complete = MagicMock(return_value=gen1)
+
+    builder = MagicMock()
+    builder.build = AsyncMock(return_value=LLMRequest(
+        system="test", messages=[], tools=[]
+    ))
+
+    engine = AgentEngine(
+        llm=llm,
+        context_builder=builder,
+        compression=MagicMock(),
+    )
+    engine._estimate_context_usage = MagicMock(return_value=0.42)
+    session = MagicMock()
+    session.get_recent_messages.return_value = []
+
+    events = [e async for e in engine.run("check context", session)]
+
+    context_updates = [
+        e for e in events
+        if isinstance(e, StatusUpdate) and e.scope == "context"
+    ]
+    assert context_updates
+    assert context_updates[0].data["context_usage"] == 0.42
+    assert context_updates[0].data["context_window"] == 1_000_000
+    assert isinstance(events[events.index(context_updates[0]) + 1], TextChunk)
+
+
+@pytest.mark.asyncio
+async def test_react_loop_yields_token_status_from_llm_done_usage():
+    gen1 = _async_gen([FakeTextDelta("Token-aware answer"), FakeDone(FakeUsage())])
+    llm = MagicMock()
+    llm.complete = MagicMock(return_value=gen1)
+
+    builder = MagicMock()
+    builder.build = AsyncMock(return_value=LLMRequest(
+        system="test", messages=[], tools=[]
+    ))
+
+    engine = AgentEngine(llm=llm, context_builder=builder)
+    session = MagicMock()
+    session.get_recent_messages.return_value = []
+
+    events = [e async for e in engine.run("count tokens", session)]
+
+    token_updates = [
+        e for e in events
+        if isinstance(e, StatusUpdate) and e.scope == "tokens"
+    ]
+    assert token_updates
+    assert token_updates[0].data == {
+        "prompt_tokens": 100,
+        "completion_tokens": 50,
+        "turn_total": 150,
+        "session_total": 150,
+    }
+
+
+@pytest.mark.asyncio
 async def test_react_loop_yields_ask_user_question():
     """When LLM returns text that is a question + no tool calls + done, yield AskUserQuestion."""
     gen1 = _async_gen([FakeTextDelta("Should I use pytest or unittest for testing?"), FakeDone()])
@@ -194,6 +254,119 @@ async def test_goal_not_achieved_reenters_loop():
     texts = [e for e in events if isinstance(e, TextChunk)]
     assert len(texts) == 2
     assert goal_tracker.check_goal.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_react_loop_yields_goal_status_when_checking_and_resolved():
+    gen1 = _async_gen([FakeTextDelta("Done with part 1"), FakeDone(FakeUsage())])
+    gen2 = _async_gen([FakeTextDelta("Done with part 2"), FakeDone(FakeUsage())])
+    llm = MagicMock()
+    llm.complete = MagicMock(side_effect=[gen1, gen2])
+
+    goal_tracker = MagicMock()
+    goal_tracker.get_goal.return_value = "fix all bugs"
+    goal_tracker.check_goal = AsyncMock()
+    goal_tracker.check_goal.side_effect = [
+        GoalCheckResult(
+            achieved=False,
+            reasoning="not yet",
+            remaining_work="fix remaining bugs",
+        ),
+        GoalCheckResult(achieved=True, reasoning="all fixed"),
+    ]
+
+    builder = MagicMock()
+    builder.build = AsyncMock(return_value=LLMRequest(
+        system="test", messages=[], tools=[]
+    ))
+
+    engine = AgentEngine(llm=llm, goal_tracker=goal_tracker, context_builder=builder)
+    session = MagicMock()
+    session.get_recent_messages.return_value = []
+    session.id = "test"
+
+    events = [e async for e in engine.run("continue", session)]
+
+    goal_updates = [
+        e for e in events
+        if isinstance(e, StatusUpdate) and e.scope == "goal"
+    ]
+    assert [update.data["state"] for update in goal_updates] == [
+        "checking",
+        "open",
+        "checking",
+        "achieved",
+    ]
+    assert goal_updates[0].data["name"] == "fix all bugs"
+    assert goal_updates[1].data["active"] is True
+    assert goal_updates[1].data["achieved"] is False
+    assert goal_updates[-1].data["achieved"] is True
+
+
+@pytest.mark.asyncio
+async def test_react_loop_yields_goal_status_when_goal_remains_open():
+    gen1 = _async_gen([FakeTextDelta("Still working"), FakeDone(FakeUsage())])
+    llm = MagicMock()
+    llm.complete = MagicMock(side_effect=[gen1])
+
+    goal_tracker = MagicMock()
+    goal_tracker.get_goal.return_value = "finish task"
+    goal_tracker.check_goal = AsyncMock(
+        return_value=GoalCheckResult(
+            achieved=False,
+            reasoning="not yet",
+            remaining_work="more work",
+        )
+    )
+
+    builder = MagicMock()
+    builder.build = AsyncMock(return_value=LLMRequest(
+        system="test", messages=[], tools=[]
+    ))
+
+    engine = AgentEngine(llm=llm, goal_tracker=goal_tracker, context_builder=builder)
+    engine.MAX_ITERATIONS = 1
+    session = MagicMock()
+    session.get_recent_messages.return_value = []
+
+    events = [e async for e in engine.run("continue", session)]
+
+    goal_updates = [
+        e for e in events
+        if isinstance(e, StatusUpdate) and e.scope == "goal"
+    ]
+    assert [update.data["state"] for update in goal_updates] == ["checking", "open"]
+    assert goal_updates[-1].data["active"] is True
+    assert goal_updates[-1].data["achieved"] is False
+
+
+@pytest.mark.asyncio
+async def test_react_loop_yields_health_status_when_llm_stream_errors():
+    async def failing_stream():
+        raise RuntimeError("stream boom")
+        yield
+
+    llm = MagicMock()
+    llm.complete = MagicMock(return_value=failing_stream())
+
+    builder = MagicMock()
+    builder.build = AsyncMock(return_value=LLMRequest(
+        system="test", messages=[], tools=[]
+    ))
+
+    engine = AgentEngine(llm=llm, context_builder=builder)
+    session = MagicMock()
+    session.get_recent_messages.return_value = []
+
+    events = [e async for e in engine.run("fail", session)]
+
+    health_updates = [
+        e for e in events
+        if isinstance(e, StatusUpdate) and e.scope == "health"
+    ]
+    assert health_updates
+    assert health_updates[0].data["last_error"] == "stream boom"
+    assert isinstance(events[-1], Error)
 
 
 @pytest.mark.asyncio

@@ -1,7 +1,7 @@
 """Tests for stream renderer."""
 
+from myagent.agent.engine import Done, Error, StatusUpdate, TextChunk
 from myagent.cli.renderer import Renderer
-from myagent.agent.engine import Done, Error, TextChunk, ToolCallStart
 
 
 class TestRenderer:
@@ -19,6 +19,13 @@ class TestRenderer:
         r = Renderer()
         result = r.render_event(Error(message="Something went wrong"))
         assert result is not None
+
+    def test_render_status_update(self):
+        r = Renderer()
+        result = r.render_event(
+            StatusUpdate(scope="context", data={"context_usage": 0.42})
+        )
+        assert result is None
 
     def test_render_unknown(self):
         r = Renderer()

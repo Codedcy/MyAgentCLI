@@ -15,6 +15,7 @@ from myagent.agent.engine import (
     Done,
     Error,
     Interrupted,
+    StatusUpdate,
     TextChunk,
     ToolCallEnd,
     ToolCallStart,
@@ -310,6 +311,100 @@ async def test_process_input_continues_when_layout_live_start_fails(
         and getattr(record, "context", None) == "cli_layout_start"
         for record in caplog.records
     )
+
+
+@pytest.mark.asyncio
+async def test_process_input_merges_engine_status_updates(layout_spy):
+    model = RuntimeStatusModel()
+    engine = FakeStreamingEngine(
+        [
+            StatusUpdate(
+                scope="context",
+                data={"context_usage": 0.42, "context_window": 200_000},
+            ),
+            StatusUpdate(
+                scope="tokens",
+                data={
+                    "prompt_tokens": 100,
+                    "completion_tokens": 50,
+                    "turn_total": 150,
+                    "session_total": 150,
+                },
+            ),
+            Done(),
+        ]
+    )
+    repl = REPLEngine(
+        engine=engine,
+        status_pane=FakeStatusPane(),
+        status_model=model,
+    )
+    repl._current_session = SimpleNamespace(id="session-1")
+
+    await repl.process_input("hello")
+
+    snapshot = model.snapshot()
+    assert snapshot.tokens.context_usage == 0.42
+    assert snapshot.tokens.context_window == 200_000
+    assert snapshot.tokens.prompt_tokens == 100
+    assert snapshot.tokens.completion_tokens == 50
+    assert snapshot.tokens.turn_total == 150
+    assert snapshot.tokens.session_total == 150
+
+
+def test_status_update_merges_context_goal_health_and_tokens(layout_spy):
+    model = RuntimeStatusModel()
+    repl = REPLEngine(status_pane=FakeStatusPane(), status_model=model)
+
+    repl._update_status_from_event(
+        StatusUpdate(
+            scope="context",
+            data={"context_usage": 0.25, "context_window": 100_000},
+        )
+    )
+    repl._update_status_from_event(
+        StatusUpdate(
+            scope="goal",
+            data={
+                "name": "ship task",
+                "active": True,
+                "achieved": False,
+                "waiting_for_user": False,
+                "state": "open",
+            },
+        )
+    )
+    repl._update_status_from_event(
+        StatusUpdate(
+            scope="health",
+            data={"last_error": "stream boom", "retry_info": "retry 1/3"},
+        )
+    )
+    repl._update_status_from_event(
+        StatusUpdate(
+            scope="tokens",
+            data={
+                "prompt_tokens": 10,
+                "completion_tokens": 5,
+                "turn_total": 15,
+                "session_total": 15,
+            },
+        )
+    )
+
+    snapshot = model.snapshot()
+    assert snapshot.tokens.context_usage == 0.25
+    assert snapshot.tokens.context_window == 100_000
+    assert snapshot.tokens.prompt_tokens == 10
+    assert snapshot.tokens.completion_tokens == 5
+    assert snapshot.tokens.turn_total == 15
+    assert snapshot.tokens.session_total == 15
+    assert snapshot.goal.name == "ship task"
+    assert snapshot.goal.active is True
+    assert snapshot.goal.achieved is False
+    assert snapshot.goal.waiting_for_user is False
+    assert snapshot.health.last_error == "stream boom"
+    assert snapshot.health.retry_info == "retry 1/3"
 
 
 def test_done_event_updates_runtime_status_tokens(layout_spy):

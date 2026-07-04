@@ -71,6 +71,12 @@ class Interrupted:
 
 
 @dataclass
+class StatusUpdate:
+    scope: str
+    data: dict[str, object]
+
+
+@dataclass
 class IntentSignal:
     intent: str  # "stop" | "correct" | "insert" | "continue"
 
@@ -84,6 +90,7 @@ AgentEvent = (
     | Done
     | Error
     | Interrupted
+    | StatusUpdate
     | IntentSignal
 )
 
@@ -238,6 +245,7 @@ class AgentEngine:
             # ── Context compression check (gap-01, gap-25) ──────
             if self.compression:
                 usage_pct = self._estimate_context_usage(messages, tools_list)
+                yield self._context_status_update(usage_pct)
                 compact_was_called = False  # gap-19-07: track whether compact() ran
                 if usage_pct >= 0.50 and not context_notified_50:
                     context_notified_50 = True
@@ -298,6 +306,7 @@ class AgentEngine:
                         )
                     # Re-estimate usage after compact for hard-limit check below
                     usage_pct = compact_result.usage_after
+                    yield self._context_status_update(usage_pct)
                     # Reset 50% notification flag if compaction dropped usage
                     # well below the warning threshold, so the user gets
                     # re-warned if context climbs back above 50% (gap-16-03).
@@ -337,6 +346,8 @@ class AgentEngine:
                         compact_result_l4 = await self.compression.compact(
                             ctx_messages_hard, usage_pct
                         )
+                        usage_pct = compact_result_l4.usage_after
+                        yield self._context_status_update(usage_pct)
                         messages = [
                             {"role": m.role, "content": m.content}
                             for m in compact_result_l4.messages
@@ -402,6 +413,7 @@ class AgentEngine:
                         usage = getattr(event, "usage", None)
                         if usage:
                             tokens_this_turn = getattr(usage, "total_tokens", 0)
+                            yield self._token_status_update(usage)
             except Exception as e:
                 # gap-06: preserve partial content on stream interruption
                 partial_text = "".join(text_buffer)
@@ -416,6 +428,7 @@ class AgentEngine:
                         "context": "llm_stream_complete",
                     },
                 )
+                yield self._health_status_update(last_error=str(e))
                 if partial_text:
                     yield TextChunk(
                         content=(
@@ -601,6 +614,11 @@ class AgentEngine:
             # ── Goal check ──────────────────────────────────────
             goal = self.goal_tracker.get_goal() if self.goal_tracker else None
             if goal:
+                yield self._goal_status_update(
+                    goal,
+                    state="checking",
+                    achieved=False,
+                )
                 try:
                     goal_check = await self.goal_tracker.check_goal(session, messages)
                 except Exception as e:
@@ -613,6 +631,11 @@ class AgentEngine:
                     return
 
                 if not goal_check.achieved:
+                    yield self._goal_status_update(
+                        goal,
+                        state="open",
+                        achieved=False,
+                    )
                     # Inject feedback and re-enter the loop
                     self._continue_with_feedback(goal_check, messages)
                     self._persist_turn(session, messages)
@@ -630,6 +653,12 @@ class AgentEngine:
             # Persist goal achievement to session (G2)
             if goal and hasattr(session, 'goal_achieved'):
                 session.goal_achieved = True
+            if goal:
+                yield self._goal_status_update(
+                    goal,
+                    state="achieved",
+                    achieved=True,
+                )
             self._persist_turn(session, messages)
             logger.info(
                 "ReAct iteration %d complete (done)", iteration,
@@ -649,6 +678,62 @@ class AgentEngine:
         )
 
     # ── helpers ────────────────────────────────────────────────────
+
+    def _context_status_update(self, usage_pct: float) -> StatusUpdate:
+        return StatusUpdate(
+            scope="context",
+            data={
+                "context_usage": usage_pct,
+                "context_window": self._current_context_window(),
+            },
+        )
+
+    def _token_status_update(self, usage) -> StatusUpdate:
+        prompt_tokens = getattr(usage, "prompt_tokens", None)
+        completion_tokens = getattr(usage, "completion_tokens", None)
+        total_tokens = getattr(usage, "total_tokens", None)
+        if total_tokens is None:
+            total_tokens = (prompt_tokens or 0) + (completion_tokens or 0)
+
+        data: dict[str, object] = {
+            "turn_total": total_tokens,
+            "session_total": total_tokens,
+        }
+        if prompt_tokens is not None:
+            data["prompt_tokens"] = prompt_tokens
+        if completion_tokens is not None:
+            data["completion_tokens"] = completion_tokens
+        return StatusUpdate(scope="tokens", data=data)
+
+    def _goal_status_update(
+        self,
+        goal: object,
+        *,
+        state: str,
+        achieved: bool,
+    ) -> StatusUpdate:
+        return StatusUpdate(
+            scope="goal",
+            data={
+                "name": str(goal or ""),
+                "active": True,
+                "achieved": achieved,
+                "waiting_for_user": False,
+                "state": state,
+            },
+        )
+
+    def _health_status_update(self, *, last_error: str) -> StatusUpdate:
+        return StatusUpdate(
+            scope="health",
+            data={"last_error": last_error},
+        )
+
+    def _current_context_window(self) -> int:
+        model_name = None
+        if self.config and hasattr(self.config, 'model'):
+            model_name = getattr(self.config.model, 'model', None)
+        return self._get_context_window(model_name)
 
     def _classify_event(self, event) -> str:
         """Classify an LLM stream event by type.

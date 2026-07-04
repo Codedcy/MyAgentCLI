@@ -35,6 +35,7 @@ class Renderer:
             "ToolCallEnd": self._render_tool_end,
             "Done": self._render_done,
             "Error": self._render_error,
+            "StatusUpdate": self._render_status_update,
         }
 
         handler = handlers.get(event_type)
@@ -116,3 +117,6 @@ class Renderer:
     def _render_error(self, event):
         from rich.panel import Panel
         return Panel(event.message, style="red", title="Error")
+
+    def _render_status_update(self, event):
+        return None
