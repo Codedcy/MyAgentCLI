@@ -21,6 +21,16 @@ def test_capture_renderable_handles_panel_without_object_repr():
     assert "<rich.panel.Panel object" not in captured
 
 
+def test_capture_renderable_does_not_write_to_stdout_or_stderr(capsys):
+    captured = capture_renderable(Panel("quiet body", title="Quiet"), width=60)
+
+    streams = capsys.readouterr()
+    assert "Quiet" in captured
+    assert "quiet body" in captured
+    assert streams.out == ""
+    assert streams.err == ""
+
+
 def test_capture_many_preserves_mixed_renderable_order_with_single_separator():
     captured = capture_many(
         [
@@ -38,12 +48,19 @@ def test_capture_many_preserves_mixed_renderable_order_with_single_separator():
 
 
 def test_sanitize_terminal_text_strips_ansi_and_unsafe_controls():
-    sanitized = sanitize_terminal_text("safe\x1b[31mred\x1b[0m\tok\nbad\x07value\x08!")
+    sanitized = sanitize_terminal_text(
+        "safe\x1b[31mred\x1b[0m\tok\nbad\x07value\x08!\rnext",
+    )
 
-    assert sanitized == "safered\tok\nbadvalue!"
+    assert sanitized == "safered\tok\nbadvalue!next"
     assert "\x1b" not in sanitized
     assert "\x07" not in sanitized
     assert "\x08" not in sanitized
+    assert "\r" not in sanitized
+
+
+def test_sanitize_terminal_text_removes_carriage_returns_without_normalizing_to_newlines():
+    assert sanitize_terminal_text("one\r\ntwo\rthree") == "one\ntwothree"
 
 
 def test_sanitize_terminal_text_preserves_long_readable_content():

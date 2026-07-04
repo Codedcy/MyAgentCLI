@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import io
+
 from rich.console import Console
 from rich.text import Text
 
@@ -11,7 +13,12 @@ from myagent.cli.layout import ANSI_PATTERN, OUTPUT_CONTROL_PATTERN
 def capture_renderable(renderable: object, width: int = 100) -> str:
     """Render a Rich-compatible object to sanitized plain terminal text."""
 
-    console = Console(record=True, width=_normalize_width(width), color_system=None)
+    console = Console(
+        record=True,
+        width=_normalize_width(width),
+        color_system=None,
+        file=io.StringIO(),
+    )
     if isinstance(renderable, str):
         console.print(Text(renderable), highlight=False)
     else:
@@ -31,7 +38,6 @@ def sanitize_terminal_text(text: object) -> str:
     """Strip ANSI escapes and unsafe controls while preserving tabs and newlines."""
 
     plain_text = "" if text is None else str(text)
-    plain_text = plain_text.replace("\r\n", "\n").replace("\r", "\n")
     plain_text = ANSI_PATTERN.sub("", plain_text)
     return OUTPUT_CONTROL_PATTERN.sub("", plain_text)
 
