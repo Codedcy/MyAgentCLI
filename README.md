@@ -112,6 +112,38 @@ myagent --dangerously-skip-permissions
 myagent --project-dir /path/to/project
 ```
 
+### Interactive Chat Window
+
+By default, starting `myagent` opens a fixed full-screen chat window for interactive work. The conversation history stays in a scrollable transcript pane, the input box remains pinned to the bottom, and the right-side Agent Inspector or narrow rail shows live session state such as token usage, subagents, tool activity, and health.
+
+One-shot commands do not start the full-screen chat UI. Commands such as `myagent --help`, `myagent --list-sessions`, and `myagent --session <id> --export markdown` print their result and exit in the legacy command style.
+
+Chat window configuration:
+
+```yaml
+ui:
+  chat_window:
+    enabled: true
+    scrollback_lines: 2000
+    input_min_lines: 1
+    input_max_lines: 6
+    follow_output: auto
+```
+
+Set `ui.chat_window.enabled: false` to restore the legacy prompt-style REPL. `scrollback_lines` controls the in-memory chat viewport history, `input_min_lines` and `input_max_lines` bound the bottom input height, and `follow_output` controls whether new output follows the bottom automatically.
+
+Key bindings:
+
+| Key | Behavior |
+|---|---|
+| `Enter` | Submit the current message. |
+| `Esc+Enter` or `Alt+Enter` | Insert a newline for multiline input. |
+| `F2` | Toggle the Agent Inspector / rail view. |
+| `Ctrl+C` | Interrupt an active run; when idle, clear or follow the existing exit semantics. |
+| `Ctrl+D` | Exit when the input is empty. |
+| `PageUp` / `PageDown` | Scroll the conversation history. |
+| Mouse wheel | Scroll the conversation history. |
+
 ### REPL 中的斜杠命令
 
 | 命令 | 功能 |

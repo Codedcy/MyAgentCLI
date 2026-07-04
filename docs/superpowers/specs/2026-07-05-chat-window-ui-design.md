@@ -1,6 +1,6 @@
 # MyAgentCLI Chat Window UI Design
 
-> Date: 2026-07-05 | Status: Draft for user review
+> Date: 2026-07-05 | Status: Implemented
 
 ## Goal
 
@@ -80,7 +80,7 @@ Status-only events must never appear as conversation messages and must not be pe
 Default bindings:
 
 - `Enter`: submit when the input is a single complete command/message.
-- `Shift+Enter` or `Alt+Enter`: insert newline in the input box.
+- `Esc+Enter` or `Alt+Enter`: insert newline in the input box.
 - `Tab`: keep existing completions for slash commands, skills, and paths.
 - `F2`: toggle Inspector full/rail state.
 - `Ctrl+C`: interrupt the running agent when a run is active; clear current input or ask exit confirmation when idle, preserving existing semantics.
@@ -88,7 +88,7 @@ Default bindings:
 - `PageUp/PageDown`, mouse wheel: scroll conversation history.
 - `Home/End` inside input keeps normal input editing semantics; scroll-specific bindings should not steal ordinary text editing keys.
 
-The input box should support at least three visual lines before scrolling internally. Very long input should scroll inside the input box, not resize the bottom bar enough to hide the transcript.
+The input box defaults to one visual line and can grow up to six visual lines before scrolling internally. Very long input should scroll inside the input box, not resize the bottom bar enough to hide the transcript.
 
 ## Scrolling Behavior
 
