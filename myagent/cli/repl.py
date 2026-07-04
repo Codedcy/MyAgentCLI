@@ -1140,6 +1140,9 @@ class REPLEngine:
             try:
                 await engine_task
             except _asyncio.CancelledError:
+                current_task = _asyncio.current_task()
+                if current_task is not None and current_task.cancelling():
+                    raise
                 logger.exception(
                     "Active engine task cancelled",
                     extra={

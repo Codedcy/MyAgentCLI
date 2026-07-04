@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import builtins
+import contextlib
 import logging
 from types import SimpleNamespace
 
@@ -1095,6 +1096,91 @@ async def test_chat_crash_cancels_background_submission_before_prompt_fallback(
     assert prompt_pending_submission_states == [False]
     assert engine.cancelled.is_set()
     assert repl._active_engine_task is None
+
+
+@pytest.mark.asyncio
+async def test_chat_crash_after_ask_question_skips_chat_ask_before_prompt_fallback(
+    monkeypatch,
+    caplog,
+):
+    prompt_started = asyncio.Event()
+    prompt_active_engine_tasks = []
+
+    class AskThenBlockEngine:
+        def __init__(self):
+            self.interrupt_event = SimpleNamespace(clear=lambda: None)
+            self.question_yielded = asyncio.Event()
+            self.release = asyncio.Event()
+            self.cancelled = asyncio.Event()
+
+        async def run(self, text, session, active_skill=None):
+            if text != "ask":
+                yield Done()
+                return
+
+            yield AskUserQuestion(question="Need input?")
+            self.question_yielded.set()
+            try:
+                await self.release.wait()
+                yield Done()
+            except asyncio.CancelledError:
+                self.cancelled.set()
+                raise
+
+    class CrashingAskChat(FakeChatWindowController):
+        def __init__(self):
+            super().__init__()
+            self.submission_task = None
+            self.ask_release = asyncio.Event()
+
+        async def run(self, on_submit, on_exit=None, on_interrupt=None):
+            self.is_running = True
+            self.submission_task = asyncio.create_task(on_submit("ask"))
+            await asyncio.wait_for(engine.question_yielded.wait(), timeout=1.0)
+            if on_exit:
+                result = on_exit()
+                if hasattr(result, "__await__"):
+                    await result
+            raise RuntimeError("chat crashed after ask")
+
+        async def ask(self, prompt, timeout):
+            self.ask_calls.append((prompt, timeout))
+            await self.ask_release.wait()
+            return None
+
+    async def fake_prompt_loop(self):
+        prompt_active_engine_tasks.append(self._active_engine_task)
+        prompt_started.set()
+        self._running = False
+
+    engine = AskThenBlockEngine()
+    chat = CrashingAskChat()
+    monkeypatch.setattr(REPLEngine, "_run_prompt_session_loop", fake_prompt_loop)
+    repl = REPLEngine(
+        config=make_chat_config(enabled=True),
+        chat_window_controller=chat,
+        engine=engine,
+        renderer=Renderer(),
+    )
+    repl._current_session = SimpleNamespace(id="session-1")
+    repl._console = FakeConsole()
+
+    run_task = asyncio.create_task(repl.run())
+    try:
+        with caplog.at_level(logging.ERROR, logger="myagent.cli.repl"):
+            await asyncio.wait_for(prompt_started.wait(), timeout=1.0)
+        await asyncio.wait_for(run_task, timeout=1.0)
+    finally:
+        engine.release.set()
+        chat.ask_release.set()
+        if not run_task.done():
+            run_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await run_task
+
+    assert chat.ask_calls == []
+    assert prompt_active_engine_tasks == [None]
+    assert engine.cancelled.is_set()
 
 
 @pytest.mark.asyncio
