@@ -16,9 +16,10 @@ MyAgentCLI 是一个个人 AI Agent 助手，CLI 形式。使用 DeepSeek V4 Pro
 ┌─────────────────────────────────────────────────────────────────┐
 │                         CLI Layer                                │
 │  ┌─────────────┐  ┌──────────────┐  ┌────────────────────────┐  │
-│  │ REPL Engine │  │ Live Status  │  │ Slash Commands         │  │
-│  │ (prompt_    │  │ Bar (Rich    │  │ /mode /goal /skills     │  │
-│  │  toolkit)   │  │ Layout+Live) │  │ /dream /clear /history  │  │
+│  │ REPL Engine │  │ Agent        │  │ Slash Commands         │  │
+│  │ (prompt_    │  │ Inspector    │  │ /mode /goal /skills     │  │
+│  │  toolkit)   │  │ Pane (Rich   │  │ /dream /clear /history  │  │
+│  │             │  │ Layout+Live) │  │                        │  │
 │  └──────┬──────┘  └──────┬───────┘  └───────────┬────────────┘  │
 ├─────────┼────────────────┼──────────────────────┼───────────────┤
 │         │    Application Layer                  │                │
@@ -50,7 +51,7 @@ MyAgentCLI 是一个个人 AI Agent 助手，CLI 形式。使用 DeepSeek V4 Pro
 | 层 | 组件 | 职责 |
 |----|------|------|
 | CLI | REPL Engine | prompt_toolkit 输入处理（自动补全、历史、多行编辑） |
-| CLI | Status Bar | Rich Layout+Live 固定状态栏（token 消耗、子Agent 状态、思考模式） |
+| CLI | Agent Inspector Pane | Rich Layout+Live 固定右侧运行状态窗格（token、上下文、目标、子Agent、工具、重试状态） |
 | CLI | Slash Commands | `/mode` `/goal` `/skills` `/dream` `/clear` `/history` `/exit` |
 | Application | Agent Engine | 唯一 ReAct 循环：Think → Decision → Execute → Observe |
 | Application | Goal Tracker | Goal 追踪叠加层，done 时检查目标是否达成 |
@@ -60,6 +61,16 @@ MyAgentCLI 是一个个人 AI Agent 助手，CLI 形式。使用 DeepSeek V4 Pro
 | Service | Memory Store | 文件记忆索引、语义召回、梦境反思循环 |
 | Infrastructure | LiteLLM Provider | 模型统一抽象、流式输出、思考模式切换、fallback |
 | Infrastructure | MCP Protocol | MCP 标准协议栈，子进程 + stdio/SSE 通信 |
+
+### CLI 布局与运行状态
+
+CLI 首屏由对话区、底部输入区和右侧 `Agent Inspector Pane` 组成。Inspector 是固定在当前页面内的运行状态窗格，不使用弹出详情窗，也不滚走；用户在长任务、并行子 Agent 或高 token 消耗场景下始终能看到状态。
+
+`REPLEngine` 负责输入焦点和流式输出，`AgentInspectorPane` 只订阅运行时状态快照并渲染，不直接读取或修改 Agent、工具、子 Agent 的内部对象。所有状态来自 `RuntimeStatusModel`，由 Agent Engine、LLM Provider、Tool Registry、Sub-Agent Pool 和 Goal Tracker 通过事件更新。
+
+终端宽度足够时，Inspector 固定在右侧，默认宽度 32-36 列。终端宽度低于 `collapse_below_columns` 时自动折叠成窄 rail，仅显示 token/context 百分比、活跃子 Agent 数、当前工具/错误状态；默认快捷键 `Ctrl+I` 临时展开或收起完整窗格，快捷键可配置。
+
+Rich Live 由 CLI 布局层统一持有，避免 REPL、流式输出和状态窗格各自启动 Live display 导致闪烁或抢占 prompt_toolkit 焦点。渲染失败时记录结构化错误日志，并降级为最小状态行，不中断正在执行的 ReAct 循环。
 
 ### 核心执行流程
 
@@ -175,7 +186,7 @@ flowchart TD
 | 致命错误 | HTTP 4xx (非 429), 认证失败 | 不重试，立即报错给用户 |
 | 流中断 | 流式响应中途断开 | 保留已接收内容 + 注入截断提示，允许用户决定是否继续 |
 
-重试逻辑内置在 `LLMProvider` 中，对上层透明。每次重试时更新状态栏显示重试进度。连续 3 次重试失败 → 降级提示用户检查网络/API key。
+重试逻辑内置在 `LLMProvider` 中，对上层透明。每次重试时更新 Agent Inspector Pane 显示重试进度。连续 3 次重试失败 → 降级提示用户检查网络/API key。
 
 子 Agent 的 LLM 调用共享同一重试策略。子 Agent API 调用失败默认不通知用户（静默重试），仅在最终失败时将错误信息返回给主 Agent。
 
@@ -771,16 +782,59 @@ sequenceDiagram
 | 子任务间有依赖，需要结果才能继续 | false | 必须等待 |
 | 非 Goal 模式的"顺便"探索 | false (默认禁止) | 额外 token 消耗，需显式配置开启 |
 
-### Context 状态栏展示
+### Agent Inspector Pane 展示
+
+Inspector 是主界面右侧固定窗格，用于展示运行状态，而不是弹出式详情窗或一次性状态栏。它默认展示以下分区：
+
+- **Session**: 会话 ID、项目名、当前模型、思考模式
+- **Tokens**: 当前轮输入/输出 token、会话累计 token、上下文占用百分比、压缩阈值提示
+- **Goal**: goal 名称、状态、预算使用情况、是否等待用户输入
+- **Sub-agents**: active/queued/completed/failed 计数，以及每个子 Agent 的任务摘要、状态、耗时、重试次数、结果摘要
+- **Tools**: 当前工具调用、最近工具调用结果、权限等待状态
+- **Health**: LLM 重试、MCP 连接、最近错误摘要
 
 ```
-┌─ Top Bar ───────────────────────────────────────────┐
-│ 🤖 Sub-agents: 3 active │ Token: 156K │ Think High  │
-│  ├─ review-auth      ⏳ 审查中... (82%)              │
-│  ├─ review-api       ✅ 完成 (2 个问题)              │
-│  └─ review-middleware 🔄 重试中 (1/3)               │
-└─────────────────────────────────────────────────────┘
+┌─ Conversation ───────────────────────────────┬─ Agent Inspector ───────────┐
+│ Assistant streaming output...                │ Model: deepseek-v4-pro       │
+│                                              │ Mode: Think High             │
+│                                              │ Tokens: 156K / 1M  15.6%     │
+│                                              │ Context: OK                  │
+│                                              │ Goal: code review loop       │
+│                                              │                              │
+│                                              │ Sub-agents 3 active          │
+│                                              │ review-auth       running    │
+│                                              │ review-api        done 2     │
+│                                              │ review-middleware retry 1/3  │
+│                                              │                              │
+│                                              │ Tool: shell_command          │
+└─ Input ──────────────────────────────────────┴──────────────────────────────┘
 ```
+
+响应式规则：
+
+- `terminal_columns >= 120`: 右侧固定完整窗格，宽度默认 34 列，可配置为 28-48 列
+- `terminal_columns < 120`: 自动折叠为 4-6 列 rail，仅保留 token/context、活跃子 Agent 数、错误/等待状态
+- `Ctrl+I`: 在当前终端尺寸下临时展开/收起完整 Inspector；展开态不会覆盖输入区，空间不足时使用浮层式只读视图
+
+数据流：
+
+```mermaid
+flowchart LR
+    Engine[Agent Engine] --> Status[RuntimeStatusModel]
+    LLM[LLM Provider] --> Status
+    Tools[Tool Registry] --> Status
+    Pool[Sub-Agent Pool] --> Status
+    Goal[Goal Tracker] --> Status
+    Status --> Pane[AgentInspectorPane.render(snapshot)]
+    Pane --> Layout[Rich Layout + single Live owner]
+```
+
+测试要求：
+
+- 渲染测试覆盖完整窗格、rail、长任务名截断、无子 Agent、错误摘要
+- 状态聚合测试覆盖 LLM token 回写、工具调用状态、子 Agent 生命周期、goal 状态
+- 布局测试覆盖 80/120/160 列终端，确保 Inspector 不遮挡输入区、不挤压流式输出到不可读
+- REPL 集成测试确保 Rich Live 只有一个所有者，prompt_toolkit 焦点稳定，流式输出和状态刷新不会互相打断
 
 ---
 
@@ -843,8 +897,17 @@ tools:
   shell_timeout_seconds: 120
 
 ui:
-  show_status_bar: true
-  status_bar_items: [subagents, tokens, thinking]
+  status_pane:
+    enabled: true
+    placement: right
+    width: 34
+    min_width: 28
+    max_width: 48
+    collapse_below_columns: 120
+    rail_width: 5
+    toggle_key: ctrl+i
+    sections: [session, tokens, goal, subagents, tools, health]
+  # Backward compatibility: show_status_bar/status_bar_items map to status_pane.enabled/sections.
   streaming: true
   syntax_highlight: true
 
@@ -922,7 +985,7 @@ MyAgentCLI (D:\code\MyAgentCLI):
       "本次会话中调整了 N 条权限规则，是否持久化到配置文件？[Y/n]"
    c. 用户确认后写入对应配置文件
    d. 调用 `memory_store.get_session_writes()` → 输出记忆变更摘要
-3. StatusBar 停止 Live display
+3. Agent Inspector Pane 停止统一 Live display
 4. 进程正常退出（exit code 0）
 
 Ctrl+C 在 idle 状态时触发同样的退出流程（先确认 "Exit? (y/n)"）。
