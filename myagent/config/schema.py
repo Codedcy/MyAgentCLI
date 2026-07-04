@@ -90,8 +90,19 @@ class StatusPaneConfig:
 
 
 @dataclass
+class ChatWindowConfig:
+    enabled: bool = True
+    input_position: Literal["bottom"] = "bottom"
+    scrollback_lines: int = 2000
+    input_min_lines: int = 1
+    input_max_lines: int = 6
+    follow_output: Literal["auto", "always", "manual"] = "auto"
+
+
+@dataclass
 class UIConfig:
     status_pane: StatusPaneConfig = field(default_factory=StatusPaneConfig)
+    chat_window: ChatWindowConfig = field(default_factory=ChatWindowConfig)
     show_status_bar: bool = True
     status_bar_items: list[str] = field(
         default_factory=lambda: ["subagents", "tokens", "thinking"]

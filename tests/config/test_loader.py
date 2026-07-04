@@ -3,8 +3,6 @@
 import logging
 from pathlib import Path
 
-import pytest
-
 from myagent.config.loader import ConfigLoader
 from myagent.config.schema import AppConfig
 
@@ -309,6 +307,157 @@ class TestConfigLoader:
             for record in caplog.records
         )
 
+    def test_chat_window_config_loaded_directly(self, tmp_home_dir, tmp_project_dir):
+        write_yaml(
+            _ua(tmp_home_dir) / "config.yaml",
+            "ui:\n"
+            "  chat_window:\n"
+            "    enabled: false\n"
+            "    scrollback_lines: 5000\n"
+            "    input_max_lines: 8\n"
+            "    follow_output: manual\n",
+        )
+        loader = ConfigLoader(
+            project_dir=tmp_project_dir,
+            user_home=_ua(tmp_home_dir),
+        )
+
+        config = loader.load()
+
+        assert config.ui.chat_window.enabled is False
+        assert config.ui.chat_window.scrollback_lines == 5000
+        assert config.ui.chat_window.input_max_lines == 8
+        assert config.ui.chat_window.follow_output == "manual"
+        assert config.ui.chat_window.input_position == "bottom"
+        assert config.ui.chat_window.input_min_lines == 1
+
+    def test_chat_window_validation_warns_when_scrollback_lines_too_low(
+        self, tmp_home_dir, tmp_project_dir, caplog
+    ):
+        write_yaml(
+            _ua(tmp_home_dir) / "config.yaml",
+            "ui:\n"
+            "  chat_window:\n"
+            "    scrollback_lines: 99\n",
+        )
+        caplog.set_level(logging.WARNING, logger="myagent.config")
+        loader = ConfigLoader(
+            project_dir=tmp_project_dir,
+            user_home=_ua(tmp_home_dir),
+        )
+
+        config = loader.load()
+
+        assert config.ui.chat_window.scrollback_lines == 99
+        assert any(
+            "ui.chat_window.scrollback_lines = 99 is too low; minimum is 100"
+            in record.getMessage()
+            and record.category == "system"
+            for record in caplog.records
+        )
+
+    def test_chat_window_validation_warns_when_input_min_lines_too_low(
+        self, tmp_home_dir, tmp_project_dir, caplog
+    ):
+        write_yaml(
+            _ua(tmp_home_dir) / "config.yaml",
+            "ui:\n"
+            "  chat_window:\n"
+            "    input_min_lines: 0\n",
+        )
+        caplog.set_level(logging.WARNING, logger="myagent.config")
+        loader = ConfigLoader(
+            project_dir=tmp_project_dir,
+            user_home=_ua(tmp_home_dir),
+        )
+
+        config = loader.load()
+
+        assert config.ui.chat_window.input_min_lines == 0
+        assert any(
+            "ui.chat_window.input_min_lines = 0 is too low; minimum is 1"
+            in record.getMessage()
+            and record.category == "system"
+            for record in caplog.records
+        )
+
+    def test_chat_window_validation_warns_when_input_max_below_input_min(
+        self, tmp_home_dir, tmp_project_dir, caplog
+    ):
+        write_yaml(
+            _ua(tmp_home_dir) / "config.yaml",
+            "ui:\n"
+            "  chat_window:\n"
+            "    input_min_lines: 5\n"
+            "    input_max_lines: 4\n",
+        )
+        caplog.set_level(logging.WARNING, logger="myagent.config")
+        loader = ConfigLoader(
+            project_dir=tmp_project_dir,
+            user_home=_ua(tmp_home_dir),
+        )
+
+        config = loader.load()
+
+        assert config.ui.chat_window.input_min_lines == 5
+        assert config.ui.chat_window.input_max_lines == 4
+        assert any(
+            "ui.chat_window.input_max_lines = 4 is below input_min_lines = 5"
+            in record.getMessage()
+            and record.category == "system"
+            for record in caplog.records
+        )
+
+    def test_chat_window_validation_warns_for_unsupported_input_position(
+        self, tmp_home_dir, tmp_project_dir, caplog
+    ):
+        write_yaml(
+            _ua(tmp_home_dir) / "config.yaml",
+            "ui:\n"
+            "  chat_window:\n"
+            "    input_position: top\n",
+        )
+        caplog.set_level(logging.WARNING, logger="myagent.config")
+        loader = ConfigLoader(
+            project_dir=tmp_project_dir,
+            user_home=_ua(tmp_home_dir),
+        )
+
+        config = loader.load()
+
+        assert config.ui.chat_window.input_position == "top"
+        assert any(
+            "ui.chat_window.input_position = 'top' is invalid; must be one of"
+            in record.getMessage()
+            and record.category == "system"
+            for record in caplog.records
+        )
+
+    def test_chat_window_validation_warns_for_unsupported_follow_output(
+        self, tmp_home_dir, tmp_project_dir, caplog
+    ):
+        write_yaml(
+            _ua(tmp_home_dir) / "config.yaml",
+            "ui:\n"
+            "  chat_window:\n"
+            "    follow_output: sometimes\n",
+        )
+        caplog.set_level(logging.WARNING, logger="myagent.config")
+        loader = ConfigLoader(
+            project_dir=tmp_project_dir,
+            user_home=_ua(tmp_home_dir),
+        )
+
+        config = loader.load()
+
+        assert config.ui.chat_window.follow_output == "sometimes"
+        assert any(
+            "ui.chat_window.follow_output = 'sometimes' is invalid; must be one of"
+            in record.getMessage()
+            and record.category == "system"
+            for record in caplog.records
+        )
+
     def test_missing_config_files_graceful(self, tmp_home_dir, tmp_project_dir):
         """No config files at any level should still load defaults."""
         loader = ConfigLoader(
@@ -398,7 +547,9 @@ class TestConfigLoader:
         project_agent_md = tmp_project_dir / ".myagent" / "AGENT.md"
         write_yaml(
             project_agent_md,
-            "---\nmodel:\n  provider: openai\n  thinking: Non-think\n---\n\n# Project Agent Instructions\n",
+            "---\n"
+            "model:\n  provider: openai\n  thinking: Non-think\n"
+            "---\n\n# Project Agent Instructions\n",
         )
         loader = ConfigLoader(
             project_dir=tmp_project_dir,
@@ -424,7 +575,9 @@ class TestConfigLoader:
         project_agent_md = tmp_project_dir / ".myagent" / "AGENT.md"
         write_yaml(
             project_agent_md,
-            "---\nmodel:\n  provider: anthropic\nunknown_key: 42\nanother_bad: foo\n---\n\n# Content\n",
+            "---\n"
+            "model:\n  provider: anthropic\nunknown_key: 42\nanother_bad: foo\n"
+            "---\n\n# Content\n",
         )
         loader = ConfigLoader(
             project_dir=tmp_project_dir,

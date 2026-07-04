@@ -225,8 +225,8 @@ class ConfigLoader:
         return normalized
 
     @staticmethod
-    def _is_status_pane_number(value: object) -> bool:
-        """Return True for numeric status pane sizing values."""
+    def _is_numeric_config_value(value: object) -> bool:
+        """Return True for numeric config values while excluding bools."""
         return isinstance(value, (int, float)) and not isinstance(value, bool)
 
     @staticmethod
@@ -309,7 +309,7 @@ class ConfigLoader:
             "collapse_below_columns",
         ]:
             value = getattr(status_pane, field_name)
-            if ConfigLoader._is_status_pane_number(value):
+            if ConfigLoader._is_numeric_config_value(value):
                 numeric_values[field_name] = value
             else:
                 logger.warning(
@@ -349,6 +349,71 @@ class ConfigLoader:
             logger.warning(
                 "ui.status_pane.collapse_below_columns = %s is too low; minimum is 40",
                 collapse_below_columns,
+                extra={"category": "system"},
+            )
+
+        chat_window = config.ui.chat_window
+        chat_numeric_values = {}
+        for field_name in [
+            "scrollback_lines",
+            "input_min_lines",
+            "input_max_lines",
+        ]:
+            value = getattr(chat_window, field_name)
+            if ConfigLoader._is_numeric_config_value(value):
+                chat_numeric_values[field_name] = value
+            else:
+                logger.warning(
+                    "ui.chat_window.%s must be numeric; got %s",
+                    field_name,
+                    type(value).__name__,
+                    extra={"category": "system"},
+                )
+
+        scrollback_lines = chat_numeric_values.get("scrollback_lines")
+        if scrollback_lines is not None and scrollback_lines < 100:
+            logger.warning(
+                "ui.chat_window.scrollback_lines = %s is too low; minimum is 100",
+                scrollback_lines,
+                extra={"category": "system"},
+            )
+
+        input_min_lines = chat_numeric_values.get("input_min_lines")
+        if input_min_lines is not None and input_min_lines < 1:
+            logger.warning(
+                "ui.chat_window.input_min_lines = %s is too low; minimum is 1",
+                input_min_lines,
+                extra={"category": "system"},
+            )
+
+        input_max_lines = chat_numeric_values.get("input_max_lines")
+        if (
+            input_min_lines is not None
+            and input_max_lines is not None
+            and input_max_lines < input_min_lines
+        ):
+            logger.warning(
+                "ui.chat_window.input_max_lines = %s is below input_min_lines = %s",
+                input_max_lines,
+                input_min_lines,
+                extra={"category": "system"},
+            )
+
+        valid_input_positions = {"bottom"}
+        if chat_window.input_position not in valid_input_positions:
+            logger.warning(
+                "ui.chat_window.input_position = '%s' is invalid; must be one of %s",
+                chat_window.input_position,
+                valid_input_positions,
+                extra={"category": "system"},
+            )
+
+        valid_follow_output = {"auto", "always", "manual"}
+        if chat_window.follow_output not in valid_follow_output:
+            logger.warning(
+                "ui.chat_window.follow_output = '%s' is invalid; must be one of %s",
+                chat_window.follow_output,
+                valid_follow_output,
                 extra={"category": "system"},
             )
 

@@ -109,6 +109,12 @@ class TestUIConfig:
             "tools",
             "health",
         ]
+        assert c.chat_window.enabled is True
+        assert c.chat_window.input_position == "bottom"
+        assert c.chat_window.scrollback_lines == 2000
+        assert c.chat_window.input_min_lines == 1
+        assert c.chat_window.input_max_lines == 6
+        assert c.chat_window.follow_output == "auto"
         assert c.show_status_bar is True
         assert "subagents" in c.status_bar_items
         assert c.streaming is True
