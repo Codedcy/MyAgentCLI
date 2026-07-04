@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import logging
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -78,6 +79,37 @@ def _build_status_components(
     if getattr(config.ui.status_pane, "enabled", True):
         status_pane = AgentInspectorPane(config.ui.status_pane, status_model)
     return status_model, status_pane
+
+
+def _build_chat_window_factory(
+    config,
+    status_pane: AgentInspectorPane | None,
+    status_model: RuntimeStatusModel,
+) -> Callable[..., object] | None:
+    """Create the chat-window factory injected into REPLEngine."""
+
+    chat_config = getattr(getattr(config, "ui", None), "chat_window", None)
+    if chat_config is None or not bool(getattr(chat_config, "enabled", False)):
+        return None
+
+    def _factory(**kwargs):
+        from myagent.cli.chat_window import ChatWindowController
+        from myagent.cli.transcript import TranscriptBuffer
+
+        transcript = TranscriptBuffer(
+            max_lines=getattr(chat_config, "scrollback_lines", 2000),
+            follow_output=getattr(chat_config, "follow_output", "auto"),
+        )
+        return ChatWindowController(
+            chat_config,
+            transcript,
+            status_pane=status_pane,
+            status_model=status_model,
+            completer=kwargs.get("completer"),
+            lexer=kwargs.get("lexer"),
+        )
+
+    return _factory
 
 
 def _sync_status_model_session(status_model: RuntimeStatusModel, session) -> None:
@@ -400,6 +432,11 @@ async def async_main(argv: list[str] | None = None) -> int:
 
     # Wire status model to sub-agent pool state via lifecycle callbacks.
     _wire_subagent_status(subagent_pool, status_model)
+    chat_window_factory = _build_chat_window_factory(
+        config,
+        status_pane,
+        status_model,
+    )
     # Start REPL
     from myagent.cli.repl import REPLEngine
 
@@ -441,7 +478,9 @@ async def async_main(argv: list[str] | None = None) -> int:
                 engine=engine, commands=commands, session_mgr=session_mgr,
                 config=config, project_dir=project_dir,
                 renderer=renderer, status_bar=status_pane,
+                status_model=status_model,
                 dream_engine=dream_engine,
+                chat_window_factory=chat_window_factory,
             )
             repl._current_session = session
             await repl.run()
@@ -454,7 +493,9 @@ async def async_main(argv: list[str] | None = None) -> int:
         engine=engine, commands=commands, session_mgr=session_mgr,
         config=config, project_dir=project_dir,
         renderer=renderer, status_bar=status_pane,
+        status_model=status_model,
         dream_engine=dream_engine,
+        chat_window_factory=chat_window_factory,
     )
     await repl.run()
     return 0
