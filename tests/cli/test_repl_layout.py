@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from rich.console import Console
 
 import myagent.cli.repl as repl_module
 from myagent.agent.engine import (
@@ -15,6 +16,8 @@ from myagent.agent.engine import (
 )
 from myagent.agent.runtime_status import RuntimeStatusModel
 from myagent.cli.repl import REPLEngine
+from myagent.cli.status import AgentInspectorPane
+from myagent.config.schema import StatusPaneConfig
 from myagent.llm.provider import Usage
 from myagent.tools.base import ToolResult
 
@@ -105,7 +108,52 @@ def test_output_to_console_appends_to_layout_controller(layout_spy):
     repl._output_to_console("streamed", end="")
 
     assert repl._layout_controller.append_calls == [("streamed", "")]
+    assert repl._layout_controller.render_once_calls == 1
     assert console.calls == []
+
+
+def test_real_layout_controller_renders_output_without_live(monkeypatch):
+    console = Console(record=True, width=140, height=40)
+    monkeypatch.setattr(REPLEngine, "_create_console", lambda _self: console)
+    model = RuntimeStatusModel()
+    config = StatusPaneConfig(width=34, collapse_below_columns=80)
+    pane = AgentInspectorPane(config, status_model=model)
+    repl = REPLEngine(status_pane=pane, status_model=model, config=config)
+
+    repl._output_to_console("visible through fixed pane")
+
+    text = console.export_text(styles=False)
+    assert repl._layout_controller.is_live is False
+    assert "Output" in text
+    assert "visible through fixed pane" in text
+
+
+def test_legacy_status_bar_alias_renders_output_without_live(monkeypatch):
+    console = Console(record=True, width=140, height=40)
+    monkeypatch.setattr(REPLEngine, "_create_console", lambda _self: console)
+    model = RuntimeStatusModel()
+    config = StatusPaneConfig(width=34, collapse_below_columns=80)
+    pane = AgentInspectorPane(config, status_model=model)
+    repl = REPLEngine(status_bar=pane, config=config)
+
+    repl._output_to_console("visible through legacy alias")
+
+    assert "visible through legacy alias" in console.export_text(styles=False)
+
+
+def test_disabled_status_pane_still_renders_output_without_status(monkeypatch):
+    console = Console(record=True, width=140, height=40)
+    monkeypatch.setattr(REPLEngine, "_create_console", lambda _self: console)
+    model = RuntimeStatusModel()
+    config = StatusPaneConfig(enabled=False)
+    pane = AgentInspectorPane(config, status_model=model)
+    repl = REPLEngine(status_pane=pane, status_model=model, config=config)
+
+    repl._output_to_console("visible with disabled pane")
+
+    text = console.export_text(styles=False)
+    assert "visible with disabled pane" in text
+    assert "Agent Inspector" not in text
 
 
 @pytest.mark.asyncio

@@ -825,6 +825,8 @@ class REPLEngine:
         """Route output through the shared Live layout or plain console (gap-2-07)."""
         if self._layout_controller:
             self._layout_controller.append_output(text, end=end)
+            if self._should_render_layout_once_after_append():
+                self._layout_controller.render_once()
             return
 
         if self._live:
@@ -860,6 +862,13 @@ class REPLEngine:
                 self._console.print(text)
         else:
             print(text, end=end)
+
+    def _should_render_layout_once_after_append(self) -> bool:
+        if self._layout_controller is None:
+            return False
+        if getattr(self._layout_controller, "is_live", False):
+            return False
+        return not getattr(self._layout_controller, "_live_failed", False)
 
     def _render_event_fallback(self, event) -> None:
         """Fallback renderer when no Rich Renderer is wired."""
