@@ -979,6 +979,43 @@ async def test_run_falls_back_to_prompt_loop_after_chat_startup_exception(
 
 
 @pytest.mark.asyncio
+async def test_run_falls_back_to_prompt_loop_after_chat_factory_exception(
+    monkeypatch,
+    caplog,
+):
+    prompt_calls = 0
+
+    async def fake_prompt_loop(self):
+        nonlocal prompt_calls
+        prompt_calls += 1
+        self._running = False
+
+    def failing_factory(**kwargs):
+        raise RuntimeError("factory failed")
+
+    monkeypatch.setattr(REPLEngine, "_run_prompt_session_loop", fake_prompt_loop)
+    repl = REPLEngine(
+        config=make_chat_config(enabled=True),
+        chat_window_factory=failing_factory,
+    )
+    repl._console = FakeConsole()
+
+    with caplog.at_level(logging.ERROR, logger="myagent.cli.repl"):
+        await repl.run()
+
+    assert prompt_calls == 1
+    record = next(
+        record
+        for record in caplog.records
+        if getattr(record, "context", "") == "cli_chat_window_start"
+    )
+    assert record.category == "error"
+    assert record.component == "agent"
+    assert record.exception_type == "RuntimeError"
+    assert "factory failed" in record.traceback
+
+
+@pytest.mark.asyncio
 async def test_prompt_with_timeout_uses_chat_window_ask_when_active():
     chat = FakeChatWindowController(ask_response="from chat")
     repl = active_chat_repl(chat)

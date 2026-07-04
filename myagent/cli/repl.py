@@ -734,17 +734,18 @@ class REPLEngine:
     async def _run_chat_window_loop(self) -> None:
         """Run the full-screen chat window and route submissions to the REPL."""
 
-        controller = self._chat_window or self._create_chat_window_controller()
-        self._chat_window = controller
-        self._chat_window_loop_active = True
-        self._chat_streaming = False
-
-        self._append_chat_system_output(
-            "MyAgentCLI - Type /help for commands, Ctrl+D to exit."
-        )
-        self._append_chat_system_output(f"Project: {self._project_dir.name}")
-
+        controller = None
         try:
+            controller = self._chat_window or self._create_chat_window_controller()
+            self._chat_window = controller
+            self._chat_window_loop_active = True
+            self._chat_streaming = False
+
+            self._append_chat_system_output(
+                "MyAgentCLI - Type /help for commands, Ctrl+D to exit."
+            )
+            self._append_chat_system_output(f"Project: {self._project_dir.name}")
+
             await controller.run(
                 self.process_input,
                 on_exit=self._handle_chat_exit,
@@ -762,7 +763,11 @@ class REPLEngine:
                 },
             )
             self._set_chat_agent_running(False)
-            request_stop = getattr(controller, "request_stop", None)
+            request_stop = (
+                getattr(controller, "request_stop", None)
+                if controller
+                else None
+            )
             if callable(request_stop):
                 request_stop()
             self._chat_window_loop_active = False
