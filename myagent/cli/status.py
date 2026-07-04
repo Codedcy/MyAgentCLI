@@ -7,6 +7,7 @@ be embedded in the shared layout.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -18,6 +19,14 @@ if TYPE_CHECKING:
 logger = logging.getLogger("myagent.cli.status")
 
 DEFAULT_SECTIONS = ["session", "tokens", "goal", "subagents", "tools", "health"]
+LEGACY_STATUS_BAR_ITEMS = ["subagents", "tokens", "thinking"]
+LEGACY_SECTION_MAPPING = {
+    "thinking": "thinking",
+    "tokens": "tokens",
+    "subagents": "subagents",
+}
+ANSI_PATTERN = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+CONTROL_PATTERN = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 
 @dataclass
@@ -44,6 +53,7 @@ class AgentInspectorPane:
         self.config = config
         self.status_model = status_model
         self._expanded = True
+        self._legacy_subagents_active_explicit = False
         self._data: dict[str, Any] = {
             "session_id": "",
             "project_name": "",
@@ -58,6 +68,8 @@ class AgentInspectorPane:
     def update(self, **kwargs: Any) -> None:
         """Update legacy status fields used before RuntimeStatusModel wiring."""
 
+        if "subagents_active" in kwargs:
+            self._legacy_subagents_active_explicit = True
         self._data.update(kwargs)
 
     def toggle(self) -> bool:
@@ -83,6 +95,7 @@ class AgentInspectorPane:
         try:
             from rich.console import Group
             from rich.panel import Panel
+            from rich.text import Text
         except ImportError:
             logger.exception(
                 "Rich renderables unavailable for agent inspector pane",
@@ -96,10 +109,16 @@ class AgentInspectorPane:
 
         status = self._current_status()
         if self._should_render_rail(terminal_columns):
-            return self._render_rail(status, Group, Panel)
-        return self._render_full(status, Group, Panel)
+            return self._render_rail(status, Group, Panel, Text)
+        return self._render_full(status, Group, Panel, Text)
 
-    def _render_full(self, status: dict[str, Any], group_cls: Any, panel_cls: Any):
+    def _render_full(
+        self,
+        status: dict[str, Any],
+        group_cls: Any,
+        panel_cls: Any,
+        text_cls: Any,
+    ):
         lines: list[str] = []
         sections = self._sections()
 
@@ -120,19 +139,29 @@ class AgentInspectorPane:
             lines.append("No status sections enabled")
 
         return panel_cls(
-            group_cls(*lines),
+            group_cls(*(text_cls(line) for line in lines)),
             title="Agent Inspector",
             width=self._pane_width(),
         )
 
-    def _render_rail(self, status: dict[str, Any], group_cls: Any, panel_cls: Any):
+    def _render_rail(
+        self,
+        status: dict[str, Any],
+        group_cls: Any,
+        panel_cls: Any,
+        text_cls: Any,
+    ):
         markers = [
             self._rail_token_indicator(status),
             f"SA {status['subagents_active']}",
         ]
         if status["health"]["last_error"] or status["health"]["retry_info"]:
             markers.append("!")
-        return panel_cls(group_cls(*markers), width=self._rail_width())
+        return panel_cls(
+            group_cls(*(text_cls(marker) for marker in markers)),
+            width=self._rail_width(markers),
+            padding=(0, 0),
+        )
 
     def _session_lines(self, status: dict[str, Any], sections: list[str]) -> list[str]:
         session = status["session"]
@@ -142,11 +171,14 @@ class AgentInspectorPane:
                 parts.append(f"Session: {self._short_text(session['session_id'], 28)}")
             if session["project_name"]:
                 parts.append(f"Project: {self._short_text(session['project_name'], 24)}")
-            if session["model"]:
-                parts.append(f"Model: {self._short_text(session['model'], 28)}")
+        lines = [" | ".join(parts)] if parts else []
+
+        model = self._short_text(session["model"], 28)
+        if "session" in sections and model:
+            lines.append(f"Model: {model}")
         if ("session" in sections or "thinking" in sections) and session["thinking"]:
-            parts.append(f"Thinking: {self._short_text(session['thinking'], 18)}")
-        return [" | ".join(parts)] if parts else []
+            lines.append(f"Thinking: {self._short_text(session['thinking'], 18)}")
+        return lines
 
     def _token_lines(self, status: dict[str, Any]) -> list[str]:
         tokens = status["tokens"]
@@ -334,11 +366,7 @@ class AgentInspectorPane:
                 "budget_limit": self._data.get("goal_budget_limit"),
             },
             "subagents": subagents,
-            "subagents_active": self._data.get(
-                "subagents_active",
-                self._active_subagent_count(subagents),
-            )
-            or 0,
+            "subagents_active": self._legacy_subagents_active_count(subagents),
             "tools": self._legacy_tools(),
             "health": {
                 "retry_info": self._data.get("retry_info", "") or "",
@@ -373,6 +401,11 @@ class AgentInspectorPane:
         active_states = {"created", "running", "retrying"}
         return sum(1 for info in subagents if self._attr(info, "status") in active_states)
 
+    def _legacy_subagents_active_count(self, subagents: list[Any]) -> int:
+        if self._legacy_subagents_active_explicit:
+            return self._data.get("subagents_active", 0) or 0
+        return self._active_subagent_count(subagents)
+
     def _should_render_rail(self, terminal_columns: int | None) -> bool:
         if not self._expanded:
             return True
@@ -398,14 +431,27 @@ class AgentInspectorPane:
     def _sections(self) -> list[str]:
         pane_config = self._pane_config()
         sections = getattr(pane_config, "sections", None)
-        if sections:
-            return list(sections)
-
         legacy_items = getattr(self.config, "status_bar_items", None)
-        if legacy_items:
-            mapping = {"thinking": "thinking", "tokens": "tokens", "subagents": "subagents"}
-            return [mapping[item] for item in legacy_items if item in mapping]
+        if self._should_use_legacy_sections(sections, legacy_items):
+            return [
+                LEGACY_SECTION_MAPPING[item]
+                for item in legacy_items
+                if item in LEGACY_SECTION_MAPPING
+            ]
+        if sections is not None:
+            return list(sections)
         return list(DEFAULT_SECTIONS)
+
+    def _should_use_legacy_sections(
+        self,
+        sections: Any,
+        legacy_items: Any,
+    ) -> bool:
+        return (
+            isinstance(legacy_items, list)
+            and legacy_items != LEGACY_STATUS_BAR_ITEMS
+            and sections == DEFAULT_SECTIONS
+        )
 
     def _pane_config(self) -> Any:
         return getattr(self.config, "status_pane", self.config)
@@ -416,8 +462,9 @@ class AgentInspectorPane:
         max_width = self._int_config("max_width", 48)
         return min(max(width, min_width), max_width)
 
-    def _rail_width(self) -> int:
-        return max(self._int_config("rail_width", 5), 5)
+    def _rail_width(self, markers: list[str]) -> int:
+        widest_marker = max((len(marker) for marker in markers), default=1)
+        return max(self._int_config("rail_width", 5), widest_marker + 2)
 
     def _int_config(self, name: str, default: int) -> int:
         value = getattr(self._pane_config(), name, default)
@@ -433,10 +480,18 @@ class AgentInspectorPane:
         return getattr(value, name, default)
 
     def _short_text(self, value: Any, max_chars: int) -> str:
-        text = " ".join(str(value or "").split())
+        text = self._sanitize_text(value)
         if len(text) <= max_chars:
             return text
+        if max_chars <= 3:
+            return text[:max_chars]
         return text[: max_chars - 3].rstrip() + "..."
+
+    def _sanitize_text(self, value: Any) -> str:
+        text = str(value or "")
+        text = ANSI_PATTERN.sub("", text)
+        text = CONTROL_PATTERN.sub("", text)
+        return " ".join(text.split())
 
     def _format_int(self, value: Any) -> str:
         try:

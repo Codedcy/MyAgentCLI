@@ -2,7 +2,7 @@ from rich.console import Console
 
 from myagent.agent.runtime_status import RuntimeStatusModel
 from myagent.cli.status import AgentInspectorPane, StatusBar, SubAgentInfo
-from myagent.config.schema import StatusPaneConfig
+from myagent.config.schema import StatusPaneConfig, UIConfig
 
 
 def render_text(renderable, *, width: int = 100) -> str:
@@ -118,10 +118,97 @@ def test_narrow_terminal_uses_rail_mode_without_long_task_names():
     assert "!" in text
 
 
+def test_default_rail_mode_keeps_compact_markers_on_single_lines():
+    model = RuntimeStatusModel()
+    model.update_tokens(context_usage=0.42)
+    model.upsert_subagent(
+        "agent-1",
+        task_name="Investigate overflow-prone rail rendering",
+        status="running",
+    )
+    model.update_health(last_error="timeout")
+    pane = AgentInspectorPane(StatusPaneConfig(), status_model=model)
+
+    text = render_text(pane.get_renderable(terminal_columns=80), width=80)
+
+    assert "42%" in text
+    assert "SA 1" in text
+    assert "!" in text
+
+
 def test_disabled_status_pane_returns_none():
     pane = AgentInspectorPane(StatusPaneConfig(enabled=False))
 
     assert pane.get_renderable(terminal_columns=120) is None
+
+
+def test_dynamic_text_escapes_rich_markup_literals():
+    model = RuntimeStatusModel()
+    model.update_session(
+        session_id="session-1",
+        project_name="[red]project[/red]",
+        model="deepseek-v4-pro",
+        thinking="Think High",
+    )
+    model.update_health(last_error="[red]boom[/red]")
+    pane = AgentInspectorPane(
+        StatusPaneConfig(width=48, collapse_below_columns=80),
+        status_model=model,
+    )
+
+    text = render_text(pane.get_renderable(terminal_columns=120), width=120)
+
+    assert "[red]project[/red]" in text
+    assert "[red]boom[/red]" in text
+
+
+def test_dynamic_text_strips_ansi_and_control_characters():
+    model = RuntimeStatusModel()
+    model.update_session(
+        session_id="sid\x1b[31m-red\x1b[0m",
+        project_name="Proj\x07Name",
+        model="deepseek-v4-pro",
+        thinking="Think High",
+    )
+    model.update_health(last_error="bad\x1b[31mred\x1b[0m\x08value")
+    pane = AgentInspectorPane(
+        StatusPaneConfig(width=48, collapse_below_columns=80),
+        status_model=model,
+    )
+
+    text = render_text(pane.get_renderable(terminal_columns=120), width=120)
+
+    assert "\x1b" not in text
+    assert "\x07" not in text
+    assert "\x08" not in text
+    assert "sid-red" in text
+    assert "ProjName" in text
+    assert "badredvalue" in text
+
+
+def test_dynamic_text_collapses_multiline_values():
+    model = RuntimeStatusModel()
+    model.update_session(
+        session_id="session-1",
+        project_name="Project\nName",
+        model="deepseek-v4-pro",
+        thinking="Think\tHigh",
+    )
+    model.update_tool(
+        "shell_command",
+        status="completed",
+        last_result_summary="first line\r\nsecond\tline",
+    )
+    pane = AgentInspectorPane(
+        StatusPaneConfig(width=48, collapse_below_columns=80),
+        status_model=model,
+    )
+
+    text = render_text(pane.get_renderable(terminal_columns=120), width=120)
+
+    assert "Project Name" in text
+    assert "Think High" in text
+    assert "first line second line" in text
 
 
 def test_long_subagent_text_is_truncated_in_full_mode():
@@ -145,6 +232,56 @@ def test_long_subagent_text_is_truncated_in_full_mode():
     assert long_summary not in text
     assert "TaskName" in text
     assert "Summary" in text
+
+
+def test_empty_sections_config_disables_all_sections():
+    model = RuntimeStatusModel()
+    model.update_session(
+        session_id="session-1",
+        project_name="MyAgentCLI",
+        model="deepseek-v4-pro",
+        thinking="Think High",
+    )
+    model.update_tokens(session_total=100, context_usage=0.25)
+    pane = AgentInspectorPane(
+        StatusPaneConfig(sections=[], width=44, collapse_below_columns=80),
+        status_model=model,
+    )
+
+    text = render_text(pane.get_renderable(terminal_columns=120), width=120)
+
+    assert "No status sections enabled" in text
+    assert "deepseek-v4-pro" not in text
+    assert "Tokens" not in text
+
+
+def test_legacy_status_bar_items_override_default_status_pane_sections():
+    config = UIConfig(status_bar_items=["tokens"])
+    pane = StatusBar(config)
+    pane.update(tokens=500, thinking="Think Max", subagents_active=2)
+
+    text = render_text(pane.get_renderable(terminal_columns=120), width=120)
+
+    assert "Tokens: 500" in text
+    assert "Think Max" not in text
+    assert "Sub-agents" not in text
+
+
+def test_legacy_subagent_details_compute_active_count_when_not_explicitly_set():
+    pane = StatusBar(StatusPaneConfig(width=44, collapse_below_columns=80))
+    pane.update(
+        subagents_details=[
+            SubAgentInfo(
+                agent_id="legacy-agent",
+                task_name="legacy-task",
+                status="running",
+            )
+        ],
+    )
+
+    text = render_text(pane.get_renderable(terminal_columns=120), width=120)
+
+    assert "1 total, 1 active" in text
 
 
 def test_statusbar_alias_and_legacy_update_subagent_details_still_render():
