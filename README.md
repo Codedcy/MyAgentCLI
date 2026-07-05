@@ -116,6 +116,8 @@ myagent --project-dir /path/to/project
 
 By default, starting `myagent` opens a fixed full-screen chat window for interactive work. The conversation history stays in a scrollable transcript pane, the input box remains pinned to the bottom, and the right-side Agent Inspector or narrow rail shows live session state such as token usage, subagents, tool activity, and health.
 
+The chat window draws explicit pane boundaries, wraps long transcript lines to the available terminal cell width, and labels turns with aligned `You |`, `Agent |`, `System |`, and `Tool |` prefixes. If a message is submitted while the agent is still answering, it is shown in the visible `Queue |` block first and moves into the transcript only when that queued turn starts processing.
+
 One-shot commands do not start the full-screen chat UI. Commands such as `myagent --help`, `myagent --list-sessions`, and `myagent --session <id> --export markdown` print their result and exit in the legacy command style.
 
 Chat window configuration:

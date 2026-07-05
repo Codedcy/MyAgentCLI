@@ -60,6 +60,11 @@ class FakeExitApp:
         self.invalidate_calls += 1
 
 
+class EmptyStatusPane:
+    def get_renderable(self, terminal_columns=None):
+        return None
+
+
 class ExitOnceApplication(FakeApplication):
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
@@ -203,6 +208,90 @@ def test_status_region_never_covers_the_bottom_input_line() -> None:
     assert "timeout" not in last_line
 
 
+def test_conversation_body_draws_boundaries_and_wraps_wide_text() -> None:
+    controller = make_controller(status_pane=EmptyStatusPane())
+    controller.append_output("你好" * 12 + " done")
+
+    rendered = controller._render_body_for_size(
+        terminal_columns=34,
+        terminal_rows=6,
+    )
+
+    lines = rendered.splitlines()
+    assert lines[0] == "+" + "-" * 32 + "+"
+    assert lines[-1] == "+" + "-" * 32 + "+"
+    assert all(line.startswith("|") and line.endswith("|") for line in lines[1:-1])
+    assert all(get_cwidth(line) <= 34 for line in lines)
+    assert any("done" in line for line in lines)
+    assert sum(1 for line in lines if "你好" in line) >= 2
+
+
+def test_wrapped_single_line_transcript_can_scroll_to_earlier_visual_rows() -> None:
+    controller = make_controller(status_pane=EmptyStatusPane())
+    controller.append_output("start " + ("你好" * 30) + " end")
+
+    bottom = controller._render_body_for_size(
+        terminal_columns=34,
+        terminal_rows=5,
+    )
+    assert "end" in bottom
+
+    controller._scroll_lines(-10)
+    scrolled = controller._render_body_for_size(
+        terminal_columns=34,
+        terminal_rows=5,
+    )
+
+    assert "Agent  | start" in scrolled
+
+
+def test_role_markers_and_spacing_distinguish_user_and_agent_turns() -> None:
+    controller = make_controller(status_pane=EmptyStatusPane())
+    controller.append_user_input("hello")
+    controller.append_output("hi there")
+
+    lines = controller._conversation_lines(height=6, width=50)
+
+    assert "You    | hello" in lines
+    assert "Agent  | hi there" in lines
+    assert "" in lines[lines.index("You    | hello") + 1 : lines.index("Agent  | hi there")]
+
+
+def test_submissions_waiting_for_agent_are_visible_as_queue() -> None:
+    submitted: list[str] = []
+    transcript = TranscriptBuffer()
+    controller = make_controller(transcript=transcript, status_pane=EmptyStatusPane())
+    controller._on_submit = submitted.append
+    controller.set_agent_running(True)
+
+    controller._handle_submit("queued question")
+
+    assert submitted == ["queued question"]
+    assert transcript.visible_entries(10) == []
+    queued_lines = controller._conversation_lines(height=6, width=60)
+    assert "Queue  | 1 pending" in queued_lines
+    assert any("1. queued question" in line for line in queued_lines)
+
+    controller.mark_submission_started("queued question")
+
+    assert transcript.visible_entries(10)[-1].role == "user"
+    assert transcript.visible_entries(10)[-1].plain_text == "queued question"
+    assert not any("Queue  |" in line for line in controller._conversation_lines(6, 60))
+
+
+def test_long_queued_submission_preserves_queue_header_in_small_viewport() -> None:
+    controller = make_controller(status_pane=EmptyStatusPane())
+    controller.set_agent_running(True)
+    controller._on_submit = lambda text: None
+
+    controller._handle_submit("queued " * 30)
+
+    queued_lines = controller._conversation_lines(height=3, width=32)
+
+    assert queued_lines[0] == "Queue  | 1 pending"
+    assert any("1. queued" in line for line in queued_lines)
+
+
 def test_append_methods_update_transcript_and_refresh_once_per_append() -> None:
     transcript = TranscriptBuffer()
     controller = make_controller(transcript=transcript)
@@ -249,7 +338,7 @@ def test_page_and_wheel_actions_move_transcript_viewport_and_refresh() -> None:
     controller = make_controller(transcript=transcript)
     for index in range(8):
         transcript.append_assistant(f"line-{index}")
-    controller._render_for_size(terminal_columns=100, terminal_rows=4)
+    controller._render_for_size(terminal_columns=100, terminal_rows=6)
     controller.refresh = Mock()
 
     controller._page(-1)
@@ -272,13 +361,13 @@ def test_scroll_moves_within_single_multiline_transcript_entry() -> None:
     controller = make_controller(transcript=transcript)
     controller.append_output("\n".join(f"line-{index}" for index in range(10)))
 
-    bottom = controller._render_body_for_size(terminal_columns=100, terminal_rows=3)
+    bottom = controller._render_body_for_size(terminal_columns=100, terminal_rows=5)
     assert "line-7" in bottom
     assert "line-8" in bottom
     assert "line-9" in bottom
 
     controller._scroll_lines(-3)
-    scrolled = controller._render_body_for_size(terminal_columns=100, terminal_rows=3)
+    scrolled = controller._render_body_for_size(terminal_columns=100, terminal_rows=5)
 
     assert "line-4" in scrolled
     assert "line-5" in scrolled
@@ -322,13 +411,43 @@ def test_unread_marker_does_not_evict_scrolled_transcript_lines() -> None:
     after_output = controller._conversation_lines(height=3, width=100)
 
     assert before_output == [
-        "Agent: line-2",
-        "Agent: line-3",
-        "Agent: line-4",
+        "Agent  | line-2",
+        "Agent  | line-3",
+        "Agent  | line-4",
     ]
-    assert "Agent: line-2" in after_output
-    assert "Agent: line-3" in after_output
-    assert any(line.startswith("Agent: line-4") for line in after_output)
+    assert "Agent  | line-2" in after_output
+    assert "Agent  | line-3" in after_output
+    assert any(line.startswith("Agent  | line-4") for line in after_output)
+    assert any("[1 new messages]" in line for line in after_output)
+
+
+def test_unread_marker_tracks_visual_scroll_inside_wrapped_single_line() -> None:
+    transcript = TranscriptBuffer(follow_output="auto")
+    controller = make_controller(transcript=transcript, status_pane=EmptyStatusPane())
+    controller.append_output("start " + ("你好" * 30) + " end")
+    controller._render_body_for_size(terminal_columns=34, terminal_rows=5)
+    controller._scroll_lines(-10)
+
+    assert transcript.unread_count == 0
+
+    controller.append_output("new output")
+    after_output = controller._conversation_lines(height=3, width=32)
+
+    assert transcript.unread_count == 0
+    assert any("[1 new messages]" in line for line in after_output)
+
+
+def test_tool_output_uses_visual_unread_accounting_when_scrolled_up() -> None:
+    transcript = TranscriptBuffer(follow_output="auto")
+    controller = make_controller(transcript=transcript, status_pane=EmptyStatusPane())
+    controller.append_output("start " + ("你好" * 30) + " end")
+    controller._render_body_for_size(terminal_columns=34, terminal_rows=5)
+    controller._scroll_lines(-10)
+
+    controller.append_tool("Tool: read ok")
+    after_output = controller._conversation_lines(height=3, width=32)
+
+    assert transcript.unread_count == 0
     assert any("[1 new messages]" in line for line in after_output)
 
 

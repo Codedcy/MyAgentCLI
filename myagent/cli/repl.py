@@ -763,7 +763,32 @@ class REPLEngine:
         if self._chat_submission_lock is None:
             self._chat_submission_lock = asyncio.Lock()
         async with self._chat_submission_lock:
+            self._mark_chat_submission_started(text)
             await self.process_input(text)
+
+    def _mark_chat_submission_started(self, text: str) -> None:
+        if not self._chat_window_active():
+            return
+
+        mark_submission_started = getattr(
+            self._chat_window,
+            "mark_submission_started",
+            None,
+        )
+        if callable(mark_submission_started):
+            mark_submission_started(text)
+            return
+
+        append_user_input = getattr(self._chat_window, "append_user_input", None)
+        if callable(append_user_input):
+            append_user_input(text)
+            return
+
+        transcript = getattr(self._chat_window, "transcript", None)
+        transcript_append_user = getattr(transcript, "append_user", None)
+        if callable(transcript_append_user):
+            transcript_append_user(text)
+            self._refresh_chat_window()
 
     async def _handle_chat_interrupt(self) -> None:
         engine_task = getattr(self, "_active_engine_task", None)

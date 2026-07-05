@@ -810,6 +810,18 @@ def test_output_to_console_captures_rich_panel_as_chat_transcript_text():
     assert "<rich.panel.Panel object" not in entry.plain_text
 
 
+def test_tool_output_to_real_chat_controller_uses_tool_append_path():
+    transcript = TranscriptBuffer()
+    chat = make_real_chat_controller(transcript=transcript)
+    repl = active_chat_repl(chat)
+
+    assert repl._append_chat_tool_output("Tool: read ok") is True
+
+    entry = transcript_entries(transcript)[-1]
+    assert entry.role == "tool"
+    assert entry.plain_text == "Tool: read ok"
+
+
 @pytest.mark.asyncio
 async def test_process_input_routes_chat_stream_tool_and_error_entries():
     transcript = TranscriptBuffer()
@@ -898,6 +910,26 @@ async def test_process_input_routes_slash_command_result_to_chat_system_entry():
     entry = transcript_entries(transcript)[-1]
     assert entry.role == "system"
     assert entry.plain_text == "Thinking mode: think-high"
+
+
+@pytest.mark.asyncio
+async def test_chat_submission_routes_slash_command_after_appending_user_turn():
+    class FakeCommands:
+        async def dispatch(self, line, ctx):
+            return CommandResult(output="Thinking mode: think-high")
+
+    transcript = TranscriptBuffer()
+    chat = make_real_chat_controller(transcript=transcript)
+    repl = active_chat_repl(chat, commands=FakeCommands())
+    repl._current_session = SimpleNamespace(id="session-1")
+
+    await repl._process_chat_submission("/mode think-high")
+
+    entries = transcript_entries(transcript)
+    assert [(entry.role, entry.plain_text) for entry in entries] == [
+        ("user", "/mode think-high"),
+        ("system", "Thinking mode: think-high"),
+    ]
 
 
 @pytest.mark.asyncio
@@ -1011,6 +1043,61 @@ async def test_chat_submissions_are_serialized_and_preserve_active_engine_task()
         engine.release_first.set()
         await asyncio.wait_for(run_task, timeout=1.0)
 
+    assert engine.started == ["first", "second"]
+
+
+@pytest.mark.asyncio
+async def test_chat_submission_appends_user_turn_only_when_processing_starts():
+    class ControlledEngine:
+        def __init__(self):
+            self.interrupt_event = SimpleNamespace(clear=lambda: None)
+            self.started = []
+            self.first_started = asyncio.Event()
+            self.second_started = asyncio.Event()
+            self.release_first = asyncio.Event()
+
+        async def run(self, text, session, active_skill=None):
+            self.started.append(text)
+            if text == "first":
+                self.first_started.set()
+                yield TextChunk("first answer")
+                await self.release_first.wait()
+                yield Done()
+                return
+
+            self.second_started.set()
+            yield TextChunk("second answer")
+            yield Done()
+
+    transcript = TranscriptBuffer()
+    chat = make_real_chat_controller(transcript=transcript)
+    engine = ControlledEngine()
+    repl = active_chat_repl(chat, engine=engine, renderer=Renderer())
+    repl._current_session = SimpleNamespace(id="session-1")
+
+    first_task = asyncio.create_task(repl._process_chat_submission("first"))
+    await asyncio.wait_for(engine.first_started.wait(), timeout=1.0)
+    second_task = asyncio.create_task(repl._process_chat_submission("second"))
+    await asyncio.sleep(0)
+
+    try:
+        user_entries = [
+            entry.plain_text
+            for entry in transcript_entries(transcript)
+            if entry.role == "user"
+        ]
+        assert user_entries == ["first"]
+        assert engine.started == ["first"]
+    finally:
+        engine.release_first.set()
+        await asyncio.wait_for(asyncio.gather(first_task, second_task), timeout=1.0)
+
+    user_entries = [
+        entry.plain_text
+        for entry in transcript_entries(transcript)
+        if entry.role == "user"
+    ]
+    assert user_entries == ["first", "second"]
     assert engine.started == ["first", "second"]
 
 

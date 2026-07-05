@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 import logging
 import traceback
@@ -19,7 +20,7 @@ from prompt_toolkit.widgets import TextArea
 from myagent.cli.input_controller import ChatInputActions, InputController
 from myagent.cli.rich_capture import capture_renderable, sanitize_terminal_text
 from myagent.cli.status import AgentInspectorPane
-from myagent.cli.transcript import TranscriptBuffer, TranscriptLine
+from myagent.cli.transcript import TranscriptBuffer, TranscriptEntry, TranscriptLine
 
 logger = logging.getLogger("myagent.cli.chat_window")
 
@@ -34,6 +35,7 @@ ROLE_LABELS = {
     "tool": "Tool",
     "user": "You",
 }
+ROLE_LABEL_WIDTH = max(len(label) for label in ROLE_LABELS.values())
 
 
 def _clip_cells(text: str, width: int) -> str:
@@ -56,6 +58,42 @@ def _clip_cells(text: str, width: int) -> str:
 def _pad_cells(text: str, width: int) -> str:
     clipped = _clip_cells(text, width)
     return f"{clipped}{' ' * max(0, width - get_cwidth(clipped))}"
+
+
+def _wrap_cells(text: str, width: int) -> list[str]:
+    """Wrap text to a terminal cell width without splitting wide characters."""
+
+    if width <= 0:
+        return [""]
+
+    wrapped: list[str] = []
+    raw_lines = text.splitlines() or [""]
+    for raw_line in raw_lines:
+        if raw_line == "":
+            wrapped.append("")
+            continue
+
+        current: list[str] = []
+        cells = 0
+        for character in raw_line:
+            character_width = get_cwidth(character)
+            if current and cells + character_width > width:
+                wrapped.append("".join(current))
+                current = []
+                cells = 0
+
+            if not current and character_width > width:
+                clipped = _clip_cells(character, width)
+                if clipped:
+                    wrapped.append(clipped)
+                continue
+
+            current.append(character)
+            cells += character_width
+
+        wrapped.append("".join(current))
+
+    return wrapped or [""]
 
 
 class ChatWindowController:
@@ -89,11 +127,15 @@ class ChatWindowController:
         self._last_terminal_columns = DEFAULT_COLUMNS
         self._last_terminal_rows = DEFAULT_ROWS
         self._last_viewport_height = DEFAULT_ROWS - 1
+        self._last_conversation_width = DEFAULT_COLUMNS
+        self._visual_scroll_offset = 0
+        self._visual_unread_count = 0
         self._on_submit: Callable[[str], Any] | None = None
         self._on_exit: Callable[[], Any] | None = None
         self._on_interrupt: Callable[[], Any] | None = None
         self._ask_future: asyncio.Future[str | None] | None = None
         self._exit_confirmation_pending = False
+        self._queued_submissions: list[str] = []
 
         self._input_actions = ChatInputActions(
             submit=self._handle_submit,
@@ -161,32 +203,47 @@ class ChatWindowController:
     def append_user_input(self, text: str) -> None:
         """Append user-submitted text to the visible transcript."""
 
-        self.transcript.append_user(text)
-        self.refresh()
+        self._append_transcript(lambda: self.transcript.append_user(text))
+
+    def mark_submission_started(self, text: str) -> None:
+        """Move a submitted message from the visible queue into the transcript."""
+
+        normalized = self.input_controller.normalize_submit_text(text)
+        if not normalized:
+            return
+        self._remove_queued_submission(normalized)
+        self.append_user_input(normalized)
 
     def append_output(self, content: object, end: str = "\n") -> None:
         """Append assistant output, capturing Rich renderables as plain text."""
 
         plain_text = self._plain_output(content)
         stored_content = content if not isinstance(content, str) else plain_text
-        self.transcript.append_assistant(
-            stored_content,
-            plain_text=plain_text,
-            end=end,
+        self._append_transcript(
+            lambda: self.transcript.append_assistant(
+                stored_content,
+                plain_text=plain_text,
+                end=end,
+            )
         )
-        self.refresh()
 
     def append_system(self, text: str) -> None:
         """Append a system message to the visible transcript."""
 
-        self.transcript.append_system(text)
-        self.refresh()
+        self._append_transcript(lambda: self.transcript.append_system(text))
 
     def append_error(self, text: str) -> None:
         """Append an error message to the visible transcript."""
 
-        self.transcript.append_error(text)
-        self.refresh()
+        self._append_transcript(lambda: self.transcript.append_error(text))
+
+    def append_tool(self, content: object) -> None:
+        """Append a tool message to the visible transcript."""
+
+        plain_text = self._plain_output(content)
+        self._append_transcript(
+            lambda: self.transcript.append_tool(content, plain_text=plain_text)
+        )
 
     def refresh(self) -> None:
         """Invalidate the running application so prompt_toolkit redraws."""
@@ -194,6 +251,24 @@ class ChatWindowController:
         invalidate = getattr(self._app, "invalidate", None)
         if callable(invalidate):
             invalidate()
+
+    def _append_transcript(self, append: Callable[[], Any]) -> None:
+        before_total = self._visual_transcript_line_count()
+        before_unread_total = self._visual_transcript_unread_line_count()
+        should_follow = self._should_follow_visual_output()
+        append()
+        after_total = self._visual_transcript_line_count()
+        after_unread_total = self._visual_transcript_unread_line_count()
+        line_delta = max(0, after_total - before_total)
+        unread_delta = max(0, after_unread_total - before_unread_total)
+        if should_follow:
+            self._visual_scroll_offset = 0
+            self._visual_unread_count = 0
+        else:
+            self._visual_scroll_offset += line_delta
+            self._visual_unread_count += unread_delta
+            self._clamp_visual_scroll_offset(after_total, self._last_viewport_height)
+        self.refresh()
 
     def request_stop(self) -> None:
         """Request the full-screen application to exit."""
@@ -224,6 +299,7 @@ class ChatWindowController:
         """Tell input handling whether Ctrl+C should interrupt an active run."""
 
         self._agent_running = bool(running)
+        self.refresh()
 
     async def ask(self, prompt: str, timeout: float) -> str | None:
         """Ask for one response through the bottom input."""
@@ -290,18 +366,67 @@ class ChatWindowController:
         rows = max(1, int(terminal_rows))
         self._last_terminal_columns = columns
         self._last_terminal_rows = rows
-        self._last_viewport_height = rows
 
         status_text = self._status_text(columns)
         status_lines = status_text.splitlines()
+        if rows < 3 or columns < 4:
+            self._last_viewport_height = rows
+            if not status_lines:
+                return "\n".join(self._conversation_lines(rows, columns))
+            return self._render_unbordered_body(columns, rows, status_lines)
+
+        content_rows = rows - 2
+        self._last_viewport_height = content_rows
+        inner_columns = columns - 2
         if not status_lines:
-            return "\n".join(self._conversation_lines(rows, columns))
+            conversation_width = inner_columns
+            self._last_conversation_width = conversation_width
+            conversation_lines = self._conversation_lines(
+                content_rows,
+                conversation_width,
+            )
+            return "\n".join(
+                self._render_bordered_body(
+                    columns=columns,
+                    conversation_width=conversation_width,
+                    conversation_lines=conversation_lines,
+                    status_width=0,
+                    status_lines=[],
+                )
+            )
 
         status_width = min(
-            max((len(line) for line in status_lines), default=0),
+            max((get_cwidth(line) for line in status_lines), default=0),
+            max(1, inner_columns - 2),
+        )
+        conversation_width = max(1, inner_columns - status_width - 1)
+        self._last_conversation_width = conversation_width
+        conversation_lines = self._conversation_lines(
+            content_rows,
+            conversation_width,
+        )
+        return "\n".join(
+            self._render_bordered_body(
+                columns=columns,
+                conversation_width=conversation_width,
+                conversation_lines=conversation_lines,
+                status_width=status_width,
+                status_lines=status_lines,
+            )
+        )
+
+    def _render_unbordered_body(
+        self,
+        columns: int,
+        rows: int,
+        status_lines: list[str],
+    ) -> str:
+        status_width = min(
+            max((get_cwidth(line) for line in status_lines), default=0),
             max(1, columns - 1),
         )
         conversation_width = max(1, columns - status_width - 1)
+        self._last_conversation_width = conversation_width
         conversation_lines = self._conversation_lines(rows, conversation_width)
         rendered_lines: list[str] = []
         for index in range(rows):
@@ -315,35 +440,193 @@ class ChatWindowController:
                 rendered_lines.append(_clip_cells(left, columns))
         return "\n".join(rendered_lines)
 
+    def _render_bordered_body(
+        self,
+        *,
+        columns: int,
+        conversation_width: int,
+        conversation_lines: list[str],
+        status_width: int,
+        status_lines: list[str],
+    ) -> list[str]:
+        has_status = status_width > 0 and bool(status_lines)
+        top = f"+{'-' * conversation_width}"
+        if has_status:
+            top = f"{top}+{'-' * status_width}"
+        top = f"{top}+"
+
+        rendered = [_clip_cells(top, columns)]
+        for index in range(len(conversation_lines)):
+            left = (
+                conversation_lines[index]
+                if index < len(conversation_lines)
+                else ""
+            )
+            line = f"|{_pad_cells(left, conversation_width)}"
+            if has_status:
+                right = status_lines[index] if index < len(status_lines) else ""
+                line = f"{line}|{_pad_cells(right, status_width)}"
+            line = f"{line}|"
+            rendered.append(_clip_cells(line, columns))
+        rendered.append(_clip_cells(top, columns))
+        return rendered
+
     def _conversation_lines(self, height: int, width: int) -> list[str]:
-        lines = [
-            self._transcript_line_text(line, width)
-            for line in self.transcript.visible_lines(height)
-        ]
-        if (
-            self.transcript.unread_count
-            and not self.transcript.at_bottom(height)
-        ):
+        height = max(1, int(height))
+        width = max(1, int(width))
+        self._last_conversation_width = width
+
+        transcript_lines = self._render_transcript_lines(width)
+        queue_lines = self._visible_queue_lines(
+            width=width,
+            height=height,
+            has_transcript=bool(transcript_lines),
+        )
+        separator_height = 1 if transcript_lines and queue_lines else 0
+        transcript_height = max(0, height - len(queue_lines) - separator_height)
+        lines = self._slice_visual_transcript_lines(
+            transcript_lines,
+            transcript_height,
+        )
+
+        if self._visual_unread_count and self._visual_scroll_offset > 0:
             self._place_unread_marker(
                 lines,
-                f"[{self.transcript.unread_count} new messages]",
+                f"[{self._visual_unread_count} new messages]",
                 width,
             )
+
+        if queue_lines:
+            if lines and len(lines) < height:
+                lines.append("")
+            lines.extend(queue_lines)
 
         if not lines:
             lines = ["Conversation"]
 
-        clipped = lines[-height:]
+        clipped = lines[:height]
         return [_clip_cells(line, width) for line in clipped] + [""] * max(
             0,
             height - len(clipped),
         )
 
-    def _transcript_line_text(self, line: TranscriptLine, width: int) -> str:
+    def _render_transcript_lines(self, width: int) -> list[str]:
+        lines: list[str] = []
+        previous_role: str | None = None
+        for entry in self.transcript.entries():
+            if lines and previous_role != entry.role:
+                lines.append("")
+            lines.extend(self._transcript_entry_text(entry, width))
+            previous_role = entry.role
+        return lines
+
+    def _transcript_entry_text(
+        self,
+        entry: TranscriptEntry,
+        width: int,
+    ) -> list[str]:
+        lines: list[str] = []
+        for line_index, text in enumerate(entry.plain_text.split("\n")):
+            line = TranscriptLine(entry=entry, line_index=line_index, text=text)
+            lines.extend(self._transcript_line_text(line, width))
+        return lines
+
+    def _slice_visual_transcript_lines(
+        self,
+        transcript_lines: list[str],
+        height: int,
+    ) -> list[str]:
+        if height <= 0 or not transcript_lines:
+            return []
+
+        total_lines = len(transcript_lines)
+        self._clamp_visual_scroll_offset(total_lines, height)
+        bottom = max(0, total_lines - self._visual_scroll_offset)
+        top = max(0, bottom - height)
+        return transcript_lines[top:bottom]
+
+    def _visual_transcript_line_count(self) -> int:
+        return len(self._render_transcript_lines(self._last_conversation_width))
+
+    def _visual_transcript_unread_line_count(self) -> int:
+        return sum(
+            1
+            for line in self._render_transcript_lines(self._last_conversation_width)
+            if line.strip()
+        )
+
+    def _should_follow_visual_output(self) -> bool:
+        if self.transcript.follow_output == "always":
+            return True
+        if self.transcript.follow_output == "manual":
+            return False
+        return self._visual_scroll_offset == 0
+
+    def _clamp_visual_scroll_offset(self, total_lines: int, viewport_height: int) -> None:
+        max_scroll = max(0, total_lines - max(1, int(viewport_height)))
+        self._visual_scroll_offset = min(max(self._visual_scroll_offset, 0), max_scroll)
+        if self._visual_scroll_offset == 0:
+            self._visual_unread_count = 0
+
+    def _transcript_line_text(self, line: TranscriptLine, width: int) -> list[str]:
         if line.line_index == 0:
             label = ROLE_LABELS.get(line.entry.role, line.entry.role.title())
-            return _clip_cells(f"{label}: {line.text}", width)
-        return _clip_cells(f"  {line.text}", width)
+            prefix = self._role_prefix(label)
+        else:
+            prefix = self._continuation_prefix()
+        return self._wrap_prefixed_text(prefix, line.text, width)
+
+    def _queue_lines(self, width: int) -> list[str]:
+        lines = self._wrap_prefixed_text(
+            self._role_prefix("Queue"),
+            f"{len(self._queued_submissions)} pending",
+            width,
+        )
+        for index, queued in enumerate(self._queued_submissions, start=1):
+            lines.extend(
+                self._wrap_prefixed_text(
+                    self._continuation_prefix(),
+                    f"{index}. {queued}",
+                    width,
+                )
+            )
+        return lines
+
+    def _visible_queue_lines(
+        self,
+        *,
+        width: int,
+        height: int,
+        has_transcript: bool,
+    ) -> list[str]:
+        if not self._queued_submissions or height <= 0:
+            return []
+
+        queue_lines = self._queue_lines(width)
+        if not has_transcript or height <= 5:
+            return queue_lines[:height]
+
+        max_queue_height = max(2, height // 3)
+        return queue_lines[: min(len(queue_lines), max_queue_height)]
+
+    def _role_prefix(self, label: str) -> str:
+        return f"{label:<{ROLE_LABEL_WIDTH}} | "
+
+    def _continuation_prefix(self) -> str:
+        return f"{'':<{ROLE_LABEL_WIDTH}} | "
+
+    def _wrap_prefixed_text(self, prefix: str, text: str, width: int) -> list[str]:
+        prefix_width = get_cwidth(prefix)
+        if width <= prefix_width:
+            return [_clip_cells(prefix.rstrip(), width)]
+
+        content_width = width - prefix_width
+        wrapped = _wrap_cells(text, content_width)
+        lines = [f"{prefix}{wrapped[0]}"]
+        continuation = self._continuation_prefix()
+        for segment in wrapped[1:]:
+            lines.append(f"{continuation}{segment}")
+        return [_clip_cells(line, width) for line in lines]
 
     def _place_unread_marker(
         self,
@@ -441,12 +724,22 @@ class ChatWindowController:
         if not normalized:
             return
         self._cancel_exit_confirmation()
-        self.append_user_input(normalized)
         if self._ask_future is not None and not self._ask_future.done():
+            self.append_user_input(normalized)
             self._finish_pending_ask(normalized)
             return
+        if self._agent_running:
+            self._queue_submission(normalized)
         if self._on_submit is not None:
             self._call_background(self._on_submit, normalized)
+
+    def _queue_submission(self, text: str) -> None:
+        self._queued_submissions.append(text)
+        self.refresh()
+
+    def _remove_queued_submission(self, text: str) -> None:
+        with contextlib.suppress(ValueError):
+            self._queued_submissions.remove(text)
 
     def _insert_newline(self, buffer: Any) -> None:
         self._cancel_exit_confirmation()
@@ -482,11 +775,15 @@ class ChatWindowController:
 
     def _scroll_lines(self, delta: int) -> None:
         self.transcript.scroll_lines(delta, self._last_viewport_height)
+        self._visual_scroll_offset -= int(delta)
+        self._clamp_visual_scroll_offset(
+            self._visual_transcript_line_count(),
+            self._last_viewport_height,
+        )
         self.refresh()
 
     def _page(self, delta: int) -> None:
-        self.transcript.page(delta, self._last_viewport_height)
-        self.refresh()
+        self._scroll_lines(delta * max(1, self._last_viewport_height))
 
     def _current_terminal_size(self) -> tuple[int, int]:
         app = get_app_or_none()

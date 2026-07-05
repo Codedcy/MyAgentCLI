@@ -166,6 +166,11 @@ class TranscriptBuffer:
 
         return visible
 
+    def entries(self) -> list[TranscriptEntry]:
+        """Return a snapshot of retained transcript entries."""
+
+        return list(self._entries)
+
     def visible_lines(self, viewport_height: int) -> list[TranscriptLine]:
         """Return line-sliced entries intersecting the current viewport."""
 

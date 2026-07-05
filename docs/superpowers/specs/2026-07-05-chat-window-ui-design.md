@@ -66,12 +66,13 @@ The preferred implementation is a prompt_toolkit full-screen `Application` with 
 1. Startup builds `RuntimeStatusModel`, `AgentInspectorPane`, `TranscriptBuffer`, and `ChatWindowController`.
 2. Existing session resume loads recent transcript messages into `TranscriptBuffer`.
 3. User edits in the bottom input box.
-4. On submit, the user message is appended to the transcript buffer and passed to `REPLEngine.process_input()`.
-5. Engine events update two sinks:
+4. On submit, the message is passed into the chat submission pipeline. If another agent turn is already running, the message appears in a visible `Queue |` block instead of being appended to the transcript immediately.
+5. When the queued submission acquires the REPL chat-submission lock, it is moved from the visible queue into the transcript as the next `You |` turn and then passed to `REPLEngine.process_input()`.
+6. Engine events update two sinks:
    - visible conversation renderables go to `TranscriptBuffer`;
    - `StatusUpdate` and lifecycle events go to `RuntimeStatusModel`.
-6. The chat window invalidates only the affected regions: transcript viewport, input box, and Inspector.
-7. On shutdown, session persistence remains the existing `SessionManager` path.
+7. The chat window invalidates only the affected regions: transcript viewport, input box, queue, and Inspector.
+8. On shutdown, session persistence remains the existing `SessionManager` path.
 
 Status-only events must never appear as conversation messages and must not be persisted as transcript messages.
 
@@ -98,6 +99,9 @@ The conversation pane is an independent viewport:
 - new output auto-follows the bottom only when the user is already near the bottom;
 - if the user has scrolled up, new output should not yank the viewport down;
 - a small unread/new-output marker can appear when output arrives while scrolled away from bottom;
+- all transcript text is wrapped to the available terminal cell width before clipping, so long CJK/emoji/ASCII lines stay inside pane boundaries;
+- role labels are aligned (`You |`, `Agent |`, `System |`, `Tool |`) and role changes may include a blank visual separator for readability;
+- submissions made while an agent turn is active remain in a visible queue until their own turn starts, preventing queued questions from visually pairing with the wrong answer;
 - clearing the screen clears the transcript viewport for the current UI session while preserving session persistence behavior already defined by commands.
 
 ## Configuration
@@ -150,8 +154,10 @@ Required tests:
 - config schema and loader tests for `ui.chat_window` defaults and overrides;
 - startup wiring tests proving one-shot commands skip chat window and interactive REPL uses it by default;
 - layout tests for wide, narrow, and minimum terminal sizes;
+- layout tests proving pane boundaries are drawn and long transcript lines wrap within terminal cell width;
 - input tests for Enter submit, multiline insert, Tab completion, `F2`, `Ctrl+C`, and `Ctrl+D`;
 - scroll tests for mouse wheel/PageUp/PageDown, auto-follow at bottom, and no auto-yank when scrolled up;
+- queue tests proving submissions made during an active agent turn are visible as pending and move into the transcript only when processing starts;
 - engine integration tests proving streamed text, Rich panels, tool events, errors, and `StatusUpdate` route to the correct sinks;
 - fallback tests for full-screen startup/render failure;
 - regression tests proving no second Rich `Live` owner appears in chat-window mode.
