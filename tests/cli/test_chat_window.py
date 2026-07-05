@@ -257,6 +257,127 @@ def test_role_markers_and_spacing_distinguish_user_and_agent_turns() -> None:
     assert "" in lines[lines.index("You    | hello") + 1 : lines.index("Agent  | hi there")]
 
 
+def test_agent_compact_markdownish_response_gets_readable_breaks() -> None:
+    controller = make_controller(status_pane=EmptyStatusPane())
+    controller.append_output(
+        "我是 MyAgent，可以帮你完成任务。 ---### **文件与代码操作**"
+        "- 读写、编辑文件 - 用 glob 模式匹配查找文件### 🌐 **网络能力**"
+        "- 网页搜索 - 抓取网页内容"
+    )
+
+    lines = controller._conversation_lines(height=14, width=88)
+
+    assert any("Agent  | 我是 MyAgent，可以帮你完成任务。" in line for line in lines)
+    assert any("       | 文件与代码操作" in line for line in lines)
+    assert any("       | - 读写、编辑文件" in line for line in lines)
+    assert any("       | - 用 glob 模式匹配查找文件" in line for line in lines)
+    assert any("       | 🌐 网络能力" in line for line in lines)
+    assert any("       | - 网页搜索" in line for line in lines)
+    assert all("###" not in line and "**" not in line and "---" not in line for line in lines)
+
+
+def test_agent_inline_heading_without_rule_gets_readable_breaks() -> None:
+    controller = make_controller(status_pane=EmptyStatusPane())
+    controller.append_output("Intro### Notes- first - second")
+
+    lines = controller._conversation_lines(height=8, width=72)
+
+    assert any("Agent  | Intro" in line for line in lines)
+    assert any("       | Notes" in line for line in lines)
+    assert any("       | - first" in line for line in lines)
+    assert any("       | - second" in line for line in lines)
+    assert all("###" not in line for line in lines)
+
+
+def test_agent_existing_markdown_line_breaks_stay_readable() -> None:
+    controller = make_controller(status_pane=EmptyStatusPane())
+    controller.append_output(
+        "可以。\n\n### **步骤**\n- 读取文件\n- 运行测试\n\n```python\nprint('hi')\n```"
+    )
+
+    lines = controller._conversation_lines(height=12, width=72)
+
+    assert any("Agent  | 可以。" in line for line in lines)
+    assert any("       | 步骤" in line for line in lines)
+    assert any("       | - 读取文件" in line for line in lines)
+    assert any("       | - 运行测试" in line for line in lines)
+    assert any("       | ```python" in line for line in lines)
+    assert any("       | print('hi')" in line for line in lines)
+
+
+def test_agent_line_start_markdown_heading_does_not_leave_marker_fragment() -> None:
+    controller = make_controller(status_pane=EmptyStatusPane())
+    controller.append_output("### Notes")
+
+    lines = controller._conversation_lines(height=4, width=72)
+
+    assert any("Agent  | Notes" in line for line in lines)
+    assert not any(line in {"Agent  | #", "       | #"} for line in lines)
+
+
+def test_agent_bullet_with_ordinary_hyphen_stays_one_item() -> None:
+    controller = make_controller(status_pane=EmptyStatusPane())
+    controller.append_output("- Keep A - B mapping intact")
+
+    lines = controller._conversation_lines(height=4, width=72)
+
+    assert any("Agent  | - Keep A - B mapping intact" in line for line in lines)
+    assert not any("- B mapping intact" in line for line in lines if "Keep A" not in line)
+
+
+def test_agent_unclosed_code_fence_is_preserved_during_streaming() -> None:
+    controller = make_controller(status_pane=EmptyStatusPane())
+    controller.append_output(
+        'Intro\n```python\n# heading\nprint("a - b")',
+        end="",
+    )
+
+    lines = controller._conversation_lines(height=8, width=72)
+
+    assert any("Agent  | Intro" in line for line in lines)
+    assert any("       | ```python" in line for line in lines)
+    assert any("       | # heading" in line for line in lines)
+    assert any('       | print("a - b")' in line for line in lines)
+
+
+def test_agent_plain_prose_with_markdown_characters_stays_inline() -> None:
+    controller = make_controller(status_pane=EmptyStatusPane())
+    controller.append_output(
+        "Use **kwargs** - it keeps the API flexible. Search for # TODO in the file."
+    )
+
+    lines = controller._conversation_lines(height=4, width=100)
+
+    assert any(
+        "Agent  | Use **kwargs** - it keeps the API flexible. Search for # TODO in the file."
+        in line
+        for line in lines
+    )
+    assert not any(line.startswith("       | - it keeps") for line in lines)
+    assert not any(line.strip() == "TODO in the file." for line in lines)
+
+
+def test_agent_line_start_todo_marker_stays_literal() -> None:
+    controller = make_controller(status_pane=EmptyStatusPane())
+    controller.append_output("# TODO in the file")
+
+    lines = controller._conversation_lines(height=4, width=72)
+
+    assert any("Agent  | # TODO in the file" in line for line in lines)
+    assert not any(line.strip() == "TODO in the file" for line in lines)
+
+
+def test_agent_code_fence_keeps_multiple_blank_lines() -> None:
+    controller = make_controller(status_pane=EmptyStatusPane())
+    controller.append_output("### Notes\n```text\nalpha\n\n\nbeta\n```")
+
+    lines = controller._conversation_lines(height=8, width=72)
+    alpha_index = lines.index("       | alpha")
+    beta_index = lines.index("       | beta")
+
+    assert lines[alpha_index + 1 : beta_index] == ["       | ", "       | "]
+
+
 def test_submissions_waiting_for_agent_are_visible_as_queue() -> None:
     submitted: list[str] = []
     transcript = TranscriptBuffer()

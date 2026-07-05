@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import inspect
 import logging
+import re
 import traceback
 from collections.abc import Callable
 from typing import Any
@@ -36,6 +37,10 @@ ROLE_LABELS = {
     "user": "You",
 }
 ROLE_LABEL_WIDTH = max(len(label) for label in ROLE_LABELS.values())
+INLINE_HEADING_PATTERN = re.compile(r"([^#\n])\s*(#{2,6}\s+)")
+MARKDOWN_SIGNAL_PATTERN = re.compile(
+    r"---\s*#{2,6}\s*|(?:^|\n)\s*#{2,6}\s+|[^#\n]\s*#{2,6}\s+|(?:^|\n)\s*[-*]\s+"
+)
 
 
 def _clip_cells(text: str, width: int) -> str:
@@ -94,6 +99,88 @@ def _wrap_cells(text: str, width: int) -> list[str]:
         wrapped.append("".join(current))
 
     return wrapped or [""]
+
+
+def _format_agent_text_for_display(text: str) -> str:
+    """Turn common compact Markdown-ish agent text into readable plain text."""
+
+    segments = _split_code_fence_segments(text)
+    if not any(
+        MARKDOWN_SIGNAL_PATTERN.search(segment)
+        for is_code, segment in segments
+        if not is_code
+    ):
+        return text
+
+    formatted_parts = [
+        segment if is_code else _format_agent_markdown_segment(segment)
+        for is_code, segment in segments
+    ]
+    return "".join(formatted_parts).strip("\n")
+
+
+def _split_code_fence_segments(text: str) -> list[tuple[bool, str]]:
+    segments: list[tuple[bool, str]] = []
+    cursor = 0
+    while cursor < len(text):
+        start = text.find("```", cursor)
+        if start < 0:
+            segments.append((False, text[cursor:]))
+            break
+
+        if start > cursor:
+            segments.append((False, text[cursor:start]))
+
+        end = text.find("```", start + 3)
+        if end < 0:
+            segments.append((True, text[start:]))
+            break
+
+        end += 3
+        segments.append((True, text[start:end]))
+        cursor = end
+
+    return segments or [(False, "")]
+
+
+def _format_agent_markdown_segment(segment: str) -> str:
+    segment = re.sub(r"\s*---\s*(?=#{2,6}\s*)", "\n\n", segment)
+    segment = INLINE_HEADING_PATTERN.sub(r"\1\n\n\2", segment)
+    segment = _expand_compact_heading_lists(segment)
+
+    cleaned_lines: list[str] = []
+    for line in segment.split("\n"):
+        cleaned_lines.extend(_clean_agent_markdown_line(line))
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(cleaned_lines))
+
+
+def _expand_compact_heading_lists(segment: str) -> str:
+    lines: list[str] = []
+    for line in segment.split("\n"):
+        match = re.match(r"^(\s*#{2,6}\s+.*?\S)-\s+(.+)$", line)
+        if not match:
+            lines.append(line)
+            continue
+
+        heading, items_text = match.groups()
+        lines.append(heading)
+        lines.extend(
+            f"- {item.strip()}"
+            for item in re.split(r"\s+-\s+", items_text)
+            if item.strip()
+        )
+    return "\n".join(lines)
+
+
+def _clean_agent_markdown_line(line: str) -> list[str]:
+    stripped = line.strip()
+    if not stripped or stripped == "---":
+        return [""]
+
+    stripped = re.sub(r"^#{2,6}\s*", "", stripped)
+    stripped = re.sub(r"\*\*([^*]+)\*\*", r"\1", stripped)
+    stripped = re.sub(r"^\*\s+", "- ", stripped)
+    return [stripped]
 
 
 class ChatWindowController:
@@ -526,7 +613,12 @@ class ChatWindowController:
         width: int,
     ) -> list[str]:
         lines: list[str] = []
-        for line_index, text in enumerate(entry.plain_text.split("\n")):
+        plain_text = (
+            _format_agent_text_for_display(entry.plain_text)
+            if entry.role == "assistant"
+            else entry.plain_text
+        )
+        for line_index, text in enumerate(plain_text.split("\n")):
             line = TranscriptLine(entry=entry, line_index=line_index, text=text)
             lines.extend(self._transcript_line_text(line, width))
         return lines

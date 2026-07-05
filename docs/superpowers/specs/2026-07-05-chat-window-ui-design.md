@@ -101,6 +101,7 @@ The conversation pane is an independent viewport:
 - a small unread/new-output marker can appear when output arrives while scrolled away from bottom;
 - all transcript text is wrapped to the available terminal cell width before clipping, so long CJK/emoji/ASCII lines stay inside pane boundaries;
 - role labels are aligned (`You |`, `Agent |`, `System |`, `Tool |`) and role changes may include a blank visual separator for readability;
+- assistant replies may receive display-only Markdown-ish cleanup for common compact headings, bold markers, horizontal separators, and bullet lists; this improves readability without changing persisted transcript text;
 - submissions made while an agent turn is active remain in a visible queue until their own turn starts, preventing queued questions from visually pairing with the wrong answer;
 - clearing the screen clears the transcript viewport for the current UI session while preserving session persistence behavior already defined by commands.
 
@@ -155,6 +156,7 @@ Required tests:
 - startup wiring tests proving one-shot commands skip chat window and interactive REPL uses it by default;
 - layout tests for wide, narrow, and minimum terminal sizes;
 - layout tests proving pane boundaries are drawn and long transcript lines wrap within terminal cell width;
+- formatting tests proving compact assistant Markdown-ish text is split into readable headings and list lines while existing code fences remain intact;
 - input tests for Enter submit, multiline insert, Tab completion, `F2`, `Ctrl+C`, and `Ctrl+D`;
 - scroll tests for mouse wheel/PageUp/PageDown, auto-follow at bottom, and no auto-yank when scrolled up;
 - queue tests proving submissions made during an active agent turn are visible as pending and move into the transcript only when processing starts;
