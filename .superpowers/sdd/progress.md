@@ -20,3 +20,15 @@ Task 9: complete (commits 2e852c3..710c2d2, 213 tests)
 Task 10: complete (commits 710c2d2..f72ff9e, 213 tests, 17 audit issues)
 Task 11: complete (commits f72ff9e..ce003e0, 213 tests + 4 integration)
 Final review fixes: a32ec95 (8 findings fixed — 3 critical, 5 important/plausible)
+
+## TUI Syntax Highlighting Progress
+
+**Plan:** docs/superpowers/plans/2026-07-07-tui-syntax-highlighting.md
+**Base:** d40b83b
+**Started:** 2026-07-07
+
+| Task | Status | Commits | Notes |
+|------|--------|---------|-------|
+| Task 1: Syntax Highlighting Helper | complete | d40b83b..46aaae1 | review clean |
+| Task 2: Chat Window Styled Fragments Integration | complete | 46aaae1..23298d8 | review clean |
+| Task 3: Documentation and Final Verification | complete | pending docs commit | pytest 531 passed; touched-file ruff passed; full ruff blocked by existing unrelated test lint |

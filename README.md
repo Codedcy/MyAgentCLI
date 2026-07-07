@@ -84,6 +84,7 @@ myagent --dangerously-skip-permissions
 - 右侧 Agent Inspector 显示 session、project、model、thinking、token、context、goal、subagent、tool 和 health 状态。
 - 输入框固定在底部，不会被流式输出推走。
 - 对话内容按终端宽度换行，常见 Markdown-ish 回复会在显示层整理成更适合阅读的标题、列表、表格和目录树。
+- 当 `ui.syntax_highlight` 开启时，Agent 回复和展开后的工具详情中的 fenced code block 会进行显示层语法高亮；支持 Python、JavaScript/TypeScript、SQL、JSON/YAML、Shell/PowerShell、HTML/CSS/XML、C/C++ 和 Rust 等语言族。
 - Agent 忙碌时继续发送的普通消息会先进入可见队列，等上一轮完成后再进入 transcript。
 - `/goal <text>` 等即时控制命令不会进入队列，会立即更新状态。
 - 工具结果默认折叠成一行摘要，按 F3 展开最近工具详情。
@@ -159,6 +160,7 @@ permissions:
     commands: ["sudo", "rm -rf /"]
 
 ui:
+  syntax_highlight: true
   chat_window:
     enabled: true
     scrollback_lines: 2000
@@ -283,8 +285,10 @@ pytest tests/ -v --cov=myagent --cov-report=term-missing
 
 - [总体设计文档](docs/superpowers/specs/2026-07-02-myagentcli-design.md)
 - [Chat Window UI 设计](docs/superpowers/specs/2026-07-05-chat-window-ui-design.md)
+- [TUI 语法高亮设计](docs/superpowers/specs/2026-07-07-tui-syntax-highlighting-design.md)
 - [实现计划](docs/superpowers/plans/2026-07-03-myagentcli-implementation.md)
 - [CLI Runtime UX 计划](docs/superpowers/plans/2026-07-07-cli-runtime-ux.md)
+- [TUI 语法高亮计划](docs/superpowers/plans/2026-07-07-tui-syntax-highlighting.md)
 
 ## License
 
