@@ -14,7 +14,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from myagent.cli.text_decode import decode_tool_output
+from myagent.utils.text_decode import decode_tool_output
 
 logger = logging.getLogger("myagent.agent.project")
 

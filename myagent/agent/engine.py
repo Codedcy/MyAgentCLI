@@ -471,6 +471,7 @@ class AgentEngine:
                     if tc.name == "skill_invoke" and self.skill_registry:
                         skill = self.skill_registry.get(tc.params.get("skill", ""))
                         if skill:
+                            yield ToolCallStart(name="skill_invoke", call_id=tc.id)
                             active_skill = skill.name
                             # Log skill invocation for metrics tracking (gap-20-05)
                             logger.info(

@@ -354,6 +354,18 @@ class FakeStreamingEngine:
             yield event
 
 
+class FakeWaitingEngine:
+    def __init__(self):
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.interrupt_event = SimpleNamespace(clear=lambda: None)
+
+    async def run(self, text, session, active_skill=None):
+        self.started.set()
+        await self.release.wait()
+        yield Done()
+
+
 @pytest.mark.asyncio
 async def test_process_input_uses_live_layout_for_streaming_chunks(layout_spy):
     engine = FakeStreamingEngine(
@@ -736,6 +748,30 @@ def test_thinking_elapsed_update_uses_running_loop_time(layout_spy):
     snapshot = model.snapshot()
     assert snapshot.thinking.active is True
     assert snapshot.thinking.elapsed_seconds == 3.25
+
+
+@pytest.mark.asyncio
+async def test_process_input_marks_thinking_active_before_first_engine_event(layout_spy):
+    model = RuntimeStatusModel()
+    engine = FakeWaitingEngine()
+    repl = REPLEngine(
+        engine=engine,
+        status_pane=FakeStatusPane(),
+        status_model=model,
+    )
+    repl._current_session = SimpleNamespace(id="session-1")
+
+    task = asyncio.create_task(repl.process_input("hello"))
+    await asyncio.wait_for(engine.started.wait(), timeout=1.0)
+
+    assert model.snapshot().thinking.active is True
+
+    engine.release.set()
+    await task
+
+    snapshot = model.snapshot()
+    assert snapshot.thinking.active is False
+    assert snapshot.thinking.elapsed_seconds == 0.0
 
 
 def test_toggle_inspector_delegates_to_layout_controller_and_refreshes(layout_spy):

@@ -1,13 +1,12 @@
 """Tests for MCP client (stdio JSON-RPC subprocess)."""
 
 import asyncio
-import json
 import logging
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from myagent.tools.mcp.client import MCPClient, RawToolDef
+from myagent.tools.mcp.client import MCPClient, SSETransport
 
 
 def _make_mock_process(stdin_writer=None, stdout_reader=None):
@@ -152,3 +151,16 @@ class TestMCPClient:
             await client.shutdown()
 
         assert client._started is False
+
+    def test_sse_event_parsing_preserves_protocol_payload_text(self):
+        transport = SSETransport("http://example.test")
+        payload = b'{"jsonrpc":"2.0","result":"\x1b[31mred\x1b[0m ok"}'
+
+        framed = transport._parse_sse_event(
+            b"event: message\n"
+            + b"data: "
+            + payload
+        )
+
+        assert framed is not None
+        assert payload in framed

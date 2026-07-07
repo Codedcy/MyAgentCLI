@@ -843,8 +843,13 @@ class ChatWindowController:
         self._last_conversation_width = width
 
         prompt_lines = self._transient_prompt_lines(width)
-        prompt_separator_height = 1 if prompt_lines and height > len(prompt_lines) else 0
-        content_height = max(0, height - len(prompt_lines) - prompt_separator_height)
+        bottom_lines = self._bottom_state_lines(width)
+        if prompt_lines:
+            if bottom_lines and height > len(bottom_lines) + len(prompt_lines):
+                bottom_lines.append("")
+            bottom_lines.extend(prompt_lines)
+        bottom_separator_height = 1 if bottom_lines and height > len(bottom_lines) else 0
+        content_height = max(0, height - len(bottom_lines) - bottom_separator_height)
         transcript_lines = self._render_transcript_lines(width)
         queue_lines = self._visible_queue_lines(
             width=width,
@@ -870,15 +875,15 @@ class ChatWindowController:
                 lines.append("")
             lines.extend(queue_lines)
 
-        if not lines and not prompt_lines:
+        if not lines and not bottom_lines:
             lines = ["Conversation"]
 
         clipped = lines[:content_height]
-        if prompt_lines:
+        if bottom_lines:
             clipped.extend("" for _ in range(max(0, content_height - len(clipped))))
-            if prompt_separator_height:
+            if bottom_separator_height:
                 clipped.append("")
-            clipped.extend(prompt_lines)
+            clipped.extend(bottom_lines)
         return [_clip_cells(line, width) for line in clipped] + [""] * max(
             0,
             height - len(clipped),
@@ -1003,6 +1008,43 @@ class ChatWindowController:
             prefix = self._role_prefix("Prompt") if index == 0 else self._continuation_prefix()
             lines.extend(self._wrap_prefixed_text(prefix, text, width))
         return lines
+
+    def _bottom_state_lines(self, width: int) -> list[str]:
+        if self.status_model is None:
+            return []
+        snapshot = self.status_model.snapshot()
+        thinking = getattr(snapshot, "thinking", None)
+        if thinking is None or not getattr(thinking, "active", False):
+            return []
+        elapsed = self._format_duration_seconds(
+            getattr(thinking, "elapsed_seconds", 0.0)
+        )
+        return self._wrap_prefixed_text(
+            self._role_prefix("State"),
+            f"Thinking {elapsed}",
+            width,
+        )
+
+    def _format_duration_seconds(self, elapsed_seconds: object) -> str:
+        try:
+            seconds = max(0.0, float(elapsed_seconds or 0.0))
+        except (TypeError, ValueError) as exc:
+            logger.exception(
+                "Chat window thinking duration could not be parsed",
+                extra={
+                    "category": "error",
+                    "component": "agent",
+                    "context": "cli_chat_window_thinking_duration",
+                    "exception_type": type(exc).__name__,
+                    "traceback": traceback.format_exc(),
+                },
+            )
+            seconds = 0.0
+        if seconds < 60:
+            return f"{seconds:.1f}s"
+        minutes = int(seconds // 60)
+        remainder = int(seconds % 60)
+        return f"{minutes}m{remainder:02d}s"
 
     def _role_prefix(self, label: str) -> str:
         return f"{label:<{ROLE_LABEL_WIDTH}} | "

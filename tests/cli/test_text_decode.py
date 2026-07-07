@@ -9,6 +9,12 @@ def test_decode_tool_output_falls_back_to_gb18030_for_windows_bytes() -> None:
     assert decode_tool_output(b"\xc4\xe3\xba\xc3") == "\u4f60\u597d"
 
 
+def test_decode_tool_output_prefers_gb18030_before_permissive_locale(monkeypatch) -> None:
+    monkeypatch.setattr("locale.getpreferredencoding", lambda _do_setlocale=False: "cp1252")
+
+    assert decode_tool_output(b"\xc4\xe3\xba\xc3") == "\u4f60\u597d"
+
+
 def test_decode_tool_output_accepts_already_decoded_text() -> None:
     assert decode_tool_output("plain \u4f60\u597d") == "plain \u4f60\u597d"
 

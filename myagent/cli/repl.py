@@ -1474,6 +1474,7 @@ class REPLEngine:
                         self._render_event_fallback(event)
 
             layout_started = self._start_layout_for_engine_stream()
+            self._start_thinking_indicator()
             engine_task = _asyncio.ensure_future(_run_engine())
             self._active_engine_task = engine_task
             self._set_chat_agent_running(True)

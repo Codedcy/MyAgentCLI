@@ -18,7 +18,7 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
-from myagent.cli.text_decode import decode_tool_output
+from myagent.utils.text_decode import decode_tool_output
 
 logger = logging.getLogger("myagent.tools.mcp")
 
@@ -485,7 +485,18 @@ class SSETransport:
         Returns None for comment-only events (no data field) or parse errors.
         Returns MCP Content-Length framed bytes on success.
         """
-        text = decode_tool_output(event_bytes)
+        try:
+            text = event_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            logger.exception(
+                "Failed to decode SSE event",
+                extra={
+                    "category": "error",
+                    "component": "mcp",
+                    "context": "decode SSE event",
+                },
+            )
+            return None
         data_lines: list[str] = []
 
         for line in text.split("\n"):

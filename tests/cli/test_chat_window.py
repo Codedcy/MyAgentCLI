@@ -702,6 +702,25 @@ def test_toggle_latest_tool_detail_expands_and_collapses_tool_output() -> None:
     assert "first detail line" not in collapsed_again
 
 
+def test_active_thinking_state_renders_above_input_without_transcript_entry() -> None:
+    model = RuntimeStatusModel()
+    model.update_session(thinking="Think High")
+    model.update_thinking(active=True, elapsed_seconds=12.34)
+    transcript = TranscriptBuffer()
+    controller = make_controller(
+        transcript=transcript,
+        model=model,
+        status_pane=EmptyStatusPane(),
+    )
+
+    rendered = controller._render_for_size(terminal_columns=80, terminal_rows=7)
+
+    assert transcript.entries() == []
+    assert "State" in rendered
+    assert "Thinking 12.3s" in rendered
+    assert rendered.index("State") < rendered.index("INPUT>")
+
+
 def test_tool_output_uses_visual_unread_accounting_when_scrolled_up() -> None:
     transcript = TranscriptBuffer(follow_output="auto")
     controller = make_controller(transcript=transcript, status_pane=EmptyStatusPane())

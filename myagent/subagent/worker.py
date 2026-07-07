@@ -16,13 +16,13 @@ import secrets
 import time
 from pathlib import Path
 
-from myagent.cli.text_decode import decode_tool_output
 from myagent.llm.provider import Done as LLMDone
 from myagent.llm.provider import LLMError
 from myagent.llm.provider import TextDelta as LLMTextDelta
 from myagent.llm.provider import ThinkingDelta as LLMThinkingDelta
 from myagent.llm.provider import ToolCall as LLMToolCall
 from myagent.tools.base import ToolContext, ToolResult
+from myagent.utils.text_decode import decode_tool_output
 
 # Retry constants for sub-agent LLM calls (gap-8-01)
 # Same strategy as LLMProvider: exponential backoff, max 3 retries, 2s-30s
