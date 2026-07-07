@@ -1179,11 +1179,11 @@ or at the beginning of an agent run, refreshes while active, and stops when the
 agent starts normal output, calls a tool, asks a user question, finishes, or
 errors.
 
-### Mouse Selection And Copy
+### Mouse Wheel, Selection, And Copy
 
-The chat window must preserve normal terminal/browser text selection and copy by
-default. Prompt-toolkit mouse reporting is disabled unless the user explicitly
-sets `ui.chat_window.mouse_support: true`. When mouse support is enabled, the
-application may capture mouse drag and wheel events for terminal mouse handling;
-when disabled, keyboard scrolling remains available and the host terminal owns
-selection/copy.
+The chat window enables prompt-toolkit mouse reporting by default
+(`ui.chat_window.mouse_support: true`) so the fixed conversation pane can receive
+mouse-wheel scroll events. Users who prefer the host terminal's native
+selection/copy behavior can set `ui.chat_window.mouse_support: false`; in that
+mode keyboard scrolling remains available through PageUp/PageDown and the
+terminal owns mouse selection.

@@ -322,6 +322,29 @@ def test_agent_dash_separated_feature_list_gets_readable_item_lines() -> None:
     assert not any("Read - Inspect any file contents - Write" in line for line in lines)
 
 
+def test_agent_compact_ordered_list_gets_readable_item_lines() -> None:
+    controller = make_controller(status_pane=EmptyStatusPane())
+    controller.append_output(
+        "Try these options: 1. **Phone weather app** - fastest "
+        "2. **Weather site** - https://example.test search city "
+        "3. **Meteorological office** - https://meteo.example.test"
+    )
+
+    lines = controller._conversation_lines(height=8, width=96)
+
+    assert any("Agent  | Try these options:" in line for line in lines)
+    assert any("       | 1. Phone weather app - fastest" in line for line in lines)
+    assert any(
+        "       | 2. Weather site - https://example.test search city" in line
+        for line in lines
+    )
+    assert any(
+        "       | 3. Meteorological office - https://meteo.example.test" in line
+        for line in lines
+    )
+    assert not any("1. Phone weather app - fastest 2." in line for line in lines)
+
+
 def test_agent_collapsed_markdown_table_gets_readable_rows() -> None:
     controller = make_controller(status_pane=EmptyStatusPane())
     controller.append_output(
@@ -826,7 +849,7 @@ async def test_run_starts_full_screen_application_and_request_stop_exits_it(
     app = FakeApplication.instances[0]
     assert controller.is_running is True
     assert app.kwargs["full_screen"] is True
-    assert app.kwargs["mouse_support"] is False
+    assert app.kwargs["mouse_support"] is True
     assert "layout" in app.kwargs
     assert "key_bindings" in app.kwargs
 
@@ -838,7 +861,7 @@ async def test_run_starts_full_screen_application_and_request_stop_exits_it(
 
 
 @pytest.mark.asyncio
-async def test_run_can_opt_into_mouse_support_for_terminal_mouse_events(
+async def test_run_can_opt_out_of_mouse_support_for_native_selection(
     monkeypatch,
 ) -> None:
     import myagent.cli.chat_window as chat_window
@@ -846,7 +869,7 @@ async def test_run_can_opt_into_mouse_support_for_terminal_mouse_events(
     FakeApplication.instances = []
     monkeypatch.setattr(chat_window, "Application", FakeApplication)
     config = make_config()
-    config.ui.chat_window.mouse_support = True
+    config.ui.chat_window.mouse_support = False
     controller = make_controller(config=config)
 
     run_task = asyncio.create_task(controller.run(lambda text: None))
@@ -854,7 +877,7 @@ async def test_run_can_opt_into_mouse_support_for_terminal_mouse_events(
         await asyncio.sleep(0)
 
     app = FakeApplication.instances[0]
-    assert app.kwargs["mouse_support"] is True
+    assert app.kwargs["mouse_support"] is False
 
     controller.request_stop()
     await run_task

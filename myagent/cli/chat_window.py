@@ -46,10 +46,12 @@ ROLE_LABEL_WIDTH = max(len(label) for label in ROLE_LABELS.values())
 INLINE_HEADING_PATTERN = re.compile(r"([^#\n])\s*(#{2,6}\s+)")
 MARKDOWN_SIGNAL_PATTERN = re.compile(
     r"---\s*#{2,6}\s*|(?:^|\n)\s*#{2,6}\s+|[^#\n]\s*#{2,6}\s+|(?:^|\n)\s*[-*]\s+|"
+    r"(?:^|\s)\d{1,2}\.\s+\S+|"
     r"(?:^|\n)?\s*\|[^|\n]+\|[^|\n]+\|.*\|\s*:?-{3,}:?\s*\||"
     r"(?:^|\n)\s*\|[^\n]*\|\s*\n\s*\|(?:\s*:?-{3,}:?\s*\|)+"
 )
 DASH_SEPARATOR_PATTERN = re.compile(r"\s+[-\u2013\u2014]\s+")
+ORDERED_LIST_MARKER_PATTERN = re.compile(r"(?<!\S)(\d{1,2})\.\s+(?=\S)")
 TABLE_SEPARATOR_CELL_PATTERN = re.compile(r":?-{3,}:?")
 
 
@@ -157,6 +159,7 @@ def _format_agent_markdown_segment(segment: str) -> str:
     segment = re.sub(r"\s*---\s*(?=#{2,6}\s*)", "\n\n", segment)
     segment = INLINE_HEADING_PATTERN.sub(r"\1\n\n\2", segment)
     segment = _expand_compact_heading_lists(segment)
+    segment = _expand_compact_ordered_lists(segment)
     segment = _expand_markdown_table_blocks(segment)
 
     cleaned_lines: list[str] = []
@@ -184,6 +187,22 @@ def _expand_compact_heading_lists(segment: str) -> str:
             for item in re.split(r"\s+-\s+", items_text)
             if item.strip()
         )
+    return "\n".join(lines)
+
+
+def _expand_compact_ordered_lists(segment: str) -> str:
+    """Split compact Markdown ordered lists that arrived without line breaks."""
+
+    lines: list[str] = []
+    for line in segment.split("\n"):
+        if "|" in line:
+            lines.append(line)
+            continue
+
+        expanded = ORDERED_LIST_MARKER_PATTERN.sub(r"\n\1. ", line)
+        if expanded.startswith("\n"):
+            expanded = expanded[1:]
+        lines.append(expanded)
     return "\n".join(lines)
 
 

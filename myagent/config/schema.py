@@ -97,7 +97,7 @@ class ChatWindowConfig:
     input_min_lines: int = 1
     input_max_lines: int = 6
     follow_output: Literal["auto", "always", "manual"] = "auto"
-    mouse_support: bool = False
+    mouse_support: bool = True
 
 
 @dataclass

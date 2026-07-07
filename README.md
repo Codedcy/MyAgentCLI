@@ -130,9 +130,11 @@ ui:
     input_min_lines: 1
     input_max_lines: 6
     follow_output: auto
+    mouse_support: true
 ```
 
 Set `ui.chat_window.enabled: false` to restore the legacy prompt-style REPL. `scrollback_lines` controls the in-memory chat viewport history, `input_min_lines` and `input_max_lines` bound the bottom input height, and `follow_output` controls whether new output follows the bottom automatically.
+`mouse_support` defaults to `true` so the full-screen chat pane receives mouse-wheel scroll events. Set `ui.chat_window.mouse_support: false` if your terminal's native text selection/copy behavior is more important than mouse-wheel scrolling.
 
 Key bindings:
 

@@ -315,7 +315,8 @@ class TestConfigLoader:
             "    enabled: false\n"
             "    scrollback_lines: 5000\n"
             "    input_max_lines: 8\n"
-            "    follow_output: manual\n",
+            "    follow_output: manual\n"
+            "    mouse_support: false\n",
         )
         loader = ConfigLoader(
             project_dir=tmp_project_dir,
@@ -328,6 +329,7 @@ class TestConfigLoader:
         assert config.ui.chat_window.scrollback_lines == 5000
         assert config.ui.chat_window.input_max_lines == 8
         assert config.ui.chat_window.follow_output == "manual"
+        assert config.ui.chat_window.mouse_support is False
         assert config.ui.chat_window.input_position == "bottom"
         assert config.ui.chat_window.input_min_lines == 1
 
