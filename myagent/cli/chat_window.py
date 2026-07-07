@@ -27,6 +27,7 @@ from myagent.cli.input_controller import (
 )
 from myagent.cli.rich_capture import capture_renderable, sanitize_terminal_text
 from myagent.cli.status import AgentInspectorPane
+from myagent.cli.text_decode import StreamingTextSanitizer
 from myagent.cli.transcript import TranscriptBuffer, TranscriptEntry, TranscriptLine
 
 logger = logging.getLogger("myagent.cli.chat_window")
@@ -461,6 +462,7 @@ class ChatWindowController:
         self._transient_prompt_text: str | None = None
         self._exit_confirmation_pending = False
         self._queued_submissions: list[str] = []
+        self._assistant_stream_sanitizer = StreamingTextSanitizer()
 
         self._input_actions = ChatInputActions(
             submit=self._handle_submit,
@@ -543,7 +545,7 @@ class ChatWindowController:
     def append_output(self, content: object, end: str = "\n") -> None:
         """Append assistant output, capturing Rich renderables as plain text."""
 
-        plain_text = self._plain_output(content)
+        plain_text = self._plain_assistant_output(content, end=end)
         stored_content = content if not isinstance(content, str) else plain_text
         self._append_transcript(
             lambda: self.transcript.append_assistant(
@@ -1202,6 +1204,18 @@ class ChatWindowController:
         if isinstance(content, str):
             return sanitize_terminal_text(content)
         return capture_renderable(content, width=self._last_terminal_columns)
+
+    def _plain_assistant_output(self, content: object, *, end: str) -> str:
+        if not isinstance(content, str):
+            if end != "":
+                self._assistant_stream_sanitizer.reset()
+            return capture_renderable(content, width=self._last_terminal_columns)
+
+        final = end != ""
+        plain_text = self._assistant_stream_sanitizer.sanitize(content, final=final)
+        if final:
+            self._assistant_stream_sanitizer.reset()
+        return plain_text
 
     def _handle_submit(self, text: str) -> None:
         normalized = self.input_controller.normalize_submit_text(text)

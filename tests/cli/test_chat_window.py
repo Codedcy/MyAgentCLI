@@ -485,6 +485,19 @@ def test_agent_unclosed_code_fence_is_preserved_during_streaming() -> None:
     assert any('       | print("a - b")' in line for line in lines)
 
 
+def test_streaming_split_ansi_sequences_do_not_leave_visible_fragments() -> None:
+    controller = make_controller(status_pane=EmptyStatusPane())
+
+    controller.append_output("before \x1b[2", end="")
+    controller.append_output("K clean \x1b[?25", end="")
+    controller.append_output("h after", end="\n")
+
+    lines = controller._conversation_lines(height=4, width=90)
+
+    assert any("Agent  | before  clean  after" in line for line in lines)
+    assert not any("[2" in line or "K clean" in line or "[?25" in line for line in lines)
+
+
 def test_agent_plain_prose_with_markdown_characters_stays_inline() -> None:
     controller = make_controller(status_pane=EmptyStatusPane())
     controller.append_output(

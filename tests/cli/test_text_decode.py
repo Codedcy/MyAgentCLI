@@ -1,4 +1,8 @@
-from myagent.cli.text_decode import decode_tool_output, sanitize_display_text
+from myagent.cli.text_decode import (
+    StreamingTextSanitizer,
+    decode_tool_output,
+    sanitize_display_text,
+)
 
 
 def test_decode_tool_output_preserves_utf8_text() -> None:
@@ -21,3 +25,16 @@ def test_decode_tool_output_accepts_already_decoded_text() -> None:
 
 def test_sanitize_display_text_strips_ansi_and_unsafe_controls() -> None:
     assert sanitize_display_text("\x1b[31mred\x1b[0m\x00 ok") == "red ok"
+
+
+def test_streaming_text_sanitizer_buffers_split_terminal_escapes() -> None:
+    sanitizer = StreamingTextSanitizer()
+
+    parts = [
+        sanitizer.sanitize("a\x1b[2", final=False),
+        sanitizer.sanitize("K b\x1bPpayload", final=False),
+        sanitizer.sanitize("\x1b\\ c\x1b[?25", final=False),
+        sanitizer.sanitize("h d", final=True),
+    ]
+
+    assert "".join(parts) == "a b c d"
