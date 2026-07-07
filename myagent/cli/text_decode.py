@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import locale
 import sys
 
@@ -17,12 +18,8 @@ def decode_tool_output(data: bytes | str | None) -> str:
         return sanitize_display_text(data)
 
     for encoding in _candidate_encodings():
-        try:
+        with contextlib.suppress(UnicodeDecodeError, LookupError):
             return sanitize_display_text(data.decode(encoding))
-        except UnicodeDecodeError:
-            continue
-        except LookupError:
-            continue
 
     return sanitize_display_text(data.decode("utf-8", errors="replace"))
 

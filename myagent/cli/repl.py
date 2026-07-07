@@ -381,25 +381,26 @@ class REPLEngine:
     def _ensure_thinking_timer_task(self) -> None:
         if self._thinking_timer_task is not None and not self._thinking_timer_task.done():
             return
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
+        loop = self._running_loop_or_none()
+        if loop is None:
             return
         self._thinking_timer_task = loop.create_task(self._run_thinking_timer())
 
     async def _run_thinking_timer(self) -> None:
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             while self._thinking_started_at is not None:
                 self._update_thinking_elapsed()
                 await asyncio.sleep(0.25)
-        except asyncio.CancelledError:
-            pass
 
     def _current_loop_time(self) -> float:
-        try:
-            return asyncio.get_running_loop().time()
-        except RuntimeError:
-            return 0.0
+        loop = self._running_loop_or_none()
+        return loop.time() if loop is not None else 0.0
+
+    @staticmethod
+    def _running_loop_or_none() -> asyncio.AbstractEventLoop | None:
+        with contextlib.suppress(RuntimeError):
+            return asyncio.get_running_loop()
+        return None
 
     def _handle_status_update(self, event) -> None:
         scope = getattr(event, "scope", "")
@@ -887,11 +888,8 @@ class REPLEngine:
 
         append_tool = getattr(self._chat_window, "append_tool", None)
         if callable(append_tool):
-            try:
-                return int(append_tool(summary, detail_text=detail_text) or 0)
-            except TypeError:
-                append_tool(summary)
-                return 0
+            append_tool(summary)
+            return 0
 
         transcript = getattr(self._chat_window, "transcript", None)
         append_transcript_tool = getattr(transcript, "append_tool", None)
