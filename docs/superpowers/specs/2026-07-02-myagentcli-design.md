@@ -362,7 +362,7 @@ class Tool(Protocol):
 | | `edit` | 精确字符串替换（old_string → new_string） |
 | | `glob` | 文件名模式匹配 |
 | **搜索** | `grep` | 正则内容搜索（基于 ripgrep） |
-| **执行** | `bash` | Shell 命令执行（受权限管控） |
+| **执行** | `bash` | Bash 命令执行（受权限管控；Windows 上优先使用 Git Bash / `MYAGENT_BASH`） |
 | **Agent** | `spawn_subagent` | 创建子 Agent |
 | | `send_message` | 向子 Agent 或主 Agent 发消息 |
 | **会话** | `task_create` | 创建追踪任务 |
@@ -371,6 +371,12 @@ class Tool(Protocol):
 | **网络** | `web_fetch` | HTTP 请求，返回 Markdown |
 | | `web_search` | 网页搜索 |
 | **配置** | `config_set` | 运行时配置调整（key-value，不持久化） |
+
+`bash` 工具必须执行真正的 Bash 语义。Windows 平台优先解析
+`MYAGENT_BASH`、`PATH` 中的 `bash.exe`，以及 Git Bash 的默认安装路径；
+若找不到 Bash 且命令包含 `mkdir -p`、heredoc、`touch`、`rm -rf` 等
+POSIX 专用语法，工具必须直接报错，禁止回退到 `cmd.exe` 或 PowerShell
+误执行并创建 `-p`、`mkdir`、`echo` 等垃圾路径。
 
 ### spawn_subagent 工具定义
 

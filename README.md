@@ -2,7 +2,7 @@
 
 MyAgentCLI 是一个个人 AI Agent CLI 助手，默认使用 DeepSeek V4 Pro，通过 LiteLLM 接入模型，提供固定聊天窗口、ReAct 工具循环、子 Agent、项目记忆、会话恢复和权限控制。
 
-项目仍处于 Alpha 阶段，但核心 CLI 工作流已经可用。本仓库当前自动化测试集覆盖 549 个用例。
+项目仍处于 Alpha 阶段，但核心 CLI 工作流已经可用。本仓库当前自动化测试集覆盖 555 个用例。
 
 ## 功能概览
 
@@ -243,13 +243,18 @@ Infrastructure Layer
 |---|---|
 | `read` / `write` / `edit` | 文件读取、写入、编辑 |
 | `glob` / `grep` | 文件匹配与内容搜索 |
-| `bash` | 执行 shell 命令 |
+| `bash` | 执行 Bash 命令；Windows 上优先使用 Git Bash / `MYAGENT_BASH` |
 | `web_fetch` / `web_search` | 抓取网页与搜索 |
 | `spawn_subagent` / `send_message` | 子 Agent 创建与通信 |
 | `task_create` / `task_update` | 任务追踪 |
 | `memory_write` | 写入项目或用户记忆 |
 | `config_set` | 运行时配置调整 |
 | `mcp_read_resource` / `mcp_get_prompt` | MCP 资源与提示访问 |
+
+`bash` 工具会执行真正的 Bash 语义。Windows 上会优先使用 `MYAGENT_BASH`、
+`PATH` 中的 `bash.exe` 或 Git Bash 默认安装路径；如果找不到 Bash 且命令
+包含 `mkdir -p`、heredoc、`touch`、`rm -rf` 等 POSIX 语法，会直接报错，
+不会回退到 `cmd.exe`/PowerShell 误创建无用文件。
 
 ## 开发
 
