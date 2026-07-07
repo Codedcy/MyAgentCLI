@@ -17,6 +17,7 @@ from myagent.cli.control_commands import (
     slash_command_name,
 )
 from myagent.cli.layout import AgentLayoutController
+from myagent.cli.rich_capture import sanitize_terminal_text
 
 logger = logging.getLogger("myagent.cli.repl")
 
@@ -235,6 +236,7 @@ class REPLEngine:
         self._output_lines: list[str] = []
         self._dream_checker_task = None
         self._tool_call_names: dict[str, str] = {}
+        self._chat_tool_entry_ids: dict[str, int] = {}
         self._done_usage_session_total: int | None = None
         # Skill name to inject into the next engine run (gap-2-01).
         self._active_skill: str | None = None
@@ -761,6 +763,99 @@ class REPLEngine:
 
         return self._append_chat_system_output(content)
 
+    def _handle_folded_chat_tool_event(self, event) -> bool:
+        if not self._chat_window_active():
+            return False
+
+        event_type = type(event).__name__
+        if event_type == "ToolCallStart":
+            name = sanitize_terminal_text(getattr(event, "name", "") or "tool")
+            call_id = str(getattr(event, "call_id", "") or name)
+            summary = self._tool_display_summary(name, "running", "")
+            entry_id = self._append_chat_tool_summary(summary)
+            if entry_id:
+                self._chat_tool_entry_ids[call_id] = entry_id
+            self._chat_streaming = False
+            return True
+
+        if event_type != "ToolCallEnd":
+            return False
+
+        call_id = str(getattr(event, "call_id", "") or "")
+        name = sanitize_terminal_text(self._tool_call_names.get(call_id, call_id or "tool"))
+        result = getattr(event, "result", None)
+        error = getattr(result, "error", None)
+        output = getattr(result, "output", "")
+        detail_text = sanitize_terminal_text(error or output or "")
+        status = "failed" if error else "completed"
+        summary = self._tool_display_summary(name, status, detail_text)
+        entry_id = self._chat_tool_entry_ids.get(call_id)
+        if entry_id and self._update_chat_tool_entry(entry_id, summary, detail_text):
+            self._chat_streaming = False
+            return True
+        appended_id = self._append_chat_tool_summary(summary, detail_text)
+        if appended_id and call_id:
+            self._chat_tool_entry_ids[call_id] = appended_id
+        self._chat_streaming = False
+        return True
+
+    def _append_chat_tool_summary(self, summary: str, detail_text: str = "") -> int:
+        append_summary = getattr(self._chat_window, "append_tool_summary", None)
+        if callable(append_summary):
+            return int(append_summary(summary, detail_text) or 0)
+
+        append_tool = getattr(self._chat_window, "append_tool", None)
+        if callable(append_tool):
+            try:
+                return int(append_tool(summary, detail_text=detail_text) or 0)
+            except TypeError:
+                append_tool(summary)
+                return 0
+
+        transcript = getattr(self._chat_window, "transcript", None)
+        append_transcript_tool = getattr(transcript, "append_tool", None)
+        if callable(append_transcript_tool):
+            entry_id = append_transcript_tool(summary, detail_text=detail_text)
+            self._refresh_chat_window()
+            return int(entry_id or 0)
+
+        self._append_chat_system_output(summary)
+        return 0
+
+    def _update_chat_tool_entry(
+        self,
+        entry_id: int,
+        summary: str,
+        detail_text: str,
+    ) -> bool:
+        update_entry = getattr(self._chat_window, "update_tool_entry", None)
+        if callable(update_entry):
+            return bool(update_entry(entry_id, summary, detail_text=detail_text))
+
+        transcript = getattr(self._chat_window, "transcript", None)
+        update_transcript_tool = getattr(transcript, "update_tool_entry", None)
+        if callable(update_transcript_tool):
+            updated = bool(
+                update_transcript_tool(
+                    entry_id,
+                    summary,
+                    content=summary,
+                    detail_text=detail_text,
+                )
+            )
+            if updated:
+                self._refresh_chat_window()
+            return updated
+
+        return False
+
+    def _tool_display_summary(self, name: str, status: str, detail_text: str) -> str:
+        safe_name = sanitize_terminal_text(name or "tool")
+        if status == "running":
+            return f"{safe_name} running"
+        hint = "F3 for details" if detail_text else "no output"
+        return f"{safe_name} {status} ({hint})"
+
     def _output_system_message(
         self,
         message: str,
@@ -1253,6 +1348,8 @@ class REPLEngine:
                 ):
                     self._update_status_from_event(event)
                     event_type = type(event).__name__
+                    if self._handle_folded_chat_tool_event(event):
+                        continue
                     if self._renderer:
                         rendered = self._renderer.render_event(event)
                         if event_type == "StatusUpdate":
@@ -1519,6 +1616,8 @@ class REPLEngine:
     def _render_event_fallback(self, event) -> None:
         """Fallback renderer when no Rich Renderer is wired."""
         event_type = type(event).__name__
+        if self._handle_folded_chat_tool_event(event):
+            return
         if event_type == "TextChunk":
             self._output_to_console(getattr(event, "content", ""), end="")
             return

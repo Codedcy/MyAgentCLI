@@ -86,6 +86,8 @@ class FakeChatWindowController:
         self.ask_error = ask_error
         self.append_calls = []
         self.tool_calls = []
+        self.tool_summary_calls = []
+        self.tool_update_calls = []
         self.system_calls = []
         self.error_calls = []
         self.ask_calls = []
@@ -135,6 +137,18 @@ class FakeChatWindowController:
             else capture_renderable(content)
         )
         self.transcript.append_tool(content, plain_text=plain_text)
+
+    def append_tool_summary(self, summary, detail_text=""):
+        self.tool_summary_calls.append((summary, detail_text))
+        return self.transcript.append_tool(summary, detail_text=detail_text)
+
+    def update_tool_entry(self, entry_id, summary, detail_text=""):
+        self.tool_update_calls.append((entry_id, summary, detail_text))
+        return self.transcript.update_tool_entry(
+            entry_id,
+            summary,
+            detail_text=detail_text,
+        )
 
     def append_system(self, text):
         self.system_calls.append(text)
@@ -855,9 +869,43 @@ async def test_process_input_routes_chat_stream_tool_and_error_entries():
     assert len(assistant_entries) == 1
     assert assistant_entries[0].plain_text == "hello"
     assert assistant_entries[0].is_streaming is False
-    assert any("Tool: read" in entry.plain_text for entry in tool_entries)
-    assert any("read ok" in entry.plain_text for entry in tool_entries)
+    assert len(tool_entries) == 1
+    assert "read" in tool_entries[0].plain_text
+    assert "completed" in tool_entries[0].plain_text
+    assert "F3" in tool_entries[0].plain_text
+    assert "read ok" not in tool_entries[0].plain_text
+    assert tool_entries[0].detail_text == "read ok"
+    assert tool_entries[0].expanded is False
     assert [entry.plain_text for entry in error_entries] == ["boom"]
+
+
+@pytest.mark.asyncio
+async def test_process_input_updates_same_tool_entry_from_running_to_done():
+    transcript = TranscriptBuffer()
+    chat = make_real_chat_controller(transcript=transcript)
+    long_output = "\n".join(f"line {index}" for index in range(20))
+    engine = FakeStreamingEngine(
+        [
+            ToolCallStart(name="bash", call_id="call-1"),
+            ToolCallEnd(call_id="call-1", result=ToolResult(output=long_output)),
+            Done(),
+        ]
+    )
+    repl = active_chat_repl(
+        chat,
+        engine=engine,
+        renderer=Renderer(),
+    )
+    repl._current_session = SimpleNamespace(id="session-1")
+
+    await repl.process_input("run command")
+
+    tool_entries = [entry for entry in transcript_entries(transcript) if entry.role == "tool"]
+    assert len(tool_entries) == 1
+    assert "bash" in tool_entries[0].plain_text
+    assert "completed" in tool_entries[0].plain_text
+    assert "line 0" not in tool_entries[0].plain_text
+    assert tool_entries[0].detail_text == long_output
 
 
 @pytest.mark.asyncio

@@ -39,6 +39,7 @@ class ActionSpy:
         self.interrupt_calls = 0
         self.request_exit_calls = 0
         self.toggle_inspector_calls = 0
+        self.toggle_tool_details_calls = 0
         self.scroll_calls: list[int] = []
         self.page_calls: list[int] = []
 
@@ -49,6 +50,7 @@ class ActionSpy:
             interrupt=self.interrupt,
             request_exit=self.request_exit,
             toggle_inspector=self.toggle_inspector,
+            toggle_tool_details=self.toggle_tool_details,
             scroll_lines=self.scroll_lines,
             page=self.page,
         )
@@ -69,6 +71,9 @@ class ActionSpy:
 
     def toggle_inspector(self) -> None:
         self.toggle_inspector_calls += 1
+
+    def toggle_tool_details(self) -> None:
+        self.toggle_tool_details_calls += 1
 
     def scroll_lines(self, delta: int) -> None:
         self.scroll_calls.append(delta)
@@ -161,6 +166,22 @@ def test_f2_calls_toggle_inspector() -> None:
     invoke_binding(controller.build_key_bindings(spy.actions()), (Keys.F2,))
 
     assert spy.toggle_inspector_calls == 1
+
+
+def test_f3_calls_toggle_tool_details_without_touching_input() -> None:
+    controller = InputController(SimpleNamespace())
+    spy = ActionSpy()
+
+    buffer = invoke_binding(
+        controller.build_key_bindings(spy.actions()),
+        (Keys.F3,),
+        "draft",
+    )
+
+    assert spy.toggle_tool_details_calls == 1
+    assert spy.toggle_inspector_calls == 0
+    assert buffer.text == "draft"
+    assert buffer.reset_calls == 0
 
 
 def test_ctrl_c_calls_interrupt_when_agent_run_is_active() -> None:
@@ -328,12 +349,25 @@ def test_input_height_uses_real_chat_window_config_dataclass() -> None:
 
 
 def test_key_bindings_use_real_ui_config_dataclass() -> None:
-    config = UIConfig(status_pane=StatusPaneConfig(toggle_key="f3"))
+    config = UIConfig(status_pane=StatusPaneConfig(toggle_key="f4"))
     controller = InputController(config)
     spy = ActionSpy()
 
-    invoke_binding(controller.build_key_bindings(spy.actions()), (Keys.F3,))
+    invoke_binding(controller.build_key_bindings(spy.actions()), (Keys.F4,))
 
+    assert spy.toggle_inspector_calls == 1
+
+
+def test_f3_is_reserved_for_tool_details_when_configured_as_inspector_toggle() -> None:
+    config = UIConfig(status_pane=StatusPaneConfig(toggle_key="f3"))
+    controller = InputController(config)
+    spy = ActionSpy()
+    kb = controller.build_key_bindings(spy.actions())
+
+    invoke_binding(kb, (Keys.F3,))
+    invoke_binding(kb, (Keys.F2,))
+
+    assert spy.toggle_tool_details_calls == 1
     assert spy.toggle_inspector_calls == 1
 
 

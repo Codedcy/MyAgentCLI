@@ -64,6 +64,45 @@ def test_tool_error_and_system_entries_stay_separate():
     assert visible_text(buffer) == ["tool one", "tool two", "error one", "system one"]
 
 
+def test_folded_tool_entry_hides_detail_until_toggled():
+    buffer = TranscriptBuffer()
+
+    buffer.append_tool(
+        "Tool read completed (F3 for details)",
+        detail_text="line 1\nline 2",
+    )
+
+    entry = buffer.entries()[0]
+    assert entry.plain_text == "Tool read completed (F3 for details)"
+    assert entry.detail_text == "line 1\nline 2"
+    assert entry.expanded is False
+
+    assert buffer.toggle_latest_tool_detail() is True
+
+    entry = buffer.entries()[0]
+    assert entry.expanded is True
+
+
+def test_update_tool_entry_preserves_single_tool_record():
+    buffer = TranscriptBuffer()
+    entry_id = buffer.append_tool(
+        "Tool read running",
+        detail_text="",
+    )
+
+    assert buffer.update_tool_entry(
+        entry_id,
+        "Tool read completed (F3 for details)",
+        detail_text="full output",
+    ) is True
+
+    entries = buffer.entries()
+    assert len(entries) == 1
+    assert entries[0].plain_text == "Tool read completed (F3 for details)"
+    assert entries[0].detail_text == "full output"
+    assert entries[0].expanded is False
+
+
 def test_scrollback_trims_to_most_recent_plain_text_lines_not_entry_count():
     buffer = TranscriptBuffer(max_lines=4)
 

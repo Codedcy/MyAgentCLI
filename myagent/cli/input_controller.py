@@ -14,6 +14,7 @@ from prompt_toolkit.keys import Keys
 DEFAULT_INPUT_MIN_LINES = 1
 DEFAULT_INPUT_MAX_LINES = 6
 DEFAULT_INSPECTOR_TOGGLE_KEY = "f2"
+DEFAULT_TOOL_DETAILS_TOGGLE_KEY = "f3"
 SCROLL_LINES_PER_WHEEL_EVENT = 3
 TAB_EQUIVALENT_KEYS = {"c-i", "ctrl+i", "control+i", "control-i", "tab"}
 RESERVED_TOGGLE_KEYS = TAB_EQUIVALENT_KEYS | {
@@ -33,6 +34,7 @@ RESERVED_TOGGLE_KEYS = TAB_EQUIVALENT_KEYS | {
     "enter",
     "esc",
     "escape",
+    DEFAULT_TOOL_DETAILS_TOGGLE_KEY,
     "home",
     "page-down",
     "page-up",
@@ -63,6 +65,7 @@ class ChatInputActions:
     page: Callable[[int], Any]
     request_exit_confirmation: Callable[[], Any] | None = None
     cancel_exit_confirmation: Callable[[], Any] | None = None
+    toggle_tool_details: Callable[[], Any] | None = None
 
 
 class InputController:
@@ -112,6 +115,7 @@ class InputController:
                 actions.request_exit()
 
         self._add_toggle_binding(kb, actions)
+        self._add_tool_details_binding(kb, actions)
 
         @kb.add("pageup")
         def _(event) -> None:
@@ -174,6 +178,16 @@ class InputController:
                 },
             )
             kb.add(DEFAULT_INSPECTOR_TOGGLE_KEY)(toggle_inspector)
+
+    def _add_tool_details_binding(
+        self,
+        kb: KeyBindings,
+        actions: ChatInputActions,
+    ) -> None:
+        @kb.add(DEFAULT_TOOL_DETAILS_TOGGLE_KEY)
+        def _(event) -> None:
+            if actions.toggle_tool_details is not None:
+                actions.toggle_tool_details()
 
     def _line_setting(self, name: str, default: int) -> int:
         value = getattr(self._chat_config(), name, default)

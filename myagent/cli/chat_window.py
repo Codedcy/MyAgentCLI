@@ -426,6 +426,7 @@ class ChatWindowController:
             interrupt=self._handle_interrupt,
             request_exit=self.request_stop,
             toggle_inspector=self._toggle_inspector,
+            toggle_tool_details=self.toggle_latest_tool_detail,
             scroll_lines=self._scroll_lines,
             page=self._page,
             request_exit_confirmation=self._request_exit_confirmation,
@@ -520,9 +521,78 @@ class ChatWindowController:
 
         self._append_transcript(lambda: self.transcript.append_error(text))
 
-    def append_tool(self, content: object) -> None:
+    def append_tool(self, content: object, detail_text: str = "") -> int:
         """Append a tool message to the visible transcript."""
 
+        plain_text = self._plain_output(content)
+        entry_id: int | None = None
+
+        def append() -> int:
+            nonlocal entry_id
+            entry_id = self.transcript.append_tool(
+                content,
+                plain_text=plain_text,
+                detail_text=detail_text,
+            )
+            return entry_id
+
+        self._append_transcript(append)
+        return int(entry_id or 0)
+
+    def append_tool_summary(self, summary: str, detail_text: str = "") -> int:
+        """Append a folded tool summary with optional hidden detail text."""
+
+        entry_id: int | None = None
+
+        def append() -> int:
+            nonlocal entry_id
+            entry_id = self.transcript.append_tool(
+                summary,
+                plain_text=summary,
+                detail_text=detail_text,
+            )
+            return entry_id
+
+        self._append_transcript(append)
+        return int(entry_id or 0)
+
+    def update_tool_entry(
+        self,
+        entry_id: int,
+        summary: str,
+        detail_text: str = "",
+    ) -> bool:
+        """Update an existing folded tool entry."""
+
+        updated = False
+
+        def update() -> bool:
+            nonlocal updated
+            updated = self.transcript.update_tool_entry(
+                entry_id,
+                summary,
+                content=summary,
+                detail_text=detail_text,
+            )
+            return updated
+
+        self._append_transcript(update)
+        return updated
+
+    def toggle_latest_tool_detail(self) -> bool:
+        """Toggle the current tool detail panel."""
+
+        toggled = False
+
+        def toggle() -> bool:
+            nonlocal toggled
+            toggled = self.transcript.toggle_latest_tool_detail()
+            return toggled
+
+        self._append_transcript(toggle)
+        return toggled
+
+    def _append_legacy_tool(self, content: object) -> None:
         plain_text = self._plain_output(content)
         self._append_transcript(
             lambda: self.transcript.append_tool(content, plain_text=plain_text)
@@ -833,12 +903,17 @@ class ChatWindowController:
         plain_text = (
             _format_agent_text_for_display(entry.plain_text)
             if entry.role == "assistant"
-            else entry.plain_text
+            else self._transcript_display_text(entry)
         )
         for line_index, text in enumerate(plain_text.split("\n")):
             line = TranscriptLine(entry=entry, line_index=line_index, text=text)
             lines.extend(self._transcript_line_text(line, width))
         return lines
+
+    def _transcript_display_text(self, entry: TranscriptEntry) -> str:
+        if entry.role == "tool" and entry.expanded and entry.detail_text:
+            return f"{entry.plain_text}\n{entry.detail_text}"
+        return entry.plain_text
 
     def _slice_visual_transcript_lines(
         self,

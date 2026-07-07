@@ -678,6 +678,30 @@ def test_unread_marker_tracks_visual_scroll_inside_wrapped_single_line() -> None
     assert any("[1 new messages]" in line for line in after_output)
 
 
+def test_toggle_latest_tool_detail_expands_and_collapses_tool_output() -> None:
+    transcript = TranscriptBuffer()
+    controller = make_controller(transcript=transcript, status_pane=EmptyStatusPane())
+    controller.append_tool(
+        "Tool read completed (F3 for details)",
+        detail_text="first detail line\nsecond detail line",
+    )
+
+    collapsed = controller._render_for_size(terminal_columns=90, terminal_rows=8)
+    assert "Tool read completed" in collapsed
+    assert "first detail line" not in collapsed
+
+    assert controller.toggle_latest_tool_detail() is True
+
+    expanded = controller._render_for_size(terminal_columns=90, terminal_rows=8)
+    assert "first detail line" in expanded
+    assert "second detail line" in expanded
+
+    assert controller.toggle_latest_tool_detail() is True
+
+    collapsed_again = controller._render_for_size(terminal_columns=90, terminal_rows=8)
+    assert "first detail line" not in collapsed_again
+
+
 def test_tool_output_uses_visual_unread_accounting_when_scrolled_up() -> None:
     transcript = TranscriptBuffer(follow_output="auto")
     controller = make_controller(transcript=transcript, status_pane=EmptyStatusPane())

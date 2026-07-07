@@ -19,6 +19,8 @@ class TranscriptEntry:
     content: object
     plain_text: str
     is_streaming: bool = False
+    detail_text: str = ""
+    expanded: bool = False
 
 
 @dataclass(slots=True)
@@ -90,10 +92,64 @@ class TranscriptBuffer:
 
         return self.append("assistant", content, plain_text=plain_text, end=end)
 
-    def append_tool(self, content: object, plain_text: str | None = None) -> int:
+    def append_tool(
+        self,
+        content: object,
+        plain_text: str | None = None,
+        detail_text: str = "",
+    ) -> int:
         """Append tool output as a separate display entry."""
 
-        return self.append("tool", content, plain_text=plain_text)
+        entry_id = self.append("tool", content, plain_text=plain_text)
+        if detail_text:
+            self.update_tool_entry(entry_id, detail_text=detail_text)
+        return entry_id
+
+    def update_tool_entry(
+        self,
+        entry_id: int,
+        plain_text: str | None = None,
+        *,
+        content: object | None = None,
+        detail_text: str | None = None,
+        expanded: bool | None = None,
+    ) -> bool:
+        """Update a retained tool entry without appending a new transcript row."""
+
+        for index, entry in enumerate(self._entries):
+            if entry.entry_id != entry_id or entry.role != "tool":
+                continue
+
+            should_follow = self._should_follow_output()
+            lines_before = self._total_lines()
+            new_plain_text = (
+                entry.plain_text
+                if plain_text is None
+                else _sanitize_plain_text(plain_text)
+            )
+            new_detail_text = (
+                entry.detail_text
+                if detail_text is None
+                else _sanitize_plain_text(detail_text)
+            )
+            self._entries[index] = replace(
+                entry,
+                content=entry.content if content is None else content,
+                plain_text=new_plain_text,
+                detail_text=new_detail_text,
+                expanded=entry.expanded if expanded is None else bool(expanded),
+            )
+            self._update_after_append(lines_before, should_follow)
+            return True
+        return False
+
+    def toggle_latest_tool_detail(self) -> bool:
+        """Toggle the most recent tool entry with retained details."""
+
+        for entry in reversed(self._entries):
+            if entry.role == "tool" and entry.detail_text:
+                return self.update_tool_entry(entry.entry_id, expanded=not entry.expanded)
+        return False
 
     def append_error(self, text: str) -> int:
         """Append an error display entry."""
@@ -109,7 +165,11 @@ class TranscriptBuffer:
         """Replace display entries, preserving monotonic IDs for future appends."""
 
         self._entries = [
-            replace(entry, plain_text=_sanitize_plain_text(entry.plain_text))
+            replace(
+                entry,
+                plain_text=_sanitize_plain_text(entry.plain_text),
+                detail_text=_sanitize_plain_text(entry.detail_text),
+            )
             for entry in entries
         ]
         if self._entries:
@@ -185,7 +245,7 @@ class TranscriptBuffer:
         visible: list[TranscriptLine] = []
         line_cursor = 0
         for entry in self._entries:
-            entry_lines = _display_lines(entry.plain_text)
+            entry_lines = _display_lines(_entry_display_text(entry))
             entry_top = line_cursor
             entry_bottom = line_cursor + len(entry_lines)
             if entry_top < bottom_line and entry_bottom > top_line:
@@ -295,7 +355,7 @@ class TranscriptBuffer:
                 total_lines -= first_line_count
                 continue
 
-            kept_lines = _display_lines(first.plain_text)[overflow:]
+            kept_lines = _display_lines(_entry_display_text(first))[overflow:]
             trimmed_plain_text = "\n".join(kept_lines)
             trimmed_content = (
                 trimmed_plain_text if isinstance(first.content, str) else first.content
@@ -334,8 +394,14 @@ def _display_lines(plain_text: str) -> list[str]:
     return plain_text.split("\n")
 
 
+def _entry_display_text(entry: TranscriptEntry) -> str:
+    if entry.role == "tool" and entry.expanded and entry.detail_text:
+        return f"{entry.plain_text}\n{entry.detail_text}"
+    return entry.plain_text
+
+
 def _entry_line_count(entry: TranscriptEntry) -> int:
-    return len(_display_lines(entry.plain_text))
+    return len(_display_lines(_entry_display_text(entry)))
 
 
 __all__ = ["TranscriptBuffer", "TranscriptEntry", "TranscriptLine"]
