@@ -27,6 +27,7 @@ class AgentStatus(Enum):
 class SubAgentHandle:
     id: str
     status: AgentStatus = AgentStatus.CREATED
+    background: bool = True
     result: ToolResult | None = None
     _completion_event: asyncio.Event = field(default_factory=asyncio.Event)
     _interrupt_event: asyncio.Event = field(default_factory=asyncio.Event)
@@ -310,12 +311,17 @@ class SubAgentPool:
         self._counter += 1
         agent_id = f"sub-{self._counter:03d}"
 
-        handle = SubAgentHandle(id=agent_id, status=AgentStatus.RUNNING)
+        handle = SubAgentHandle(
+            id=agent_id,
+            status=AgentStatus.RUNNING,
+            background=background,
+        )
         self._agents[agent_id] = handle
         self._subagent_records[agent_id] = {
             "id": agent_id,
             "subagent_id": agent_id,
             "status": AgentStatus.RUNNING.value,
+            "background": background,
             "task_name": _subagent_task_name(prompt),
             "prompt": prompt or "",
             "summary": "",
@@ -524,6 +530,7 @@ class SubAgentPool:
             "error": error or "",
             "duration_ms": duration_ms,
             "transcript_path": transcript_path or "",
+            "background": bool(getattr(handle, "background", False)),
             "completed_at": time.time(),
         }
         record = self._subagent_records.setdefault(

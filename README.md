@@ -2,7 +2,7 @@
 
 MyAgentCLI 是一个个人 AI Agent CLI 助手，默认使用 DeepSeek V4 Pro，通过 LiteLLM 接入模型，提供固定聊天窗口、ReAct 工具循环、子 Agent、项目记忆、会话恢复和权限控制。
 
-项目仍处于 Alpha 阶段，但核心 CLI 工作流已经可用。本仓库当前自动化测试集覆盖 515 个用例。
+项目仍处于 Alpha 阶段，但核心 CLI 工作流已经可用。本仓库当前自动化测试集覆盖 549 个用例。
 
 ## 功能概览
 
@@ -293,10 +293,12 @@ pytest tests/ -v --cov=myagent --cov-report=term-missing
 
 ## Sub-agent status and output
 
-When the model starts background sub-agents with `spawn_subagent`, the main
-agent waits for the spawned sub-agents to finish, injects their completion
-output back into the ReAct loop, and continues without requiring another user
-message.
+When `spawn_subagent` runs in foreground mode, the tool result includes the
+sub-agent's final output so the main Agent can continue in the same ReAct loop.
+When the model starts background sub-agents, completion observations are kept
+across turns. When a background sub-agent finishes, fails, or is interrupted,
+the REPL schedules an internal `continue`, injects the completion output back
+into the main ReAct loop, and continues without requiring another user message.
 
 Use `/subagents` to list active and recent sub-agents, including status,
 summary, and transcript path. Use `/subagent <id>` to show one sub-agent's full

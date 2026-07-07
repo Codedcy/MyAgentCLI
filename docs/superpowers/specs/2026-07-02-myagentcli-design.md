@@ -1178,11 +1178,15 @@ pool records a completion observation when that sub-agent finishes, fails, or is
 interrupted. The observation contains `subagent_id`, status, task name, summary,
 full output or error, duration, and persisted transcript path when available.
 
-The main Agent waits for the background sub-agents spawned by the current tool
-batch, injects their completion observations as user-visible context for the
-next model iteration, and then continues the ReAct loop. This preserves
-parallel execution while avoiding the dead state where sub-agents complete but
-the parent Agent has no new observation to act on.
+Foreground `spawn_subagent` calls return the sub-agent's final output directly
+as the tool result, so the main Agent can continue in the same ReAct loop.
+Background completion observations are retained on the `AgentEngine` across
+turns. When the REPL receives a completed/failed/interrupted status callback for
+a background sub-agent, it schedules an internal `continue` if the main Agent is
+idle, or defers that continuation until the current main loop finishes. The
+next main model iteration receives the completion observation as user-visible
+context. This preserves parallel execution while avoiding the dead state where
+sub-agents complete but the parent Agent has no new observation to act on.
 
 Users can inspect sub-agent state through `/subagents` and inspect one
 sub-agent's full output through `/subagent <id>`. Session persistence still

@@ -140,6 +140,7 @@ class AgentEngine:
         self._memory_store = memory_store
         self.interrupt_event = asyncio.Event()
         self._session_token_totals: dict[object, int] = {}
+        self._pending_background_subagents: set[str] = set()
 
     async def run(
         self, user_input: str, session, active_skill: str | None = None
@@ -207,7 +208,7 @@ class AgentEngine:
         iteration = 0
         context_notified_50 = False  # gap-25: only notify once
         active_skill: str | None = None  # gap-32: track active skill for context rebuild
-        pending_background_subagents: set[str] = set()
+        pending_background_subagents = self._pending_background_subagents
 
         while self.MAX_ITERATIONS is None or iteration < self.MAX_ITERATIONS:
             iteration += 1
@@ -893,6 +894,23 @@ class AgentEngine:
         if callable(wait):
             return list(await wait(set(pending_background_subagents)) or [])
         return self._drain_subagent_completion_events(pending_background_subagents)
+
+    def has_pending_subagent_completions(self) -> bool:
+        """Whether a completed background sub-agent still needs main-loop handling."""
+
+        pending = set(self._pending_background_subagents)
+        if not pending:
+            return False
+
+        events = getattr(self.subagent_pool, "_pending_completion_events", None)
+        if isinstance(events, list):
+            return any(
+                str(event_id) in pending
+                for event in events
+                if isinstance(event, dict)
+                if (event_id := event.get("subagent_id") or event.get("id"))
+            )
+        return True
 
     def _append_subagent_completion_messages(
         self,

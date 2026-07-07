@@ -282,6 +282,98 @@ async def test_background_subagent_completion_reenters_react_loop():
 
 
 @pytest.mark.asyncio
+async def test_background_subagent_completion_survives_until_next_turn():
+    gen1 = _async_gen([
+        FakeToolCall(
+            "spawn_subagent",
+            "call-1",
+            {"prompt": "Draft PRD", "background": True},
+        ),
+        FakeDone(),
+    ])
+    gen2 = _async_gen([
+        FakeTextDelta("PM is working; I will continue when it finishes."),
+        FakeDone(FakeUsage()),
+    ])
+    gen3 = _async_gen([
+        FakeTextDelta("I saw the PRD and will start architecture."),
+        FakeDone(FakeUsage()),
+    ])
+    llm = MagicMock()
+    llm.complete = MagicMock(side_effect=[gen1, gen2, gen3])
+
+    tool = MagicMock()
+    tool.execute = AsyncMock(
+        return_value=ToolResult(
+            output="Sub-agent spawned: sub-001",
+            metadata={"subagent_id": "sub-001", "background": True},
+        )
+    )
+    registry = MagicMock()
+    registry.get = MagicMock(return_value=tool)
+
+    class FakeSubagentPool:
+        def __init__(self):
+            self.completed = False
+
+        def drain_outbound_messages(self):
+            return []
+
+        async def wait_for_completion_events(self, agent_ids, timeout=None):
+            return []
+
+        def drain_completion_events(self, agent_ids=None):
+            if not self.completed:
+                return []
+            assert set(agent_ids) == {"sub-001"}
+            self.completed = False
+            return [
+                {
+                    "subagent_id": "sub-001",
+                    "status": "completed",
+                    "output": "PRD complete",
+                }
+            ]
+
+    builder = MagicMock()
+    builder.build = AsyncMock(return_value=LLMRequest(
+        system="test", messages=[], tools=[]
+    ))
+
+    pool = FakeSubagentPool()
+    engine = AgentEngine(
+        llm=llm,
+        tool_registry=registry,
+        context_builder=builder,
+        subagent_pool=pool,
+    )
+    session = SimpleNamespace(id="test", get_recent_messages=lambda: [])
+
+    first_events = [e async for e in engine.run("create docs", session)]
+    assert any(
+        isinstance(event, TextChunk)
+        and "PM is working" in event.content
+        for event in first_events
+    )
+
+    pool.completed = True
+    second_events = [e async for e in engine.run("continue", session)]
+
+    assert any(
+        isinstance(event, TextChunk)
+        and "start architecture" in event.content
+        for event in second_events
+    )
+    third_messages = llm.complete.call_args_list[2].kwargs["messages"]
+    assert any(
+        message["role"] == "user"
+        and "PRD complete" in message["content"]
+        and "Sub-agent sub-001 completed" in message["content"]
+        for message in third_messages
+    )
+
+
+@pytest.mark.asyncio
 async def test_react_loop_yields_context_status_after_usage_estimate():
     gen1 = _async_gen([FakeTextDelta("Context-aware answer"), FakeDone(FakeUsage())])
     llm = MagicMock()

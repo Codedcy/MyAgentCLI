@@ -366,6 +366,31 @@ class FakeWaitingEngine:
         yield Done()
 
 
+class FakeSubagentStatusPool:
+    def __init__(self):
+        self.callbacks = []
+
+    def on_status_change(self, callback):
+        self.callbacks.append(callback)
+
+
+class FakeAutocontinueEngine:
+    def __init__(self, pool):
+        self.subagent_pool = pool
+        self.interrupt_event = SimpleNamespace(clear=lambda: None)
+        self.pending_completion = True
+        self.inputs = []
+
+    def has_pending_subagent_completions(self):
+        return self.pending_completion
+
+    async def run(self, text, session, active_skill=None):
+        self.inputs.append(text)
+        self.pending_completion = False
+        yield TextChunk("continued from sub-agent")
+        yield Done()
+
+
 @pytest.mark.asyncio
 async def test_process_input_uses_live_layout_for_streaming_chunks(layout_spy):
     engine = FakeStreamingEngine(
@@ -1128,6 +1153,53 @@ async def test_process_input_status_update_updates_model_without_chat_transcript
     assert snapshot.tokens.turn_total == 15
     assert snapshot.tokens.session_total == 15
     assert transcript_entries(transcript) == []
+
+
+@pytest.mark.asyncio
+async def test_subagent_completion_status_autocontinues_main_agent():
+    pool = FakeSubagentStatusPool()
+    engine = FakeAutocontinueEngine(pool)
+    transcript = TranscriptBuffer()
+    chat = make_real_chat_controller(transcript=transcript)
+    repl = active_chat_repl(chat, engine=engine, renderer=Renderer())
+    repl._current_session = SimpleNamespace(id="session-1")
+
+    assert len(pool.callbacks) == 1
+
+    await pool.callbacks[0](
+        "sub-001",
+        SimpleNamespace(value="completed"),
+        SimpleNamespace(id="sub-001", background=True),
+        pool,
+    )
+    await asyncio.wait_for(repl._subagent_autocontinue_task, timeout=1.0)
+
+    assert engine.inputs == ["continue"]
+    entries = transcript_entries(transcript)
+    assert [(entry.role, entry.plain_text) for entry in entries] == [
+        ("assistant", "continued from sub-agent")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_foreground_subagent_completion_status_does_not_autocontinue():
+    pool = FakeSubagentStatusPool()
+    engine = FakeAutocontinueEngine(pool)
+    transcript = TranscriptBuffer()
+    chat = make_real_chat_controller(transcript=transcript)
+    repl = active_chat_repl(chat, engine=engine, renderer=Renderer())
+    repl._current_session = SimpleNamespace(id="session-1")
+
+    await pool.callbacks[0](
+        "sub-001",
+        SimpleNamespace(value="completed"),
+        SimpleNamespace(id="sub-001", background=False),
+        pool,
+    )
+    await asyncio.sleep(0)
+
+    assert repl._subagent_autocontinue_task is None
+    assert engine.inputs == []
 
 
 def test_start_layout_for_engine_stream_returns_false_while_chat_mode_is_active(

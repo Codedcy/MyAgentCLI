@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from myagent.tools.base import ToolContext
+from myagent.tools.base import ToolContext, ToolResult
 from myagent.tools.builtin.agent_tools import SendMessageTool, SpawnSubagentTool
 
 
@@ -46,6 +46,27 @@ class TestSpawnSubagentTool:
         assert result.error is None
         assert result.metadata["subagent_id"] == "sub-001"
         pool.spawn.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_foreground_spawn_returns_subagent_output_to_main_agent(self):
+        pool = AsyncMock()
+        handle = MagicMock()
+        handle.id = "sub-001"
+        handle._result_data = ToolResult(output="PRD complete")
+        pool.spawn = AsyncMock(return_value=handle)
+
+        tool = SpawnSubagentTool()
+        ctx = make_ctx(subagent_pool=pool)
+        result = await tool.execute(
+            {"prompt": "Draft PRD", "background": False},
+            ctx,
+        )
+
+        assert result.error is None
+        assert "Sub-agent sub-001 completed" in result.output
+        assert "PRD complete" in result.output
+        assert result.metadata["subagent_id"] == "sub-001"
+        assert result.metadata["background"] is False
 
 
 class TestSendMessageTool:

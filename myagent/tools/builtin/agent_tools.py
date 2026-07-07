@@ -71,9 +71,33 @@ class SpawnSubagentTool:
                 config=context.config,
                 tool_context=context,
             )
+            metadata = {"subagent_id": handle.id, "background": background}
+            if not background:
+                result_data = getattr(handle, "_result_data", None)
+                status = getattr(getattr(handle, "status", None), "value", None)
+                if status:
+                    metadata["status"] = status
+                if isinstance(result_data, ToolResult):
+                    if result_data.error:
+                        return ToolResult(
+                            output=(
+                                f"Sub-agent {handle.id} failed.\n"
+                                f"Error:\n{result_data.error}"
+                            ),
+                            error=result_data.error,
+                            metadata=metadata,
+                        )
+                    return ToolResult(
+                        output=(
+                            f"Sub-agent {handle.id} completed.\n"
+                            f"Output:\n{result_data.output}"
+                        ),
+                        metadata=metadata,
+                        artifacts=list(getattr(result_data, "artifacts", []) or []),
+                    )
             return ToolResult(
                 output=f"Sub-agent spawned: {handle.id}",
-                metadata={"subagent_id": handle.id, "background": background},
+                metadata=metadata,
             )
         except Exception as e:
             logger.exception(

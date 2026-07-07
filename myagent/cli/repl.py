@@ -240,9 +240,12 @@ class REPLEngine:
         self._thinking_started_at: float | None = None
         self._thinking_timer_task: asyncio.Task[None] | None = None
         self._done_usage_session_total: int | None = None
+        self._subagent_autocontinue_pending = False
+        self._subagent_autocontinue_task: asyncio.Task[None] | None = None
         # Skill name to inject into the next engine run (gap-2-01).
         self._active_skill: str | None = None
         self._configure_permission_prompts()
+        self._wire_subagent_autocontinue()
 
     def _create_console(self):
         from rich.console import Console
@@ -254,6 +257,118 @@ class REPLEngine:
         set_confirm_handler = getattr(permissions, "set_confirm_handler", None)
         if callable(set_confirm_handler):
             set_confirm_handler(self._confirm_permission_request)
+
+    def _wire_subagent_autocontinue(self) -> None:
+        pool = getattr(self._engine, "subagent_pool", None)
+        on_status_change = getattr(pool, "on_status_change", None)
+        if pool is None or not callable(on_status_change):
+            return
+        if getattr(pool, "_repl_autocontinue_wired", False):
+            return
+        pool._repl_autocontinue_wired = True
+
+        async def _on_subagent_status_change(agent_id, status, handle, pool):
+            try:
+                if not self._should_autocontinue_subagent(status, handle):
+                    return
+                self._subagent_autocontinue_pending = True
+                self._schedule_subagent_autocontinue()
+            except Exception as exc:
+                logger.exception(
+                    "Sub-agent auto-continue scheduling failed",
+                    extra={
+                        "category": "error",
+                        "component": "agent",
+                        "context": "subagent_autocontinue_schedule",
+                        "exception_type": type(exc).__name__,
+                        "traceback": traceback.format_exc(),
+                        "subagent_id": agent_id,
+                    },
+                )
+
+        on_status_change(_on_subagent_status_change)
+
+    @staticmethod
+    def _should_autocontinue_subagent(status, handle) -> bool:
+        status_value = getattr(status, "value", status)
+        status_value = str(status_value).lower()
+        if status_value not in {"completed", "failed", "interrupted"}:
+            return False
+        return bool(getattr(handle, "background", False))
+
+    def _schedule_subagent_autocontinue(self) -> None:
+        if not self._subagent_autocontinue_pending:
+            return
+        active_engine_task = getattr(self, "_active_engine_task", None)
+        if active_engine_task is not None and not active_engine_task.done():
+            return
+        if (
+            self._subagent_autocontinue_task is not None
+            and not self._subagent_autocontinue_task.done()
+        ):
+            return
+        try:
+            task = asyncio.create_task(self._run_subagent_autocontinue())
+        except RuntimeError:
+            logger.exception(
+                "Could not create sub-agent auto-continue task",
+                extra={
+                    "category": "error",
+                    "component": "agent",
+                    "context": "create_subagent_autocontinue_task",
+                },
+            )
+            return
+        self._subagent_autocontinue_task = task
+        self._chat_submission_tasks.add(task)
+        task.add_done_callback(self._on_subagent_autocontinue_done)
+
+    async def _run_subagent_autocontinue(self) -> None:
+        await asyncio.sleep(0)
+        if not self._has_pending_subagent_completion_for_engine():
+            self._subagent_autocontinue_pending = False
+            return
+
+        lock = self._chat_submission_lock
+        if lock is None:
+            self._subagent_autocontinue_pending = False
+            await self.process_input("continue")
+            return
+
+        async with lock:
+            if not self._has_pending_subagent_completion_for_engine():
+                self._subagent_autocontinue_pending = False
+                return
+            self._subagent_autocontinue_pending = False
+            await self.process_input("continue")
+
+    def _has_pending_subagent_completion_for_engine(self) -> bool:
+        has_pending = getattr(self._engine, "has_pending_subagent_completions", None)
+        if callable(has_pending):
+            return bool(has_pending())
+        return self._subagent_autocontinue_pending
+
+    def _on_subagent_autocontinue_done(self, task: asyncio.Task[None]) -> None:
+        self._chat_submission_tasks.discard(task)
+        if self._subagent_autocontinue_task is task:
+            self._subagent_autocontinue_task = None
+        if task.cancelled():
+            return
+        try:
+            task.result()
+        except Exception as exc:
+            logger.exception(
+                "Sub-agent auto-continue task failed",
+                extra={
+                    "category": "error",
+                    "component": "agent",
+                    "context": "subagent_autocontinue_task",
+                    "exception_type": type(exc).__name__,
+                    "traceback": "".join(
+                        traceback.format_exception(type(exc), exc, exc.__traceback__)
+                    ),
+                },
+            )
 
     def _create_layout_controller(self):
         if self._status_pane is None:
@@ -1518,6 +1633,7 @@ class REPLEngine:
                 self._set_chat_agent_running(False)
                 self._output_to_console("")  # trailing newline after streaming
                 self._stop_layout_after_engine_stream(layout_started)
+                self._schedule_subagent_autocontinue()
 
             if await self._skip_chat_followups_for_submission_teardown():
                 return
