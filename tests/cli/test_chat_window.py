@@ -377,6 +377,30 @@ def test_agent_pure_collapsed_markdown_table_gets_readable_rows() -> None:
     assert not any("---" in line or "| ---" in line for line in lines)
 
 
+def test_agent_compact_fenced_directory_tree_gets_readable_lines() -> None:
+    controller = make_controller(status_pane=EmptyStatusPane())
+    controller.append_output(
+        "Project overview:\n"
+        "```D:\\code\\test\\├── calculator.html <- calculator app"
+        "├── .myagent\\ <- agent config"
+        "└── memory\\├── MEMORY.md <- memory index"
+        "└── dev-team.md <- team config```"
+    )
+
+    lines = controller._conversation_lines(height=12, width=120)
+
+    assert any("Agent  | Project overview:" in line for line in lines)
+    assert any("       | D:\\code\\test\\" in line for line in lines)
+    assert any(
+        "       | ├── calculator.html <- calculator app" in line for line in lines
+    )
+    assert any("       | ├── .myagent\\ <- agent config" in line for line in lines)
+    assert any("       | └── memory\\" in line for line in lines)
+    assert any("       | ├── MEMORY.md <- memory index" in line for line in lines)
+    assert any("       | └── dev-team.md <- team config" in line for line in lines)
+    assert not any("```D:\\code\\test\\├──" in line for line in lines)
+
+
 def test_agent_shell_pipeline_bullet_stays_literal() -> None:
     controller = make_controller(status_pane=EmptyStatusPane())
     controller.append_output("- Run `cat log.txt | grep error | sort`")

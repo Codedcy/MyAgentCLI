@@ -54,6 +54,7 @@ MARKDOWN_SIGNAL_PATTERN = re.compile(
 DASH_SEPARATOR_PATTERN = re.compile(r"\s+[-\u2013\u2014]\s+")
 ORDERED_LIST_MARKER_PATTERN = re.compile(r"(?<!\S)(\d{1,2})\.\s+(?=\S)")
 TABLE_SEPARATOR_CELL_PATTERN = re.compile(r":?-{3,}:?")
+TREE_BRANCH_PATTERN = re.compile(r"\s*(?=[├└]──)")
 
 
 def _clip_cells(text: str, width: int) -> str:
@@ -118,18 +119,55 @@ def _format_agent_text_for_display(text: str) -> str:
     """Turn common compact Markdown-ish agent text into readable plain text."""
 
     segments = _split_code_fence_segments(text)
-    if not any(
+    format_markdown_segments = any(
         MARKDOWN_SIGNAL_PATTERN.search(segment)
         for is_code, segment in segments
         if not is_code
-    ):
+    )
+
+    prepared_segments: list[tuple[bool, str, str]] = []
+    code_changed = False
+    for is_code, segment in segments:
+        formatted_segment = (
+            _format_agent_code_fence_segment(segment) if is_code else segment
+        )
+        code_changed = code_changed or formatted_segment != segment
+        prepared_segments.append((is_code, segment, formatted_segment))
+
+    if not format_markdown_segments and not code_changed:
         return text
 
-    formatted_parts = [
-        segment if is_code else _format_agent_markdown_segment(segment)
-        for is_code, segment in segments
-    ]
+    formatted_parts = []
+    for is_code, original_segment, formatted_segment in prepared_segments:
+        if is_code:
+            formatted_parts.append(formatted_segment)
+        elif format_markdown_segments:
+            formatted_parts.append(_format_agent_markdown_segment(original_segment))
+        else:
+            formatted_parts.append(original_segment)
     return "".join(formatted_parts).strip("\n")
+
+
+def _format_agent_code_fence_segment(segment: str) -> str:
+    """Make compact fenced directory trees readable without changing code blocks."""
+
+    if not segment.startswith("```") or not segment.endswith("```"):
+        return segment
+
+    inner = segment[3:-3].strip()
+    if "\n" in inner:
+        return segment
+    if "├──" not in inner and "└──" not in inner:
+        return segment
+
+    lines = [
+        line.strip()
+        for line in TREE_BRANCH_PATTERN.sub("\n", inner).splitlines()
+        if line.strip()
+    ]
+    if len(lines) < 2:
+        return segment
+    return "\n".join(lines)
 
 
 def _split_code_fence_segments(text: str) -> list[tuple[bool, str]]:
