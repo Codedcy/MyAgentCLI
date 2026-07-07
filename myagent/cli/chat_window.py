@@ -227,7 +227,7 @@ def _format_dash_separated_bullet_line(stripped: str) -> list[str] | None:
 
 
 def _format_pipe_table_line(stripped: str) -> list[str] | None:
-    if stripped.startswith("- ") or "`" in stripped:
+    if stripped.startswith("- "):
         return None
     if stripped.count("|") < 2:
         return None
@@ -244,7 +244,16 @@ def _format_pipe_table_line(stripped: str) -> list[str] | None:
     if len(cells) < 2:
         return [prefix] if prefix else None
 
-    lines: list[str] = [prefix] if prefix else []
+    rows = _compact_table_rows(cells)
+    if rows is not None:
+        lines: list[str] = [prefix] if prefix else []
+        lines.extend(_render_table_rows(rows))
+        return lines
+
+    return None
+
+
+def _compact_table_rows(cells: list[str]) -> list[list[str]] | None:
     separator_index = next(
         (
             index
@@ -253,22 +262,27 @@ def _format_pipe_table_line(stripped: str) -> list[str] | None:
         ),
         None,
     )
-    if separator_index is not None:
-        if separator_index == 0:
-            return lines or [""]
-        column_count = separator_index
-        header = cells[:column_count]
-        data_cells = [
-            cell
-            for cell in cells[separator_index:]
-            if not _is_table_separator_cell(cell)
-        ]
-        rows = [header]
-        rows.extend(_chunk_cells(data_cells, column_count))
-        lines.extend(_render_table_rows(rows))
-        return lines
+    if separator_index is None:
+        return None
 
-    return None
+    header_end = separator_index
+    for index, cell in enumerate(cells[:separator_index]):
+        if not cell.strip():
+            header_end = index
+            break
+
+    header = [cell for cell in cells[:header_end] if cell.strip()]
+    if len(header) < 2:
+        return None
+
+    data_cells = [
+        cell
+        for cell in cells[separator_index:]
+        if cell.strip() and not _is_table_separator_cell(cell)
+    ]
+    rows = [header]
+    rows.extend(_chunk_cells(data_cells, len(header)))
+    return rows
 
 
 def _expand_markdown_table_blocks(segment: str) -> str:
@@ -348,13 +362,22 @@ def _render_table_rows(rows: list[list[str]]) -> list[str]:
     rendered: list[str] = []
     for row in rows:
         padded_cells: list[str] = []
-        for index, cell in enumerate(row):
+        cleaned_row = [_clean_table_cell(cell) for cell in row]
+        for index, cell in enumerate(cleaned_row):
             if index == len(row) - 1:
                 padded_cells.append(cell)
             else:
                 padded_cells.append(_pad_cells(cell, widths[index]))
         rendered.append("  ".join(padded_cells).rstrip())
     return rendered
+
+
+def _clean_table_cell(cell: str) -> str:
+    cleaned = cell.strip()
+    cleaned = re.sub(r"\*\*([^*]+)\*\*", r"\1", cleaned)
+    if len(cleaned) >= 2 and cleaned.startswith("`") and cleaned.endswith("`"):
+        return cleaned[1:-1].strip()
+    return cleaned
 
 
 class _ChatBodyControl(FormattedTextControl):
@@ -738,7 +761,10 @@ class ChatWindowController:
         if rows < 3 or columns < 4:
             self._last_viewport_height = rows
             if not status_lines:
-                return "\n".join(self._conversation_lines(rows, columns))
+                return "\n".join(
+                    _pad_cells(line, columns)
+                    for line in self._conversation_lines(rows, columns)
+                )
             return self._render_unbordered_body(columns, rows, status_lines)
 
         content_rows = rows - 2
@@ -800,10 +826,10 @@ class ChatWindowController:
             right = status_lines[index] if index < len(status_lines) else ""
             if right:
                 rendered_lines.append(
-                    f"{_pad_cells(left, conversation_width)} {right}"
+                    _pad_cells(f"{_pad_cells(left, conversation_width)} {right}", columns)
                 )
             else:
-                rendered_lines.append(_clip_cells(left, columns))
+                rendered_lines.append(_pad_cells(left, columns))
         return "\n".join(rendered_lines)
 
     def _render_bordered_body(
@@ -821,7 +847,7 @@ class ChatWindowController:
             top = f"{top}+{'-' * status_width}"
         top = f"{top}+"
 
-        rendered = [_clip_cells(top, columns)]
+        rendered = [_pad_cells(top, columns)]
         for index in range(len(conversation_lines)):
             left = (
                 conversation_lines[index]
@@ -833,8 +859,8 @@ class ChatWindowController:
                 right = status_lines[index] if index < len(status_lines) else ""
                 line = f"{line}|{_pad_cells(right, status_width)}"
             line = f"{line}|"
-            rendered.append(_clip_cells(line, columns))
-        rendered.append(_clip_cells(top, columns))
+            rendered.append(_pad_cells(line, columns))
+        rendered.append(_pad_cells(top, columns))
         return rendered
 
     def _conversation_lines(self, height: int, width: int) -> list[str]:
@@ -1108,7 +1134,7 @@ class ChatWindowController:
         rendered.extend(f"{' ' * len(INPUT_PROMPT)}{line}" for line in raw_lines[1:])
         if len(rendered) < height:
             rendered.extend("" for _ in range(height - len(rendered)))
-        return [_clip_cells(line, width) for line in rendered]
+        return [_pad_cells(line, width) for line in rendered]
 
     def _status_text(self, terminal_columns: int) -> str:
         if self.status_pane is None:

@@ -246,6 +246,21 @@ def test_wrapped_single_line_transcript_can_scroll_to_earlier_visual_rows() -> N
     assert "Agent  | start" in scrolled
 
 
+def test_render_frame_pads_every_line_to_terminal_width() -> None:
+    controller = make_controller(status_pane=EmptyStatusPane())
+    controller.append_output("long output " + ("x" * 80))
+    controller._render_for_size(terminal_columns=64, terminal_rows=6)
+    controller.append_output("short")
+
+    rendered = controller._render_for_size(
+        terminal_columns=64,
+        terminal_rows=6,
+        input_text="",
+    )
+
+    assert all(get_cwidth(line) == 64 for line in rendered.splitlines())
+
+
 def test_role_markers_and_spacing_distinguish_user_and_agent_turns() -> None:
     controller = make_controller(status_pane=EmptyStatusPane())
     controller.append_user_input("hello")
@@ -347,6 +362,25 @@ def test_agent_shell_pipeline_bullet_stays_literal() -> None:
 
     assert any("Agent  | - Run `cat log.txt | grep error | sort`" in line for line in lines)
     assert not any("grep error | sort" in line for line in lines if "cat log" not in line)
+
+
+def test_agent_compact_markdown_table_with_row_separators_and_code_cells() -> None:
+    controller = make_controller(status_pane=EmptyStatusPane())
+    controller.append_output(
+        "✅ 开发团队创建完成！ 以下是团队成员： "
+        "| # | 角色 | ID | 状态 ||---|------|----|------|| "
+        "🎯 | 产品经理 | `pm` | 待命 || 🏗️ | 架构师 | `architect` | 待命 || "
+        "📝 | 文档 Reviewer | `doc-reviewer` | 待命 ||"
+    )
+
+    lines = controller._conversation_lines(height=12, width=110)
+
+    assert any("开发团队创建完成" in line for line in lines)
+    assert any("#" in line and "角色" in line and "ID" in line and "状态" in line for line in lines)
+    assert any("产品经理" in line and "pm" in line and "待命" in line for line in lines)
+    assert any("架构师" in line and "architect" in line and "待命" in line for line in lines)
+    assert any("文档 Reviewer" in line and "doc-reviewer" in line for line in lines)
+    assert not any("---" in line or "`" in line for line in lines)
 
 
 def test_agent_plain_pipe_text_after_heading_stays_literal() -> None:
