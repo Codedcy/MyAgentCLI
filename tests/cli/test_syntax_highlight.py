@@ -14,11 +14,22 @@ def flatten(lines: list[StyledLine]) -> list[Fragment]:
     return [fragment for line in lines for fragment in line.fragments]
 
 
+def lines_text(lines: list[StyledLine]) -> str:
+    return "\n".join(line.plain for line in lines)
+
+
+def assert_line_fragments_match_plain(lines: list[StyledLine]) -> None:
+    assert all(fragments_plain(line.fragments) == line.plain for line in lines)
+
+
 def test_normalize_language_supports_c_cpp_and_rust_aliases() -> None:
     assert normalize_language("c") == "c"
     assert normalize_language("cpp") == "cpp"
     assert normalize_language("c++") == "cpp"
     assert normalize_language("cc") == "cpp"
+    assert normalize_language("cxx") == "cpp"
+    assert normalize_language("h") == "cpp"
+    assert normalize_language("hpp") == "cpp"
     assert normalize_language("rust") == "rust"
     assert normalize_language("rs") == "rust"
 
@@ -61,14 +72,24 @@ def test_split_fenced_code_blocks_accepts_windows_crlf_fences() -> None:
     assert segments[1].text == "def run():\n    return 1\n"
 
 
+def test_unlabeled_fence_does_not_invent_text_language() -> None:
+    text = "```\nplain text\n```"
+
+    segments = split_fenced_code_blocks(text)
+
+    assert [(segment.language, segment.fence_language) for segment in segments] == [
+        ("", "")
+    ]
+
+
 def test_python_code_block_highlights_keywords_comments_strings_and_numbers() -> None:
     text = "```python\n# note\ndef greet():\n    return \"hi\", 42\n```"
 
     lines = highlight_transcript_text(text, enabled=True)
     fragments = flatten(lines)
-    plain = "\n".join(line.plain for line in lines)
 
-    assert plain == text
+    assert lines_text(lines) == text
+    assert_line_fragments_match_plain(lines)
     assert any("italic" in style and token == "# note" for style, token in fragments)
     assert any("bold" in style and token == "def" for style, token in fragments)
     assert any("green" in style and token == '"hi"' for style, token in fragments)
@@ -89,9 +110,11 @@ def test_sql_code_block_highlights_sql_keywords_and_comments() -> None:
 def test_unknown_fence_language_stays_unstyled() -> None:
     text = "```mystery\nSELECT 1\n```"
 
-    fragments = flatten(highlight_transcript_text(text, enabled=True))
+    lines = highlight_transcript_text(text, enabled=True)
+    fragments = flatten(lines)
 
-    assert fragments_plain(fragments) == text
+    assert lines_text(lines) == text
+    assert_line_fragments_match_plain(lines)
     assert all(style == "" for style, _token in fragments)
 
 
@@ -101,14 +124,26 @@ def test_empty_unlabeled_fence_preserves_markdown_shape() -> None:
     lines = highlight_transcript_text(text, enabled=True)
 
     assert [line.plain for line in lines] == ["```", "```"]
-    assert fragments_plain(flatten(lines)) == text
+    assert lines_text(lines) == text
+    assert_line_fragments_match_plain(lines)
     assert all(style == "" for style, _token in flatten(lines))
+
+
+def test_mixed_prose_and_code_preserves_text_through_line_fragments() -> None:
+    text = "before\n```python\ndef run():\n    return 1\n```\nafter"
+
+    lines = highlight_transcript_text(text, enabled=True)
+
+    assert lines_text(lines) == text
+    assert_line_fragments_match_plain(lines)
 
 
 def test_disabled_highlighting_returns_unstyled_fragments() -> None:
     text = "```python\ndef run():\n    return 1\n```"
 
-    fragments = flatten(highlight_transcript_text(text, enabled=False))
+    lines = highlight_transcript_text(text, enabled=False)
+    fragments = flatten(lines)
 
-    assert fragments_plain(fragments) == text
+    assert lines_text(lines) == text
+    assert_line_fragments_match_plain(lines)
     assert all(style == "" for style, _token in fragments)

@@ -105,7 +105,7 @@ def split_fenced_code_blocks(text: str) -> list[CodeFenceSegment]:
         if match.start() > cursor:
             segments.append(CodeFenceSegment(False, "", "", text[cursor : match.start()]))
         fence_language = (match.group(1) or "").strip()
-        language = normalize_language(fence_language or "text") or ""
+        language = (normalize_language(fence_language) or "") if fence_language else ""
         segments.append(
             CodeFenceSegment(
                 True,
@@ -121,23 +121,23 @@ def split_fenced_code_blocks(text: str) -> list[CodeFenceSegment]:
 
 
 def highlight_transcript_text(text: str, *, enabled: bool) -> list[StyledLine]:
+    text = _normalize_newlines(text)
     if not enabled:
-        return _plain_lines(_normalize_newlines(text))
+        return _plain_lines(text)
 
-    lines: list[StyledLine] = []
+    fragments: list[Fragment] = []
     for segment in split_fenced_code_blocks(text):
         if not segment.is_code:
-            lines.extend(_plain_lines(segment.text))
+            fragments.append(("", segment.text))
             continue
         fence_header = f"```{segment.fence_language}"
-        lines.append(StyledLine(fence_header, [("", fence_header + "\n")]))
+        fragments.append(("", fence_header + "\n"))
         if segment.text and segment.language:
-            code_text = segment.text[:-1] if segment.text.endswith("\n") else segment.text
-            lines.extend(_highlight_code(code_text, segment.language))
+            fragments.extend(_highlight_code_fragments(segment.text, segment.language))
         elif segment.text:
-            lines.extend(_plain_lines(segment.text))
-        lines.append(StyledLine("```", [("", "```")]))
-    return _trim_split_artifacts(lines)
+            fragments.append(("", segment.text))
+        fragments.append(("", "```"))
+    return _fragments_to_lines(_merge_fragments(fragments))
 
 
 def fragments_plain(fragments: list[Fragment]) -> str:
@@ -148,7 +148,7 @@ def _normalize_newlines(text: str) -> str:
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
-def _highlight_code(code: str, language: str) -> list[StyledLine]:
+def _highlight_code_fragments(code: str, language: str) -> list[Fragment]:
     try:
         lexer = get_lexer_by_name(language)
         raw_fragments = [(_style_for_token(token), value) for token, value in lex(code, lexer)]
@@ -163,9 +163,12 @@ def _highlight_code(code: str, language: str) -> list[StyledLine]:
                 "traceback": traceback.format_exc(),
             },
         )
-        return _plain_lines(code)
-    merged_fragments = _merge_fragments(raw_fragments)
-    return _fragments_to_lines(merged_fragments)
+        return [("", code)]
+    if fragments_plain(raw_fragments) == code + "\n" and not code.endswith("\n"):
+        raw_fragments = _remove_fragment_suffix(raw_fragments, "\n")
+    if fragments_plain(raw_fragments) != code:
+        return [("", code)]
+    return _merge_fragments(raw_fragments)
 
 
 def _merge_fragments(fragments: list[Fragment]) -> list[Fragment]:
@@ -178,6 +181,24 @@ def _merge_fragments(fragments: list[Fragment]) -> list[Fragment]:
         else:
             merged.append((style, value))
     return merged
+
+
+def _remove_fragment_suffix(fragments: list[Fragment], suffix: str) -> list[Fragment]:
+    remaining = suffix
+    trimmed = list(fragments)
+    while remaining and trimmed:
+        style, value = trimmed.pop()
+        if value.endswith(remaining):
+            kept = value[: -len(remaining)]
+            if kept:
+                trimmed.append((style, kept))
+            return trimmed
+        if remaining.endswith(value):
+            remaining = remaining[: -len(value)]
+            continue
+        trimmed.append((style, value))
+        return fragments
+    return trimmed if not remaining else fragments
 
 
 def _style_for_token(token: Token) -> str:
@@ -197,16 +218,7 @@ def _style_for_token(token: Token) -> str:
 
 
 def _plain_lines(text: str) -> list[StyledLine]:
-    lines = text.split("\n")
-    return [
-        StyledLine(
-            line,
-            [("", line + "\n")],
-        )
-        if index < len(lines) - 1
-        else StyledLine(line, [("", line)])
-        for index, line in enumerate(lines)
-    ]
+    return _fragments_to_lines([("", text)])
 
 
 def _fragments_to_lines(fragments: list[Fragment]) -> list[StyledLine]:
@@ -218,13 +230,10 @@ def _fragments_to_lines(fragments: list[Fragment]) -> list[StyledLine]:
                 lines.append([])
             if part:
                 lines[-1].append((style, part))
-    result = [
+    return [
         StyledLine(fragments_plain(line_fragments), line_fragments or [("", "")])
         for line_fragments in lines
     ]
-    while len(result) > 1 and result[-1].plain == "":
-        result = result[:-1]
-    return result
 
 
 def _trim_split_artifacts(lines: list[StyledLine]) -> list[StyledLine]:
