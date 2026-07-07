@@ -8,7 +8,9 @@ import re
 import sys
 
 ANSI_PATTERN = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
-LITERAL_SGR_MOUSE_PATTERN = re.compile(r"\^\[\[<\d+;\d+;\d+[Mm]")
+SGR_MOUSE_REPORT_PATTERN = re.compile(
+    r"(?:\x1b\[|\^\[\[|\[\[?)<\d+;\d+;\d+[Mm]"
+)
 OUTPUT_CONTROL_PATTERN = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 _CSI_FINAL_MIN = 0x40
 _CSI_FINAL_MAX = 0x7E
@@ -46,7 +48,7 @@ class StreamingTextSanitizer:
     def sanitize(self, text: object, *, final: bool = False) -> str:
         plain_text = "" if text is None else str(text)
         source = f"{self._pending_escape}{plain_text}"
-        source = LITERAL_SGR_MOUSE_PATTERN.sub("", source)
+        source = SGR_MOUSE_REPORT_PATTERN.sub("", source)
         self._pending_escape = ""
         output: list[str] = []
         index = 0

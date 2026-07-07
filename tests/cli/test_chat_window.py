@@ -1171,7 +1171,7 @@ def test_input_text_changed_removes_terminal_mouse_reports_from_buffer() -> None
     controller._build_layout()
     assert controller._input_field is not None
     buffer = controller._input_field.buffer
-    buffer.text = "hello \x1b[<35;64;22M^[[<35;65;22Mworld"
+    buffer.text = "hello \x1b[<35;64;22M^[[<35;65;22M[<35;66;22Mworld"
     buffer.cursor_position = len(buffer.text)
 
     controller._on_input_text_changed(buffer)
