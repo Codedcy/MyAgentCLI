@@ -921,6 +921,36 @@ async def test_ask_collects_one_response_through_bottom_input() -> None:
 
 
 @pytest.mark.asyncio
+async def test_transient_ask_renders_above_input_without_transcript_entry() -> None:
+    transcript = TranscriptBuffer()
+    controller = make_controller(transcript=transcript, status_pane=EmptyStatusPane())
+
+    ask_task = asyncio.create_task(
+        controller.ask(
+            "Permission required for tool: bash\n[A] allow once  [D] deny",
+            timeout=1,
+            transient=True,
+        )
+    )
+    await asyncio.sleep(0)
+
+    rendered = controller._render_for_size(terminal_columns=80, terminal_rows=8)
+
+    assert transcript.entries() == []
+    assert "Permission required for tool: bash" in rendered
+    assert rendered.index("Permission required") < rendered.index("INPUT>")
+
+    controller._handle_submit("a")
+
+    assert await ask_task == "a"
+    assert transcript.entries() == []
+    assert "Permission required" not in controller._render_for_size(
+        terminal_columns=80,
+        terminal_rows=8,
+    )
+
+
+@pytest.mark.asyncio
 async def test_run_logs_and_reraises_startup_exception(monkeypatch, caplog) -> None:
     import myagent.cli.chat_window as chat_window
 

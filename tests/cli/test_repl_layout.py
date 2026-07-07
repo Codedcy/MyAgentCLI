@@ -89,6 +89,7 @@ class FakeChatWindowController:
         self.system_calls = []
         self.error_calls = []
         self.ask_calls = []
+        self.ask_transient_flags = []
         self.run_calls = []
         self.request_stop_calls = 0
         self.agent_running_values = []
@@ -143,8 +144,9 @@ class FakeChatWindowController:
         self.error_calls.append(text)
         self.transcript.append_error(sanitize_terminal_text(text))
 
-    async def ask(self, prompt, timeout):
+    async def ask(self, prompt, timeout, transient=False):
         self.ask_calls.append((prompt, timeout))
+        self.ask_transient_flags.append(transient)
         if self.ask_error:
             raise self.ask_error
         return self.ask_response
@@ -1966,6 +1968,7 @@ async def test_permission_confirm_uses_active_chat_prompt_even_when_stdin_is_non
     assert "bash" in prompt_text
     assert "git status" in prompt_text
     assert timeout is None
+    assert chat.ask_transient_flags == [True]
     assert repl._chat_window_loop_active is True
 
 

@@ -415,6 +415,8 @@ class ChatWindowController:
         self._on_exit: Callable[[], Any] | None = None
         self._on_interrupt: Callable[[], Any] | None = None
         self._ask_future: asyncio.Future[str | None] | None = None
+        self._ask_transient = False
+        self._transient_prompt_text: str | None = None
         self._exit_confirmation_pending = False
         self._queued_submissions: list[str] = []
 
@@ -558,6 +560,7 @@ class ChatWindowController:
         was_running = self._is_running
         self._is_running = False
         self._finish_pending_ask(None)
+        self._clear_transient_prompt()
         if not was_running:
             return
         exit_app = getattr(self._app, "exit", None)
@@ -582,13 +585,23 @@ class ChatWindowController:
         self._agent_running = bool(running)
         self.refresh()
 
-    async def ask(self, prompt: str, timeout: float | None) -> str | None:
+    async def ask(
+        self,
+        prompt: str,
+        timeout: float | None,
+        transient: bool = False,
+    ) -> str | None:
         """Ask for one response through the bottom input."""
 
         if self._ask_future is not None and not self._ask_future.done():
             raise RuntimeError("A chat window question is already pending")
 
-        self.append_system(prompt)
+        self._ask_transient = bool(transient)
+        if transient:
+            self._transient_prompt_text = prompt
+            self.refresh()
+        else:
+            self.append_system(prompt)
         loop = asyncio.get_running_loop()
         future: asyncio.Future[str | None] = loop.create_future()
         self._ask_future = future
@@ -601,6 +614,8 @@ class ChatWindowController:
         finally:
             if self._ask_future is future:
                 self._ask_future = None
+                self._ask_transient = False
+                self._clear_transient_prompt()
 
     def _build_layout(self) -> Layout:
         self._body_control = _ChatBodyControl(self._body_text, self._scroll_lines)
@@ -757,14 +772,17 @@ class ChatWindowController:
         width = max(1, int(width))
         self._last_conversation_width = width
 
+        prompt_lines = self._transient_prompt_lines(width)
+        prompt_separator_height = 1 if prompt_lines and height > len(prompt_lines) else 0
+        content_height = max(0, height - len(prompt_lines) - prompt_separator_height)
         transcript_lines = self._render_transcript_lines(width)
         queue_lines = self._visible_queue_lines(
             width=width,
-            height=height,
+            height=content_height,
             has_transcript=bool(transcript_lines),
         )
         separator_height = 1 if transcript_lines and queue_lines else 0
-        transcript_height = max(0, height - len(queue_lines) - separator_height)
+        transcript_height = max(0, content_height - len(queue_lines) - separator_height)
         lines = self._slice_visual_transcript_lines(
             transcript_lines,
             transcript_height,
@@ -778,14 +796,19 @@ class ChatWindowController:
             )
 
         if queue_lines:
-            if lines and len(lines) < height:
+            if lines and len(lines) < content_height:
                 lines.append("")
             lines.extend(queue_lines)
 
-        if not lines:
+        if not lines and not prompt_lines:
             lines = ["Conversation"]
 
-        clipped = lines[:height]
+        clipped = lines[:content_height]
+        if prompt_lines:
+            clipped.extend("" for _ in range(max(0, content_height - len(clipped))))
+            if prompt_separator_height:
+                clipped.append("")
+            clipped.extend(prompt_lines)
         return [_clip_cells(line, width) for line in clipped] + [""] * max(
             0,
             height - len(clipped),
@@ -894,6 +917,17 @@ class ChatWindowController:
 
         max_queue_height = max(2, height // 3)
         return queue_lines[: min(len(queue_lines), max_queue_height)]
+
+    def _transient_prompt_lines(self, width: int) -> list[str]:
+        if not self._transient_prompt_text:
+            return []
+        lines: list[str] = []
+        for index, text in enumerate(
+            sanitize_terminal_text(self._transient_prompt_text).splitlines() or [""]
+        ):
+            prefix = self._role_prefix("Prompt") if index == 0 else self._continuation_prefix()
+            lines.extend(self._wrap_prefixed_text(prefix, text, width))
+        return lines
 
     def _role_prefix(self, label: str) -> str:
         return f"{label:<{ROLE_LABEL_WIDTH}} | "
@@ -1013,7 +1047,8 @@ class ChatWindowController:
             return
         self._cancel_exit_confirmation()
         if self._ask_future is not None and not self._ask_future.done():
-            self.append_user_input(normalized)
+            if not self._ask_transient:
+                self.append_user_input(normalized)
             self._finish_pending_ask(normalized)
             return
         if self._agent_running and not is_immediate_chat_command(normalized):
@@ -1109,6 +1144,12 @@ class ChatWindowController:
         future = self._ask_future
         if future is not None and not future.done():
             future.set_result(value)
+
+    def _clear_transient_prompt(self) -> None:
+        if self._transient_prompt_text is None:
+            return
+        self._transient_prompt_text = None
+        self.refresh()
 
     def _chat_config(self) -> Any:
         ui_config = getattr(self.config, "ui", None)

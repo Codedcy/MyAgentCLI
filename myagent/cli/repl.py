@@ -567,7 +567,11 @@ class REPLEngine:
         )
         self._set_permission_waiting(tool_name, True)
         try:
-            choice = await self._prompt_with_timeout(prompt_text, timeout=None)
+            choice = await self._prompt_with_timeout(
+                prompt_text,
+                timeout=None,
+                transient=True,
+            )
         finally:
             self._set_permission_waiting(tool_name, False)
 
@@ -1380,6 +1384,7 @@ class REPLEngine:
         self,
         prompt_text: str,
         timeout: float | None,
+        transient: bool = False,
     ) -> str | None:
         """Prompt the user. Returns the response or None if a timed prompt expires.
 
@@ -1390,7 +1395,7 @@ class REPLEngine:
         if self._chat_window_active():
             ask = getattr(self._chat_window, "ask", None)
             if callable(ask):
-                return await ask(prompt_text, timeout)
+                return await ask(prompt_text, timeout, transient=transient)
 
         try:
             import asyncio as _asyncio
