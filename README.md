@@ -290,6 +290,18 @@ pytest tests/ -v --cov=myagent --cov-report=term-missing
 - [CLI Runtime UX 计划](docs/superpowers/plans/2026-07-07-cli-runtime-ux.md)
 - [TUI 语法高亮计划](docs/superpowers/plans/2026-07-07-tui-syntax-highlighting.md)
 
+## Sub-agent status and output
+
+When the model starts background sub-agents with `spawn_subagent`, the main
+agent waits for the spawned sub-agents to finish, injects their completion
+output back into the ReAct loop, and continues without requiring another user
+message.
+
+Use `/subagents` to list active and recent sub-agents, including status,
+summary, and transcript path. Use `/subagent <id>` to show one sub-agent's full
+output. Persisted transcripts are stored under the session directory at
+`subagents/<id>/transcript.json` and `subagents/<id>/transcript.md`.
+
 ## License
 
 MIT

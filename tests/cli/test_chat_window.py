@@ -681,12 +681,14 @@ def test_submissions_waiting_for_agent_are_visible_as_queue() -> None:
 
     controller._handle_submit("queued question")
 
-    assert submitted == ["queued question"]
+    assert submitted == []
     assert transcript.visible_entries(10) == []
     queued_lines = controller._conversation_lines(height=6, width=60)
     assert "Queue  | 1 pending" in queued_lines
     assert any("1. queued question" in line for line in queued_lines)
 
+    assert controller.pop_next_queued_submission() == "queued question"
+    assert submitted == []
     controller.mark_submission_started("queued question")
 
     assert transcript.visible_entries(10)[-1].role == "user"

@@ -1,6 +1,7 @@
 """Tests for LogManager and get_logger."""
 
 import json
+import logging
 import time
 
 from myagent.logging.logger import LogManager, get_logger
@@ -58,7 +59,7 @@ class TestLogManager:
         assert len(log_files) > 0
 
         content = log_files[0].read_text(encoding="utf-8")
-        lines = [l for l in content.strip().split("\n") if l]
+        lines = [line for line in content.strip().split("\n") if line]
         assert len(lines) >= 3
 
         for line in lines:
@@ -67,11 +68,39 @@ class TestLogManager:
             assert "level" in data
 
         # Find our tool log
-        tool_lines = [l for l in lines if '"tool_name"' in l and '"read"' in l]
+        tool_lines = [
+            line for line in lines if '"tool_name"' in line and '"read"' in line
+        ]
         assert len(tool_lines) == 1
         data = json.loads(tool_lines[0])
         assert data["tool_name"] == "read"
         assert data["duration_ms"] == 12
 
         # Clean up
+        log_mod._initialized = False
+
+    def test_shutdown_restores_myagent_logger_propagation(self, tmp_path, caplog):
+        import myagent.logging.logger as log_mod
+        from myagent.config.schema import LoggingConfig
+
+        log_mod._initialized = False
+        log_mod._queue_listener = None
+        caplog.set_level(logging.ERROR, logger="myagent.memory.dream")
+
+        LogManager.setup(
+            config=LoggingConfig(
+                level="DEBUG",
+                dir=str(tmp_path / "logs"),
+                format="jsonl",
+            )
+        )
+        LogManager.shutdown()
+
+        logging.getLogger("myagent.memory.dream").error("after shutdown")
+
+        assert any(
+            record.name == "myagent.memory.dream"
+            and record.message == "after shutdown"
+            for record in caplog.records
+        )
         log_mod._initialized = False

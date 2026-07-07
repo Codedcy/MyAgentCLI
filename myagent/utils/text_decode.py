@@ -9,7 +9,13 @@ import sys
 
 ANSI_PATTERN = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 SGR_MOUSE_REPORT_PATTERN = re.compile(
-    r"(?:\x1b\[|\^\[\[|\[\[?)<\d+;\d+;\d+[Mm]"
+    r"(?:\x1b\[|\^\[\[|\^\[|\[\[?|\[)?<\d+;\d+;\d+[Mm]"
+)
+PARTIAL_MOUSE_REPORT_PATTERN = re.compile(
+    r"(?:"
+    r"(?:\x1b\[?|\^\[\[?|\[\[)"
+    r"|(?:\x1b\[|\^\[\[|\^\[|\[\[?|\[)?<\d*(?:;\d*){0,2}"
+    r")$"
 )
 OUTPUT_CONTROL_PATTERN = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 _CSI_FINAL_MIN = 0x40
@@ -44,12 +50,19 @@ class StreamingTextSanitizer:
 
     def __init__(self) -> None:
         self._pending_escape = ""
+        self._pending_mouse_report = ""
 
     def sanitize(self, text: object, *, final: bool = False) -> str:
         plain_text = "" if text is None else str(text)
-        source = f"{self._pending_escape}{plain_text}"
+        source = f"{self._pending_escape}{self._pending_mouse_report}{plain_text}"
         source = SGR_MOUSE_REPORT_PATTERN.sub("", source)
         self._pending_escape = ""
+        self._pending_mouse_report = ""
+        if not final:
+            partial = PARTIAL_MOUSE_REPORT_PATTERN.search(source)
+            if partial:
+                self._pending_mouse_report = source[partial.start():]
+                source = source[:partial.start()]
         output: list[str] = []
         index = 0
 
@@ -81,6 +94,7 @@ class StreamingTextSanitizer:
 
     def reset(self) -> None:
         self._pending_escape = ""
+        self._pending_mouse_report = ""
 
     def _consume_escape(
         self,

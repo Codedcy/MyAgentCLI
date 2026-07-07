@@ -18,6 +18,7 @@ class CommandContext:
     session_manager: Any = None
     session: Any = None
     config: Any = None
+    subagent_pool: Any = None
 
 
 @dataclass
@@ -44,6 +45,8 @@ class CommandDispatcher:
         self._commands["compact"] = self._cmd_compact
         self._commands["history"] = self._cmd_history
         self._commands["export"] = self._cmd_export
+        self._commands["subagents"] = self._cmd_subagents
+        self._commands["subagent"] = self._cmd_subagent
         self._commands["help"] = self._cmd_help
         self._commands["exit"] = self._cmd_exit
         self._commands["quit"] = self._cmd_exit
@@ -198,6 +201,8 @@ class CommandDispatcher:
         lines = [
             "Available commands:",
             "",
+            "  /subagents                            - List sub-agent status and outputs",
+            "  /subagent <id>                        - Show one sub-agent output",
             "  /mode think-high|think-max|non-think — Switch thinking mode",
             "  /goal [text|clear]                    — Set, view, or clear current goal",
             "  /skills                               — List available skills",
@@ -219,6 +224,75 @@ class CommandDispatcher:
             "Use Ctrl+C to interrupt a running agent, Ctrl+D to exit.",
         ]
         return CommandResult(output="\n".join(lines))
+
+    async def _cmd_subagents(self, args: str, ctx: CommandContext) -> CommandResult:
+        pool = self._subagent_pool(ctx)
+        if pool is None or not hasattr(pool, "list_subagents"):
+            return CommandResult(output="Sub-agent pool not available.", success=False)
+
+        records = list(pool.list_subagents() or [])
+        if not records:
+            return CommandResult(output="No sub-agents yet.")
+
+        lines = ["Sub-agents:", ""]
+        for record in records:
+            agent_id = record.get("id") or record.get("subagent_id") or "unknown"
+            status = record.get("status") or "unknown"
+            task_name = record.get("task_name") or record.get("prompt") or ""
+            summary = record.get("summary") or ""
+            transcript_path = record.get("transcript_path") or ""
+            line = f"- {agent_id} [{status}]"
+            if task_name:
+                line += f" {task_name}"
+            if summary:
+                line += f" - {summary}"
+            lines.append(line)
+            if transcript_path:
+                lines.append(f"  transcript: {transcript_path}")
+        lines.append("")
+        lines.append("Use /subagent <id> to show full output.")
+        return CommandResult(output="\n".join(lines))
+
+    async def _cmd_subagent(self, args: str, ctx: CommandContext) -> CommandResult:
+        agent_id = args.strip()
+        if not agent_id:
+            return CommandResult(output="Usage: /subagent <id>", success=False)
+        pool = self._subagent_pool(ctx)
+        if pool is None or not hasattr(pool, "get_subagent_output"):
+            return CommandResult(output="Sub-agent pool not available.", success=False)
+
+        record = pool.get_subagent_output(agent_id)
+        if not record:
+            return CommandResult(
+                output=f"Sub-agent not found: {agent_id}",
+                success=False,
+            )
+
+        status = record.get("status") or "unknown"
+        task_name = record.get("task_name") or record.get("prompt") or ""
+        output = record.get("output") or ""
+        error = record.get("error") or ""
+        transcript_path = record.get("transcript_path") or ""
+        lines = [f"Sub-agent {agent_id} [{status}]"]
+        if task_name:
+            lines.append(f"Task: {task_name}")
+        if transcript_path:
+            lines.append(f"Transcript: {transcript_path}")
+        lines.append("")
+        if error:
+            lines.append("Error:")
+            lines.append(str(error))
+        elif output:
+            lines.append("Output:")
+            lines.append(str(output))
+        else:
+            lines.append("(no output yet)")
+        return CommandResult(output="\n".join(lines))
+
+    def _subagent_pool(self, ctx: CommandContext):
+        if ctx.subagent_pool is not None:
+            return ctx.subagent_pool
+        return getattr(ctx.engine, "subagent_pool", None) if ctx.engine else None
 
     async def _cmd_compact(self, args: str, ctx: CommandContext) -> CommandResult:
         """Trigger manual context compression (G7).

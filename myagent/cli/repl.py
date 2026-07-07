@@ -38,7 +38,7 @@ class SlashCompleter(Completer):
     # Built-in slash commands
     BUILTIN_COMMANDS = [
         "mode", "goal", "skills", "dream", "clear", "compact", "history",
-        "export", "help", "exit", "quit",
+        "export", "subagents", "subagent", "help", "exit", "quit",
     ]
 
     # Mode values for /mode completion
@@ -992,6 +992,21 @@ class REPLEngine:
                     "traceback": traceback.format_exc(),
                 },
             )
+        self._submit_next_queued_chat_input()
+
+    def _submit_next_queued_chat_input(self) -> None:
+        if self._chat_submission_cancel_requested:
+            return
+        if not self._chat_window_active():
+            return
+        if self._chat_submission_tasks:
+            return
+        pop_next = getattr(self._chat_window, "pop_next_queued_submission", None)
+        if not callable(pop_next):
+            return
+        next_text = pop_next()
+        if next_text:
+            self._submit_chat_input(next_text)
 
     async def _drain_chat_submission_tasks(self, *, cancel: bool) -> None:
         if cancel:
@@ -1377,6 +1392,10 @@ class REPLEngine:
                         self._engine.skill_registry if self._engine else None
                     ),
                     dream_engine=self._dream_engine,
+                    subagent_pool=(
+                        getattr(self._engine, "subagent_pool", None)
+                        if self._engine else None
+                    ),
                 )
                 result = await self._commands.dispatch(text, ctx)
                 if result.success:

@@ -34,6 +34,7 @@ LOG_ERROR = "error"
 _initialized = False
 _queue_listener: logging.handlers.QueueListener | None = None
 _root_logger: logging.Logger | None = None
+_previous_root_state: tuple[list[logging.Handler], int, bool] | None = None
 
 
 def get_logger(name: str) -> logging.Logger:
@@ -158,7 +159,7 @@ class LogManager:
             session_id: Optional session ID for context. If provided, sets
                 context before the startup event is emitted (gap-18-04).
         """
-        global _initialized, _queue_listener, _root_logger
+        global _initialized, _queue_listener, _root_logger, _previous_root_state
 
         if _initialized:
             return
@@ -175,6 +176,7 @@ class LogManager:
 
         # Create root logger
         root = logging.getLogger("myagent")
+        _previous_root_state = (list(root.handlers), root.level, root.propagate)
         root.setLevel(getattr(logging, config.level, logging.INFO))
         root.handlers.clear()
         root.propagate = False
@@ -237,7 +239,7 @@ class LogManager:
     @staticmethod
     def shutdown() -> None:
         """Flush queue, stop listener, close handlers. Called at exit."""
-        global _initialized, _queue_listener
+        global _initialized, _queue_listener, _previous_root_state
 
         if not _initialized:
             return
@@ -251,6 +253,14 @@ class LogManager:
         if _queue_listener:
             _queue_listener.stop()
             _queue_listener = None
+
+        root.handlers.clear()
+        if _previous_root_state is not None:
+            handlers, level, propagate = _previous_root_state
+            root.handlers.extend(handlers)
+            root.setLevel(level)
+            root.propagate = propagate
+            _previous_root_state = None
 
         _initialized = False
 

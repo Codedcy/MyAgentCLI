@@ -207,6 +207,7 @@ class AgentEngine:
         iteration = 0
         context_notified_50 = False  # gap-25: only notify once
         active_skill: str | None = None  # gap-32: track active skill for context rebuild
+        pending_background_subagents: set[str] = set()
 
         while iteration < self.MAX_ITERATIONS:
             iteration += 1
@@ -226,6 +227,17 @@ class AgentEngine:
                             "Sub-agent %s sent message to main", sub_id,
                             extra={"category": "agent", "event": "subagent_message"},
                         )
+                completion_events = self._drain_subagent_completion_events(
+                    pending_background_subagents
+                )
+                if completion_events:
+                    self._append_subagent_completion_messages(
+                        messages,
+                        completion_events,
+                    )
+                    pending_background_subagents.difference_update(
+                        self._completion_event_ids(completion_events)
+                    )
 
             # Check for external interrupt signal (gap-10, gap-18)
             if self.interrupt_event and self.interrupt_event.is_set():
@@ -529,6 +541,11 @@ class AgentEngine:
                     yield ToolCallEnd(call_id=tc.id, result=result)
 
                     result_text = result.output if not result.error else f"Error: {result.error}"
+                    self._track_background_subagent_result(
+                        tc.name,
+                        result,
+                        pending_background_subagents,
+                    )
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tc.id,
@@ -537,6 +554,19 @@ class AgentEngine:
                     })
 
                 # Loop again — LLM will see tool results in next iteration
+                if pending_background_subagents:
+                    completion_events = await self._wait_for_pending_subagents(
+                        pending_background_subagents
+                    )
+                    if completion_events:
+                        self._append_subagent_completion_messages(
+                            messages,
+                            completion_events,
+                        )
+                        pending_background_subagents.difference_update(
+                            self._completion_event_ids(completion_events)
+                        )
+
                 self._persist_turn(session, messages)
                 logger.info(
                     "ReAct iteration %d complete (tool calls)", iteration,
@@ -608,6 +638,30 @@ class AgentEngine:
                     continue
 
             # Detect AskUserQuestion — stop this turn; wait for user reply
+            if pending_background_subagents:
+                completion_events = await self._wait_for_pending_subagents(
+                    pending_background_subagents
+                )
+                if completion_events:
+                    self._append_subagent_completion_messages(
+                        messages,
+                        completion_events,
+                    )
+                    pending_background_subagents.difference_update(
+                        self._completion_event_ids(completion_events)
+                    )
+                    self._persist_turn(session, messages)
+                    logger.info(
+                        "ReAct iteration %d complete (subagent completion)",
+                        iteration,
+                        extra={
+                            "category": "agent",
+                            "event": "subagent_completion_continue",
+                            "tokens_used_this_turn": tokens_this_turn,
+                        },
+                    )
+                    continue
+
             if self._is_question(clean_text):
                 self._persist_turn(session, messages)
                 yield AskUserQuestion(question=clean_text)
@@ -802,6 +856,90 @@ class AgentEngine:
             scope="health",
             data={"last_error": last_error},
         )
+
+    def _track_background_subagent_result(
+        self,
+        tool_name: str,
+        result: ToolResult,
+        pending_background_subagents: set[str],
+    ) -> None:
+        if tool_name != "spawn_subagent" or result.error:
+            return
+        metadata = result.metadata if isinstance(result.metadata, dict) else {}
+        if not metadata.get("background"):
+            return
+        subagent_id = metadata.get("subagent_id")
+        if subagent_id:
+            pending_background_subagents.add(str(subagent_id))
+
+    def _drain_subagent_completion_events(
+        self,
+        pending_background_subagents: set[str],
+    ) -> list[dict]:
+        if not pending_background_subagents or not self.subagent_pool:
+            return []
+        drain = getattr(self.subagent_pool, "drain_completion_events", None)
+        if not callable(drain):
+            return []
+        return list(drain(pending_background_subagents) or [])
+
+    async def _wait_for_pending_subagents(
+        self,
+        pending_background_subagents: set[str],
+    ) -> list[dict]:
+        if not pending_background_subagents or not self.subagent_pool:
+            return []
+        wait = getattr(self.subagent_pool, "wait_for_completion_events", None)
+        if callable(wait):
+            return list(await wait(set(pending_background_subagents)) or [])
+        return self._drain_subagent_completion_events(pending_background_subagents)
+
+    def _append_subagent_completion_messages(
+        self,
+        messages: list[dict],
+        completion_events: list[dict],
+    ) -> None:
+        for event in completion_events:
+            messages.append({
+                "role": "user",
+                "content": self._format_subagent_completion_observation(event),
+            })
+            logger.info(
+                "Sub-agent %s completion observed",
+                event.get("subagent_id") or event.get("id") or "unknown",
+                extra={
+                    "category": "agent",
+                    "event": "subagent_completion",
+                },
+            )
+
+    def _format_subagent_completion_observation(self, event: dict) -> str:
+        subagent_id = event.get("subagent_id") or event.get("id") or "unknown"
+        status = event.get("status") or "completed"
+        task_name = event.get("task_name") or ""
+        output = event.get("output") or ""
+        error = event.get("error") or ""
+        summary = event.get("summary") or ""
+        transcript_path = event.get("transcript_path") or ""
+        parts = [f"Sub-agent {subagent_id} {status}."]
+        if task_name:
+            parts.append(f"Task: {task_name}")
+        if error:
+            parts.append(f"Error: {error}")
+        elif output:
+            parts.append(f"Output:\n{output}")
+        elif summary:
+            parts.append(f"Summary: {summary}")
+        if transcript_path:
+            parts.append(f"Transcript: {transcript_path}")
+        return "\n".join(parts)
+
+    def _completion_event_ids(self, completion_events: list[dict]) -> set[str]:
+        return {
+            str(event_id)
+            for event in completion_events
+            if (event_id := event.get("subagent_id") or event.get("id"))
+        }
 
     def _current_context_window(self) -> int:
         model_name = None

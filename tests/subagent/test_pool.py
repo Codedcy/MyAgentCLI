@@ -8,7 +8,6 @@ import pytest
 from myagent.subagent.pool import AgentStatus, CapExceededError, SubAgentPool
 from myagent.tools.base import ToolContext
 
-
 # ── Fake stream events ──────────────────────────────────────────────
 
 
@@ -117,6 +116,22 @@ class TestSubAgentPool:
         assert result.error is None
 
     @pytest.mark.asyncio
+    async def test_background_completion_events_can_be_drained_without_consuming_handle(self):
+        llm = _make_llm("Finished background work")
+        pool = SubAgentPool(max_concurrent=2, llm=llm)
+
+        handle = await pool.spawn(prompt="Draft report", background=True)
+        await handle._completion_event.wait()
+
+        events = pool.drain_completion_events()
+
+        assert len(events) == 1
+        assert events[0]["subagent_id"] == handle.id
+        assert events[0]["status"] == "completed"
+        assert "Finished background work" in events[0]["output"]
+        assert handle.status == AgentStatus.COMPLETED
+
+    @pytest.mark.asyncio
     async def test_active_count(self):
         """active_count should drop to 0 after agent completes."""
         llm = _make_llm()
@@ -149,8 +164,6 @@ class TestSubAgentPool:
         """Background tasks should respect the semaphore limit."""
         # Use a semaphore of 1 so tasks serialize
         # Make LLM return only after a small delay so we can observe concurrency
-        import asyncio
-
         async def _delayed_gen(*args, **kwargs):
             await asyncio.sleep(0.05)
             yield FakeTextDelta("ok")
@@ -184,7 +197,7 @@ class TestSubAgentPool:
         # Send stop message
         await pool.send_message(handle.id, "stop")
 
-        result = await handle.wait()
+        await handle.wait()
         # After wait(), status transitions to RESULT_CONSUMED
         assert handle.status == AgentStatus.RESULT_CONSUMED
 

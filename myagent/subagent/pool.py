@@ -88,7 +88,9 @@ def _retry_notify(handle, attempt: int, max_retries: int, pool) -> None:
         pass  # No event loop running (test context)
 
 
-async def _persist_subagent_transcript(session_store, session, handle, worker, duration_ms, output):
+async def _persist_subagent_transcript(
+    session_store, session, handle, worker, duration_ms, output
+) -> str:
     """Persist sub-agent transcript to session's subagents/ directory (gap-07)."""
     import json
 
@@ -98,7 +100,7 @@ async def _persist_subagent_transcript(session_store, session, handle, worker, d
                 session.project_name, session.project_hash, session.id
             )
         else:
-            return
+            return ""
 
         sub_dir = sess_dir / "subagents" / handle.id
         sub_dir.mkdir(parents=True, exist_ok=True)
@@ -135,9 +137,11 @@ async def _persist_subagent_transcript(session_store, session, handle, worker, d
             output,
             "",
         ]
-        (sub_dir / "transcript.md").write_text(
+        transcript_path = sub_dir / "transcript.md"
+        transcript_path.write_text(
             "\n".join(md_lines), encoding="utf-8",
         )
+        return str(transcript_path)
     except Exception:
         logger.exception(
             "Failed to persist sub-agent transcript",
@@ -148,6 +152,23 @@ async def _persist_subagent_transcript(session_store, session, handle, worker, d
                 "subagent_id": getattr(handle, "id", "unknown"),
             },
         )
+    return ""
+
+
+def _subagent_task_name(prompt: str, max_len: int = 60) -> str:
+    first_line = (prompt or "").splitlines()[0].strip()
+    if not first_line:
+        return ""
+    if len(first_line) > max_len:
+        return first_line[: max_len - 3].rstrip() + "..."
+    return first_line
+
+
+def _summary_text(text: str, max_len: int = 240) -> str:
+    cleaned = " ".join((text or "").split())
+    if len(cleaned) > max_len:
+        return cleaned[: max_len - 3].rstrip() + "..."
+    return cleaned
 
 
 class CapExceededError(Exception):
@@ -197,6 +218,9 @@ class SubAgentPool:
         self._outbound_queue: asyncio.Queue[dict] = asyncio.Queue()
         # gap-r6-08: Status change callbacks for external runtime status observers.
         self._status_callbacks: list = []
+        self._pending_completion_events: list[dict] = []
+        self._completion_condition = asyncio.Condition()
+        self._subagent_records: dict[str, dict] = {}
 
     @property
     def active_count(self) -> int:
@@ -288,6 +312,20 @@ class SubAgentPool:
 
         handle = SubAgentHandle(id=agent_id, status=AgentStatus.RUNNING)
         self._agents[agent_id] = handle
+        self._subagent_records[agent_id] = {
+            "id": agent_id,
+            "subagent_id": agent_id,
+            "status": AgentStatus.RUNNING.value,
+            "task_name": _subagent_task_name(prompt),
+            "prompt": prompt or "",
+            "summary": "",
+            "output": "",
+            "error": "",
+            "transcript_path": "",
+            "started_at": time.time(),
+            "completed_at": None,
+            "duration_ms": None,
+        }
 
         # Per-invocation overrides fall back to pool-level defaults
         _llm = llm or self._llm
@@ -360,6 +398,78 @@ class SubAgentPool:
                 break
         return messages
 
+    def drain_completion_events(self, agent_ids=None) -> list[dict]:
+        """Drain pending completion observations for background sub-agents."""
+        wanted = {str(agent_id) for agent_id in agent_ids or []}
+        matched: list[dict] = []
+        remaining: list[dict] = []
+        for event in self._pending_completion_events:
+            if wanted and event.get("subagent_id") not in wanted:
+                remaining.append(event)
+                continue
+            matched.append(dict(event))
+        self._pending_completion_events = remaining
+        return matched
+
+    async def wait_for_completion_events(
+        self,
+        agent_ids=None,
+        timeout: float | None = None,
+    ) -> list[dict]:
+        """Wait until all requested sub-agents have completion observations."""
+        wanted = {str(agent_id) for agent_id in agent_ids or []}
+
+        def ready() -> bool:
+            if not wanted:
+                return bool(self._pending_completion_events)
+            available = {
+                event.get("subagent_id")
+                for event in self._pending_completion_events
+                if event.get("subagent_id") in wanted
+            }
+            return wanted.issubset(available)
+
+        try:
+            async with self._completion_condition:
+                if timeout is None:
+                    await self._completion_condition.wait_for(ready)
+                else:
+                    await asyncio.wait_for(
+                        self._completion_condition.wait_for(ready),
+                        timeout=timeout,
+                    )
+        except TimeoutError:
+            logger.exception(
+                "Timed out waiting for sub-agent completion events",
+                extra={
+                    "category": "error",
+                    "component": "subagent",
+                    "context": "subagent_completion_wait_timeout",
+                },
+            )
+        return self.drain_completion_events(wanted)
+
+    def list_subagents(self) -> list[dict]:
+        """Return compact records for active and recently completed sub-agents."""
+        for agent_id, handle in list(self._agents.items()):
+            self._refresh_record_from_handle(agent_id, handle)
+        return [
+            dict(record)
+            for record in sorted(
+                self._subagent_records.values(),
+                key=lambda item: item.get("started_at") or 0,
+            )
+        ]
+
+    def get_subagent_output(self, agent_id: str) -> dict | None:
+        """Return one sub-agent record including full output if available."""
+        key = str(agent_id or "")
+        handle = self._agents.get(key)
+        if handle is not None:
+            self._refresh_record_from_handle(key, handle)
+        record = self._subagent_records.get(key)
+        return dict(record) if record else None
+
     def on_status_change(self, callback) -> None:
         """Register an async callback for sub-agent lifecycle events (gap-r6-08).
 
@@ -390,6 +500,71 @@ class SubAgentPool:
                         "subagent_id": agent_id,
                     },
                 )
+
+    async def _record_completion_event(
+        self,
+        *,
+        handle: SubAgentHandle,
+        status: AgentStatus,
+        prompt: str,
+        output: str = "",
+        error: str = "",
+        duration_ms: float | None = None,
+        transcript_path: str = "",
+    ) -> None:
+        summary = _summary_text(error or output)
+        event = {
+            "id": handle.id,
+            "subagent_id": handle.id,
+            "status": status.value,
+            "task_name": _subagent_task_name(prompt),
+            "prompt": prompt or "",
+            "summary": summary,
+            "output": output or "",
+            "error": error or "",
+            "duration_ms": duration_ms,
+            "transcript_path": transcript_path or "",
+            "completed_at": time.time(),
+        }
+        record = self._subagent_records.setdefault(
+            handle.id,
+            {
+                "id": handle.id,
+                "subagent_id": handle.id,
+                "started_at": time.time(),
+            },
+        )
+        record.update(event)
+        async with self._completion_condition:
+            self._pending_completion_events.append(dict(event))
+            self._completion_condition.notify_all()
+
+    def _refresh_record_from_handle(
+        self,
+        agent_id: str,
+        handle: SubAgentHandle,
+    ) -> None:
+        record = self._subagent_records.setdefault(
+            agent_id,
+            {
+                "id": agent_id,
+                "subagent_id": agent_id,
+                "started_at": time.time(),
+            },
+        )
+        status = getattr(handle, "status", AgentStatus.CREATED)
+        status_value = getattr(status, "value", str(status))
+        if status_value == AgentStatus.RESULT_CONSUMED.value:
+            status_value = AgentStatus.COMPLETED.value
+        result = getattr(handle, "_result_data", None)
+        output = getattr(result, "output", "") if result else record.get("output", "")
+        error = getattr(result, "error", "") if result else record.get("error", "")
+        record.update({
+            "status": status_value,
+            "output": output or "",
+            "error": error or "",
+            "summary": _summary_text(error or output or record.get("summary", "")),
+        })
 
     async def shutdown(self) -> None:
         """Interrupt all running sub-agents. Let _run_background finish naturally."""
@@ -506,6 +681,21 @@ class SubAgentPool:
                 duration_ms = (time.monotonic() - t0) * 1000
                 handle.status = AgentStatus.COMPLETED
                 handle._result_data = ToolResult(output=output)
+                transcript_path = ""
+                # Persist sub-agent transcript (gap-07)
+                if self._session_store and self._session:
+                    transcript_path = await _persist_subagent_transcript(
+                        self._session_store, self._session, handle, worker,
+                        duration_ms, output,
+                    )
+                await self._record_completion_event(
+                    handle=handle,
+                    status=AgentStatus.COMPLETED,
+                    prompt=prompt,
+                    output=output,
+                    duration_ms=duration_ms,
+                    transcript_path=transcript_path,
+                )
                 # Notify runtime status observers (gap-r6-08)
                 await self._notify_status_callbacks(handle.id, AgentStatus.COMPLETED, handle)
                 logger.info(
@@ -521,12 +711,6 @@ class SubAgentPool:
                         "duration_ms": round(duration_ms, 1),
                     },
                 )
-                # Persist sub-agent transcript (gap-07)
-                if self._session_store and self._session:
-                    await _persist_subagent_transcript(
-                        self._session_store, self._session, handle, worker,
-                        duration_ms, output,
-                    )
             except Exception as e:
                 logger.error(
                     "Sub-agent %s failed: %s",
@@ -543,6 +727,12 @@ class SubAgentPool:
                 )
                 handle.status = AgentStatus.FAILED
                 handle._result_data = ToolResult(error=str(e))
+                await self._record_completion_event(
+                    handle=handle,
+                    status=AgentStatus.FAILED,
+                    prompt=prompt,
+                    error=str(e),
+                )
                 # Notify runtime status observers (gap-r6-08)
                 await self._notify_status_callbacks(handle.id, AgentStatus.FAILED, handle)
             finally:

@@ -1751,12 +1751,20 @@ class ChatWindowController:
             return
         if self._agent_running and not is_immediate_chat_command(normalized):
             self._queue_submission(normalized)
+            return
         if self._on_submit is not None:
             self._call_background(self._on_submit, normalized)
 
     def _queue_submission(self, text: str) -> None:
         self._queued_submissions.append(text)
         self.refresh()
+
+    def pop_next_queued_submission(self) -> str | None:
+        if not self._queued_submissions:
+            return None
+        text = self._queued_submissions.pop(0)
+        self.refresh()
+        return text
 
     def _remove_queued_submission(self, text: str) -> None:
         with contextlib.suppress(ValueError):

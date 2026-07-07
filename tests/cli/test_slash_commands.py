@@ -71,3 +71,47 @@ class TestCommandDispatcher:
 
         assert result.success
         dream_engine.run.assert_awaited_once_with(session_store=session_store)
+
+    @pytest.mark.asyncio
+    async def test_subagents_command_lists_pool_state_and_transcript_path(self):
+        dispatcher = CommandDispatcher()
+        pool = SimpleNamespace(
+            list_subagents=lambda: [
+                {
+                    "id": "sub-001",
+                    "status": "completed",
+                    "task_name": "Draft PRD",
+                    "summary": "PRD complete",
+                    "transcript_path": "sessions/subagents/sub-001/transcript.md",
+                }
+            ]
+        )
+        ctx = CommandContext(subagent_pool=pool)
+
+        result = await dispatcher.dispatch("/subagents", ctx)
+
+        assert result.success
+        assert "sub-001" in result.output
+        assert "completed" in result.output
+        assert "Draft PRD" in result.output
+        assert "sessions/subagents/sub-001/transcript.md" in result.output
+
+    @pytest.mark.asyncio
+    async def test_subagent_command_shows_single_output(self):
+        dispatcher = CommandDispatcher()
+        pool = SimpleNamespace(
+            get_subagent_output=lambda agent_id: {
+                "id": agent_id,
+                "status": "completed",
+                "output": "Full sub-agent result",
+                "transcript_path": "sessions/subagents/sub-001/transcript.md",
+            }
+        )
+        ctx = CommandContext(subagent_pool=pool)
+
+        result = await dispatcher.dispatch("/subagent sub-001", ctx)
+
+        assert result.success
+        assert "sub-001" in result.output
+        assert "Full sub-agent result" in result.output
+        assert "transcript.md" in result.output

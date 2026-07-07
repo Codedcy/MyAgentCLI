@@ -46,3 +46,16 @@ def test_streaming_text_sanitizer_buffers_split_terminal_escapes() -> None:
     ]
 
     assert "".join(parts) == "a b c d"
+
+
+def test_streaming_text_sanitizer_buffers_split_literal_mouse_reports() -> None:
+    sanitizer = StreamingTextSanitizer()
+
+    parts = [
+        sanitizer.sanitize("INPUT> ^[[<35;90;", final=False),
+        sanitizer.sanitize("43M", final=False),
+        sanitizer.sanitize("ok [<35;91;", final=False),
+        sanitizer.sanitize("43m done", final=True),
+    ]
+
+    assert "".join(parts) == "INPUT> ok  done"

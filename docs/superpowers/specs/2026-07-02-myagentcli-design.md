@@ -1170,6 +1170,23 @@ recently completed tool when no tool is running. This mirrors the Claude Code
 style: routine tool execution stays visible without consuming the conversation
 space.
 
+### Sub-agent Completion Observations
+
+When the main ReAct loop calls `spawn_subagent` with `background: true`, the
+pool records a completion observation when that sub-agent finishes, fails, or is
+interrupted. The observation contains `subagent_id`, status, task name, summary,
+full output or error, duration, and persisted transcript path when available.
+
+The main Agent waits for the background sub-agents spawned by the current tool
+batch, injects their completion observations as user-visible context for the
+next model iteration, and then continues the ReAct loop. This preserves
+parallel execution while avoiding the dead state where sub-agents complete but
+the parent Agent has no new observation to act on.
+
+Users can inspect sub-agent state through `/subagents` and inspect one
+sub-agent's full output through `/subagent <id>`. Session persistence still
+writes `subagents/<id>/transcript.json` and `subagents/<id>/transcript.md`.
+
 ### Thinking Indicator
 
 Thinking chunks are not written into the transcript. While the model is
