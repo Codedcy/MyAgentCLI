@@ -45,6 +45,22 @@ def test_split_fenced_code_blocks_preserves_prose_and_code() -> None:
     assert segments[2].text == "\nafter"
 
 
+def test_split_fenced_code_blocks_accepts_windows_crlf_fences() -> None:
+    text = "before\r\n```python\r\ndef run():\r\n    return 1\r\n```\r\nafter"
+
+    segments = split_fenced_code_blocks(text)
+
+    assert [
+        (segment.is_code, segment.language, segment.fence_language)
+        for segment in segments
+    ] == [
+        (False, "", ""),
+        (True, "python", "python"),
+        (False, "", ""),
+    ]
+    assert segments[1].text == "def run():\n    return 1\n"
+
+
 def test_python_code_block_highlights_keywords_comments_strings_and_numbers() -> None:
     text = "```python\n# note\ndef greet():\n    return \"hi\", 42\n```"
 
@@ -77,6 +93,16 @@ def test_unknown_fence_language_stays_unstyled() -> None:
 
     assert fragments_plain(fragments) == text
     assert all(style == "" for style, _token in fragments)
+
+
+def test_empty_unlabeled_fence_preserves_markdown_shape() -> None:
+    text = "```\n```"
+
+    lines = highlight_transcript_text(text, enabled=True)
+
+    assert [line.plain for line in lines] == ["```", "```"]
+    assert fragments_plain(flatten(lines)) == text
+    assert all(style == "" for style, _token in flatten(lines))
 
 
 def test_disabled_highlighting_returns_unstyled_fragments() -> None:

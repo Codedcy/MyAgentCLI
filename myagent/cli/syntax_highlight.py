@@ -15,7 +15,10 @@ logger = logging.getLogger("myagent.cli.syntax_highlight")
 
 type Fragment = tuple[str, str]
 
-FENCE_PATTERN = re.compile(r"```([A-Za-z0-9_+#.-]*)[ \t]*\n(.*?)```", re.DOTALL)
+FENCE_PATTERN = re.compile(
+    r"```([A-Za-z0-9_+#.-]*)[ \t]*\n(.*?)```",
+    re.DOTALL,
+)
 KEYWORD_STYLE = "bold cyan"
 TYPE_STYLE = "cyan"
 STRING_STYLE = "green"
@@ -95,13 +98,14 @@ def normalize_language(language: str) -> str | None:
 
 
 def split_fenced_code_blocks(text: str) -> list[CodeFenceSegment]:
+    text = _normalize_newlines(text)
     segments: list[CodeFenceSegment] = []
     cursor = 0
     for match in FENCE_PATTERN.finditer(text):
         if match.start() > cursor:
             segments.append(CodeFenceSegment(False, "", "", text[cursor : match.start()]))
-        fence_language = (match.group(1) or "text").strip()
-        language = normalize_language(fence_language) or ""
+        fence_language = (match.group(1) or "").strip()
+        language = normalize_language(fence_language or "text") or ""
         segments.append(
             CodeFenceSegment(
                 True,
@@ -118,19 +122,19 @@ def split_fenced_code_blocks(text: str) -> list[CodeFenceSegment]:
 
 def highlight_transcript_text(text: str, *, enabled: bool) -> list[StyledLine]:
     if not enabled:
-        return _plain_lines(text)
+        return _plain_lines(_normalize_newlines(text))
 
     lines: list[StyledLine] = []
     for segment in split_fenced_code_blocks(text):
         if not segment.is_code:
             lines.extend(_plain_lines(segment.text))
             continue
-        fence_header = f"```{segment.fence_language or 'text'}"
+        fence_header = f"```{segment.fence_language}"
         lines.append(StyledLine(fence_header, [("", fence_header + "\n")]))
-        if segment.language:
+        if segment.text and segment.language:
             code_text = segment.text[:-1] if segment.text.endswith("\n") else segment.text
             lines.extend(_highlight_code(code_text, segment.language))
-        else:
+        elif segment.text:
             lines.extend(_plain_lines(segment.text))
         lines.append(StyledLine("```", [("", "```")]))
     return _trim_split_artifacts(lines)
@@ -138,6 +142,10 @@ def highlight_transcript_text(text: str, *, enabled: bool) -> list[StyledLine]:
 
 def fragments_plain(fragments: list[Fragment]) -> str:
     return "".join(text for _style, text in fragments)
+
+
+def _normalize_newlines(text: str) -> str:
+    return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def _highlight_code(code: str, language: str) -> list[StyledLine]:
