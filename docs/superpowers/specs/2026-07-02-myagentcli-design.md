@@ -1133,3 +1133,48 @@ logging:
 | 配置格式 | YAML | 人类可读，多层合并方便 |
 | 持久化 | JSON + Markdown | JSON 结构化，Markdown 人类可读 |
 | 分发 | pipx / pip (PyPI) | Python CLI 工具标准分发方式 |
+
+---
+
+## 2026-07-07 CLI Runtime UX Addendum
+
+This addendum supersedes older CLI display behavior where tool output,
+permission prompts, and thinking state were rendered as ordinary transcript
+messages.
+
+### Text Decoding
+
+All subprocess, tool, MCP stderr, and UI status text must pass through a
+shared decoding/sanitizing path before display. Byte output is decoded as UTF-8
+first, then the local preferred encoding and Windows console encodings, then
+GB18030, and only then falls back to replacement decoding. UI sanitization strips
+ANSI/control characters but must not re-encode valid Unicode.
+
+### Permission Prompt Tray
+
+Tool permission confirmation is a transient prompt tray directly above the
+bottom input area. It is not persisted into the visible transcript. The tray
+shows the tool name, permission level, shortened parameters, and the accepted
+choices: `A` allow once, `D` deny, `Y` allow all. After the user submits a
+choice, the tray disappears. The inspector may still show `permission waiting`
+while the tray is active.
+
+### Folded Tool Output
+
+Tool calls appear in the transcript as compact folded entries by default:
+`Tool | <name> - running`, then `Tool | <name> - done - <duration> - <summary>`
+or `Tool | <name> - failed - <summary>`. Full stdout/stderr is stored in the
+display entry but hidden unless the user expands the current/recent tool. `F3`
+toggles expanded details for the currently running tool, or for the most
+recently completed tool when no tool is running. This mirrors the Claude Code
+style: routine tool execution stays visible without consuming the conversation
+space.
+
+### Thinking Indicator
+
+Thinking chunks are not written into the transcript. While the model is
+reasoning, the CLI shows `Thinking <elapsed>s` in the inspector and as a compact
+status line above the input area. The timer starts on the first thinking event
+or at the beginning of an agent run, refreshes while active, and stops when the
+agent starts normal output, calls a tool, asks a user question, finishes, or
+errors.
