@@ -237,6 +237,8 @@ class REPLEngine:
         self._dream_checker_task = None
         self._tool_call_names: dict[str, str] = {}
         self._chat_tool_entry_ids: dict[str, int] = {}
+        self._thinking_started_at: float | None = None
+        self._thinking_timer_task: asyncio.Task[None] | None = None
         self._done_usage_session_total: int | None = None
         # Skill name to inject into the next engine run (gap-2-01).
         self._active_skill: str | None = None
@@ -301,6 +303,19 @@ class REPLEngine:
         """Update the runtime status model and legacy status pane from an event."""
 
         event_type = type(event).__name__
+        if event_type == "ThinkingChunk":
+            self._start_thinking_indicator()
+        elif event_type in {
+            "TextChunk",
+            "ToolCallStart",
+            "ToolCallEnd",
+            "AskUserQuestion",
+            "Done",
+            "Error",
+            "Interrupted",
+        }:
+            self._stop_thinking_indicator()
+
         if event_type == "Done":
             self._update_token_status(getattr(event, "usage", None))
         elif event_type == "ToolCallStart":
@@ -319,6 +334,72 @@ class REPLEngine:
         if self._layout_controller:
             self._layout_controller.refresh()
         self._refresh_chat_window()
+
+    def _start_thinking_indicator(self) -> None:
+        now = self._current_loop_time()
+        if self._thinking_started_at is None:
+            self._thinking_started_at = now
+        self._update_thinking_elapsed(now=now)
+        self._ensure_thinking_timer_task()
+
+    def _update_thinking_elapsed(self, now: float | None = None) -> None:
+        if self._thinking_started_at is None:
+            return
+        current = self._current_loop_time() if now is None else float(now)
+        elapsed = max(0.0, current - self._thinking_started_at)
+        if self._status_model:
+            self._status_model.update_thinking(
+                active=True,
+                elapsed_seconds=elapsed,
+            )
+        self._update_legacy_status_bar(
+            thinking_active=True,
+            thinking_elapsed=elapsed,
+        )
+        if self._layout_controller:
+            self._layout_controller.refresh()
+        self._refresh_chat_window()
+
+    def _stop_thinking_indicator(self) -> None:
+        if self._thinking_started_at is None and self._thinking_timer_task is None:
+            return
+        self._thinking_started_at = None
+        task = self._thinking_timer_task
+        self._thinking_timer_task = None
+        if task is not None and not task.done():
+            task.cancel()
+        if self._status_model:
+            self._status_model.update_thinking(active=False, elapsed_seconds=0.0)
+        self._update_legacy_status_bar(
+            thinking_active=False,
+            thinking_elapsed=0.0,
+        )
+        if self._layout_controller:
+            self._layout_controller.refresh()
+        self._refresh_chat_window()
+
+    def _ensure_thinking_timer_task(self) -> None:
+        if self._thinking_timer_task is not None and not self._thinking_timer_task.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._thinking_timer_task = loop.create_task(self._run_thinking_timer())
+
+    async def _run_thinking_timer(self) -> None:
+        try:
+            while self._thinking_started_at is not None:
+                self._update_thinking_elapsed()
+                await asyncio.sleep(0.25)
+        except asyncio.CancelledError:
+            pass
+
+    def _current_loop_time(self) -> float:
+        try:
+            return asyncio.get_running_loop().time()
+        except RuntimeError:
+            return 0.0
 
     def _handle_status_update(self, event) -> None:
         scope = getattr(event, "scope", "")
@@ -1415,6 +1496,7 @@ class REPLEngine:
                 self._output_to_console("\n[Interrupted by user]")
             finally:
                 self._active_engine_task = None
+                self._stop_thinking_indicator()
                 self._set_chat_agent_running(False)
                 self._output_to_console("")  # trailing newline after streaming
                 self._stop_layout_after_engine_stream(layout_started)

@@ -58,6 +58,12 @@ class ToolRuntimeStatus:
 
 
 @dataclass(frozen=True, slots=True)
+class ThinkingRuntimeStatus:
+    active: bool = False
+    elapsed_seconds: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
 class HealthRuntimeStatus:
     retry_info: str = ""
     mcp_connected: bool | None = None
@@ -71,6 +77,7 @@ class RuntimeStatusSnapshot:
     goal: GoalRuntimeStatus = field(default_factory=GoalRuntimeStatus)
     subagents: tuple[SubAgentRuntimeInfo, ...] = field(default_factory=tuple)
     tools: tuple[ToolRuntimeStatus, ...] = field(default_factory=tuple)
+    thinking: ThinkingRuntimeStatus = field(default_factory=ThinkingRuntimeStatus)
     health: HealthRuntimeStatus = field(default_factory=HealthRuntimeStatus)
 
 
@@ -83,6 +90,7 @@ class RuntimeStatusModel:
         self._goal = GoalRuntimeStatus()
         self._subagents: dict[str, SubAgentRuntimeInfo] = {}
         self._tools: dict[str, ToolRuntimeStatus] = {}
+        self._thinking = ThinkingRuntimeStatus()
         self._health = HealthRuntimeStatus()
 
     def snapshot(self) -> RuntimeStatusSnapshot:
@@ -92,6 +100,7 @@ class RuntimeStatusModel:
             goal=replace(self._goal),
             subagents=tuple(replace(info) for info in self._subagents.values()),
             tools=tuple(replace(status) for status in self._tools.values()),
+            thinking=replace(self._thinking),
             health=replace(self._health),
         )
 
@@ -223,6 +232,20 @@ class RuntimeStatusModel:
             updates["duration_ms"] = duration_ms
         self._tools[key] = replace(current, **updates)
 
+    def update_thinking(
+        self,
+        *,
+        active: bool = _UNSET,
+        elapsed_seconds: float = _UNSET,
+    ) -> None:
+        updates: dict[str, object] = {}
+        if active is not _UNSET:
+            updates["active"] = bool(active)
+        if elapsed_seconds is not _UNSET:
+            updates["elapsed_seconds"] = _non_negative_float(elapsed_seconds)
+        if updates:
+            self._thinking = replace(self._thinking, **updates)
+
     def update_health(
         self,
         *,
@@ -242,6 +265,7 @@ class RuntimeStatusModel:
 
     def clear_transient(self) -> None:
         self._tools.clear()
+        self._thinking = ThinkingRuntimeStatus()
         self._goal = replace(self._goal, waiting_for_user=False)
         self._health = replace(self._health, retry_info="", last_error="")
 
@@ -257,6 +281,13 @@ def _clamp_percentage(value: float) -> float:
     return min(1.0, max(0.0, pct))
 
 
+def _non_negative_float(value: float) -> float:
+    number = float(value)
+    if number != number:
+        return 0.0
+    return max(0.0, number)
+
+
 __all__ = [
     "GoalRuntimeStatus",
     "HealthRuntimeStatus",
@@ -265,5 +296,6 @@ __all__ = [
     "SessionRuntimeStatus",
     "SubAgentRuntimeInfo",
     "TokenRuntimeStatus",
+    "ThinkingRuntimeStatus",
     "ToolRuntimeStatus",
 ]

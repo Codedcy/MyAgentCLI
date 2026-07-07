@@ -183,6 +183,9 @@ class AgentInspectorPane:
             self._rail_token_indicator(status),
             f"SA {status['subagents_active']}",
         ]
+        thinking = status["thinking_state"]
+        if thinking["active"]:
+            markers.append(f"TH {self._format_duration_seconds(thinking['elapsed_seconds'])}")
         if status["health"]["last_error"] or status["health"]["retry_info"]:
             markers.append("!")
         return markers
@@ -200,9 +203,27 @@ class AgentInspectorPane:
         model = self._short_text(session["model"], 28)
         if "session" in sections and model:
             lines.append(f"Model: {model}")
-        if ("session" in sections or "thinking" in sections) and session["thinking"]:
-            lines.append(f"Thinking: {self._short_text(session['thinking'], 18)}")
+        if "session" in sections or "thinking" in sections:
+            thinking_line = self._thinking_line(
+                session["thinking"],
+                status["thinking_state"],
+            )
+            if thinking_line:
+                lines.append(thinking_line)
         return lines
+
+    def _thinking_line(
+        self,
+        mode: str,
+        thinking_state: dict[str, Any],
+    ) -> str:
+        if not mode and not thinking_state["active"]:
+            return ""
+        label = self._short_text(mode or "Thinking", 18)
+        if thinking_state["active"]:
+            elapsed = self._format_duration_seconds(thinking_state["elapsed_seconds"])
+            return f"Thinking: {label} | active {elapsed}"
+        return f"Thinking: {label}"
 
     def _token_lines(self, status: dict[str, Any]) -> list[str]:
         tokens = status["tokens"]
@@ -354,6 +375,10 @@ class AgentInspectorPane:
                 "subagents": subagents,
                 "subagents_active": self._active_subagent_count(subagents),
                 "tools": list(snapshot.tools),
+                "thinking_state": {
+                    "active": snapshot.thinking.active,
+                    "elapsed_seconds": snapshot.thinking.elapsed_seconds,
+                },
                 "health": {
                     "retry_info": snapshot.health.retry_info,
                     "mcp_connected": snapshot.health.mcp_connected,
@@ -392,6 +417,12 @@ class AgentInspectorPane:
             "subagents": subagents,
             "subagents_active": self._legacy_subagents_active_count(subagents),
             "tools": self._legacy_tools(),
+            "thinking_state": {
+                "active": bool(self._data.get("thinking_active", False)),
+                "elapsed_seconds": float(
+                    self._data.get("thinking_elapsed", 0.0) or 0.0
+                ),
+            },
             "health": {
                 "retry_info": self._data.get("retry_info", "") or "",
                 "mcp_connected": self._data.get("mcp_connected"),
@@ -533,6 +564,15 @@ class AgentInspectorPane:
         if number >= 1_000:
             return f"{number / 1_000:.1f}k"
         return str(number)
+
+    def _format_duration_seconds(self, elapsed_seconds: Any) -> str:
+        number = self._number_value(elapsed_seconds)
+        seconds = max(0.0, number or 0.0)
+        if seconds < 60:
+            return f"{seconds:.1f}s"
+        minutes = int(seconds // 60)
+        remainder = int(seconds % 60)
+        return f"{minutes}m{remainder:02d}s"
 
     def _percent_text(self, value: Any) -> str:
         number = self._number_value(value)

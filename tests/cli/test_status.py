@@ -94,6 +94,22 @@ def test_full_mode_renders_runtime_status_snapshot_sections():
     assert "LiteLLM timeout" in text
 
 
+def test_full_mode_renders_active_thinking_timer():
+    model = RuntimeStatusModel()
+    model.update_session(thinking="Think High")
+    model.update_thinking(active=True, elapsed_seconds=12.34)
+    pane = AgentInspectorPane(
+        StatusPaneConfig(width=44, collapse_below_columns=80),
+        status_model=model,
+    )
+
+    text = render_text(pane.get_renderable(terminal_columns=120), width=120)
+
+    assert "Thinking: Think High" in text
+    assert "active" in text
+    assert "12.3s" in text
+
+
 def test_narrow_terminal_uses_rail_mode_without_long_task_names():
     model = RuntimeStatusModel()
     model.update_tokens(session_total=98_765, context_usage=0.42)

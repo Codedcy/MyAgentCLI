@@ -22,6 +22,7 @@ from myagent.agent.engine import (
     Interrupted,
     StatusUpdate,
     TextChunk,
+    ThinkingChunk,
     ToolCallEnd,
     ToolCallStart,
 )
@@ -707,6 +708,34 @@ def test_error_and_interrupted_update_health(layout_spy):
 
     repl._update_status_from_event(Interrupted())
     assert model.snapshot().health.last_error == "Interrupted"
+
+
+@pytest.mark.asyncio
+async def test_thinking_chunk_marks_status_active_until_visible_output(layout_spy):
+    model = RuntimeStatusModel()
+    repl = REPLEngine(status_pane=FakeStatusPane(), status_model=model)
+
+    repl._update_status_from_event(ThinkingChunk(content="checking approach"))
+
+    assert model.snapshot().thinking.active is True
+
+    repl._update_status_from_event(TextChunk("answer"))
+
+    snapshot = model.snapshot()
+    assert snapshot.thinking.active is False
+    assert snapshot.thinking.elapsed_seconds == 0.0
+
+
+def test_thinking_elapsed_update_uses_running_loop_time(layout_spy):
+    model = RuntimeStatusModel()
+    repl = REPLEngine(status_pane=FakeStatusPane(), status_model=model)
+    repl._thinking_started_at = 10.0
+
+    repl._update_thinking_elapsed(now=13.25)
+
+    snapshot = model.snapshot()
+    assert snapshot.thinking.active is True
+    assert snapshot.thinking.elapsed_seconds == 3.25
 
 
 def test_toggle_inspector_delegates_to_layout_controller_and_refreshes(layout_spy):

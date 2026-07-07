@@ -13,6 +13,7 @@ from myagent.agent.runtime_status import (
     RuntimeStatusSnapshot,
     SessionRuntimeStatus,
     SubAgentRuntimeInfo,
+    ThinkingRuntimeStatus,
     TokenRuntimeStatus,
     ToolRuntimeStatus,
 )
@@ -53,6 +54,7 @@ def test_default_snapshot_values():
         ),
         subagents=(),
         tools=(),
+        thinking=ThinkingRuntimeStatus(active=False, elapsed_seconds=0.0),
         health=HealthRuntimeStatus(
             retry_info="",
             mcp_connected=None,
@@ -222,6 +224,24 @@ def test_tool_update_upserts_tool_status():
     )
 
 
+def test_thinking_update_tracks_active_elapsed_seconds():
+    model = RuntimeStatusModel()
+
+    model.update_thinking(active=True, elapsed_seconds=12.345)
+
+    assert model.snapshot().thinking == ThinkingRuntimeStatus(
+        active=True,
+        elapsed_seconds=12.345,
+    )
+
+    model.update_thinking(active=False, elapsed_seconds=0.0)
+
+    assert model.snapshot().thinking == ThinkingRuntimeStatus(
+        active=False,
+        elapsed_seconds=0.0,
+    )
+
+
 def test_health_retry_update_allows_unknown_mcp_state():
     model = RuntimeStatusModel()
 
@@ -388,6 +408,10 @@ def test_clear_transient_clears_ephemeral_status_and_preserves_durable_state():
         budget_limit=200,
     )
     assert snapshot.tools == ()
+    assert snapshot.thinking == ThinkingRuntimeStatus(
+        active=False,
+        elapsed_seconds=0.0,
+    )
     assert snapshot.health == HealthRuntimeStatus(
         retry_info="",
         mcp_connected=True,
