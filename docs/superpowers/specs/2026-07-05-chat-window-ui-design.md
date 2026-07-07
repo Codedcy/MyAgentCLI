@@ -118,13 +118,13 @@ ui:
     input_min_lines: 1
     input_max_lines: 6
     follow_output: auto
-    mouse_support: true
+    mouse_support: false
 ```
 
 Rules:
 
 - `ui.chat_window.enabled: true` is the default for interactive sessions.
-- `ui.chat_window.mouse_support: true` is the default so mouse-wheel scrolling reaches the conversation pane; users can set it to `false` when native terminal selection/copy is more important than mouse-wheel scrolling.
+- `ui.chat_window.mouse_support: false` is the default so terminals keep native selection/copy behavior. Users can set it to `true` when mouse-wheel scrolling inside the conversation pane is more important; the TUI enables only the terminal mouse modes needed for wheel reporting and avoids drag/any-motion tracking.
 - Non-interactive one-shot commands such as `--help`, `--list-sessions`, and export commands never start the chat window.
 - If full-screen UI startup fails, MyAgentCLI falls back to the current REPL + Agent Inspector behavior and logs a structured error.
 - `ui.status_pane` continues to configure the right-side Inspector and rail behavior.

@@ -1212,7 +1212,9 @@ errors.
 The chat window disables prompt-toolkit mouse reporting by default
 (`ui.chat_window.mouse_support: false`) so Windows terminals do not echo SGR
 mouse reports into the input buffer as literal text. Users can explicitly set
-`ui.chat_window.mouse_support: true` when their terminal handles mouse reporting
-cleanly and they want mouse-wheel events inside the fixed pane. In the default
+`ui.chat_window.mouse_support: true` when they want mouse-wheel events inside
+the fixed pane. When enabled, the controller patches prompt-toolkit's VT output
+to reset all mouse tracking modes and then enable only normal tracking plus SGR
+encoding, avoiding drag/any-motion tracking such as `?1003h`. In the default
 mode, keyboard scrolling remains available through PageUp/PageDown and the
 terminal owns mouse selection.

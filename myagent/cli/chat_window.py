@@ -41,6 +41,7 @@ EXIT_CONFIRMATION_MESSAGE = "Press Ctrl+C again or Ctrl+D to exit."
 MOUSE_REPORTING_RESET_SEQUENCE = (
     "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1015l"
 )
+MOUSE_WHEEL_REPORTING_ENABLE_SEQUENCE = "\x1b[?1000h\x1b[?1006h"
 ROLE_LABELS = {
     "assistant": "Agent",
     "error": "Error",
@@ -581,8 +582,7 @@ class ChatWindowController:
         started = False
         try:
             mouse_support = self._mouse_support_enabled()
-            if not mouse_support:
-                self._reset_terminal_mouse_reporting()
+            self._reset_terminal_mouse_reporting()
             layout = self._build_layout()
             self._app = Application(
                 layout=layout,
@@ -590,6 +590,8 @@ class ChatWindowController:
                 full_screen=True,
                 mouse_support=mouse_support,
             )
+            if mouse_support:
+                self._install_wheel_only_mouse_reporting(self._app)
             started = True
             self._is_running = True
             await self._app.run_async()
@@ -610,7 +612,7 @@ class ChatWindowController:
             self._finish_pending_ask(None)
             if started and self._on_exit is not None:
                 await self._call_async(self._on_exit)
-            if not self._mouse_support_enabled():
+            if started:
                 self._reset_terminal_mouse_reporting()
             self._app = None
 
@@ -1895,6 +1897,34 @@ class ChatWindowController:
 
     def _mouse_support_enabled(self) -> bool:
         return bool(getattr(self._chat_config(), "mouse_support", False))
+
+    def _install_wheel_only_mouse_reporting(self, app: Any) -> None:
+        output = getattr(app, "output", None)
+        write_raw = getattr(output, "write_raw", None)
+        if not callable(write_raw):
+            return
+
+        def enable_wheel_only_mouse_support() -> None:
+            write_raw(MOUSE_REPORTING_RESET_SEQUENCE)
+            write_raw(MOUSE_WHEEL_REPORTING_ENABLE_SEQUENCE)
+
+        def disable_wheel_only_mouse_support() -> None:
+            write_raw(MOUSE_REPORTING_RESET_SEQUENCE)
+
+        try:
+            output.enable_mouse_support = enable_wheel_only_mouse_support
+            output.disable_mouse_support = disable_wheel_only_mouse_support
+        except Exception as exc:
+            logger.exception(
+                "Chat window wheel-only mouse setup failed",
+                extra={
+                    "category": "error",
+                    "component": "agent",
+                    "context": "cli_chat_window_mouse_setup",
+                    "exception_type": type(exc).__name__,
+                    "traceback": traceback.format_exc(),
+                },
+            )
 
     def _reset_terminal_mouse_reporting(self) -> None:
         is_tty = getattr(sys.stdout, "isatty", None)

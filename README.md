@@ -104,7 +104,7 @@ myagent --dangerously-skip-permissions
 | `PageUp` / `PageDown` | 滚动对话记录 |
 | 鼠标滚轮 | 滚动对话记录，前提是显式开启 `mouse_support` |
 
-如果你更需要终端原生鼠标选择复制，可以关闭鼠标事件：
+`mouse_support: true` 会启用滚轮所需的终端鼠标上报，但不会开启拖拽/移动追踪，避免 Windows Terminal 将 SGR 鼠标报告打印到输入框。如果你更需要终端原生鼠标选择复制，可以关闭鼠标事件：
 
 ```yaml
 ui:

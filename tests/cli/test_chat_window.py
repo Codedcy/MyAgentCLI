@@ -36,7 +36,7 @@ class FakeApplication:
         self.invalidate_calls = 0
         self.exit_calls = 0
         self._exit_event = asyncio.Event()
-        FakeApplication.instances.append(self)
+        type(self).instances.append(self)
 
     async def run_async(self) -> None:
         await self._exit_event.wait()
@@ -47,6 +47,37 @@ class FakeApplication:
     def exit(self) -> None:
         self.exit_calls += 1
         self._exit_event.set()
+
+
+class FakeMouseOutput:
+    def __init__(self) -> None:
+        self.writes: list[str] = []
+        self.flush_calls = 0
+
+    def write_raw(self, text: str) -> None:
+        self.writes.append(text)
+
+    def flush(self) -> None:
+        self.flush_calls += 1
+
+    def enable_mouse_support(self) -> None:
+        self.write_raw("\x1b[?1000h\x1b[?1003h\x1b[?1015h\x1b[?1006h")
+
+    def disable_mouse_support(self) -> None:
+        self.write_raw("\x1b[?1000l\x1b[?1015l\x1b[?1006l\x1b[?1003l")
+
+
+class FakeRendererMouseApplication(FakeApplication):
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.output = FakeMouseOutput()
+
+    async def run_async(self) -> None:
+        self.output.enable_mouse_support()
+        self.output.flush()
+        await self._exit_event.wait()
+        self.output.disable_mouse_support()
+        self.output.flush()
 
 
 class FakeExitApp:
@@ -1047,6 +1078,34 @@ async def test_run_can_enable_mouse_support_for_wheel_scrolling(
 
     controller.request_stop()
     await run_task
+
+
+@pytest.mark.asyncio
+async def test_mouse_support_uses_wheel_only_terminal_reporting(
+    monkeypatch,
+) -> None:
+    import myagent.cli.chat_window as chat_window
+
+    FakeRendererMouseApplication.instances = []
+    monkeypatch.setattr(chat_window, "Application", FakeRendererMouseApplication)
+    config = make_config()
+    config.ui.chat_window.mouse_support = True
+    controller = make_controller(config=config)
+
+    run_task = asyncio.create_task(controller.run(lambda text: None))
+    while not FakeRendererMouseApplication.instances:
+        await asyncio.sleep(0)
+
+    app = FakeRendererMouseApplication.instances[0]
+    controller.request_stop()
+    await run_task
+
+    written = "".join(app.output.writes)
+    assert "\x1b[?1000h" in written
+    assert "\x1b[?1006h" in written
+    assert "\x1b[?1003h" not in written
+    assert "\x1b[?1002h" not in written
+    assert "\x1b[?1015h" not in written
 
 
 @pytest.mark.asyncio
