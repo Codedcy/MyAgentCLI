@@ -708,6 +708,21 @@ def test_goal_submission_during_agent_run_does_not_enter_visible_queue() -> None
     assert not any("Queue  |" in line for line in controller._conversation_lines(6, 60))
 
 
+@pytest.mark.parametrize("command", ["/subagents", "/subagent sub-001"])
+def test_subagent_status_commands_during_agent_run_do_not_enter_visible_queue(
+    command,
+) -> None:
+    submitted: list[str] = []
+    controller = make_controller(status_pane=EmptyStatusPane())
+    controller._on_submit = submitted.append
+    controller.set_agent_running(True)
+
+    controller._handle_submit(command)
+
+    assert submitted == [command]
+    assert not any("Queue  |" in line for line in controller._conversation_lines(6, 60))
+
+
 def test_long_queued_submission_preserves_queue_header_in_small_viewport() -> None:
     controller = make_controller(status_pane=EmptyStatusPane())
     controller.set_agent_running(True)

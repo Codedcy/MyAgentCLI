@@ -302,7 +302,9 @@ into the main ReAct loop, and continues without requiring another user message.
 
 Use `/subagents` to list active and recent sub-agents, including status,
 summary, and transcript path. Use `/subagent <id>` to show one sub-agent's full
-output. Persisted transcripts are stored under the session directory at
+output. These status inspection commands run immediately and do not wait behind
+the normal chat submission queue. Persisted transcripts are stored under the
+session directory at
 `subagents/<id>/transcript.json` and `subagents/<id>/transcript.md`.
 
 ## License

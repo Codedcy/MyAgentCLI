@@ -1119,6 +1119,41 @@ async def test_chat_goal_command_bypasses_pending_submission_queue():
     assert snapshot.goal.waiting_for_user is False
 
 
+@pytest.mark.parametrize(
+    ("command", "output"),
+    [
+        ("/subagents", "Sub-agents:\n\n- sub-001 [running] Draft PRD"),
+        ("/subagent sub-001", "Sub-agent sub-001:\nfull output"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_subagent_status_commands_bypass_pending_submission_queue(
+    command,
+    output,
+):
+    class FakeCommands:
+        async def dispatch(self, line, ctx):
+            assert line == command
+            return CommandResult(output=output)
+
+    transcript = TranscriptBuffer()
+    chat = make_real_chat_controller(transcript=transcript)
+    repl = active_chat_repl(chat, commands=FakeCommands())
+    repl._current_session = SimpleNamespace(id="session-1")
+    repl._chat_submission_lock = asyncio.Lock()
+    await repl._chat_submission_lock.acquire()
+
+    try:
+        await asyncio.wait_for(repl._submit_chat_input(command), timeout=0.2)
+    finally:
+        repl._chat_submission_lock.release()
+
+    entries = transcript_entries(transcript)
+    assert [(entry.role, entry.plain_text) for entry in entries] == [
+        ("system", output),
+    ]
+
+
 @pytest.mark.asyncio
 async def test_process_input_status_update_updates_model_without_chat_transcript_output():
     model = RuntimeStatusModel()

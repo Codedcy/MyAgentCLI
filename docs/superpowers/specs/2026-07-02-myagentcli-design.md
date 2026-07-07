@@ -66,7 +66,7 @@ MyAgentCLI 是一个个人 AI Agent 助手，CLI 形式。使用 DeepSeek V4 Pro
 
 CLI 首屏由对话区、底部输入区和右侧 `Agent Inspector Pane` 组成。Inspector 是固定在当前页面内的运行状态窗格，不使用弹出详情窗，也不滚走；用户在长任务、并行子 Agent 或高 token 消耗场景下始终能看到状态。
 
-对话区必须绘制明确的窗格边界，并在渲染前按终端 cell 宽度换行，避免中英文、emoji 或长路径直接越界截断。对话记录使用对齐的角色前缀（如 `You |`、`Agent |`、`System |`、`Tool |`）和必要的空行区分问答轮次。Agent 回复可在显示层做轻量 Markdown-ish 整理，将紧凑的标题、粗体标记、分隔线、列表、术语说明列表和简单表格拆成更易阅读的纯文本行，但不改变持久化 transcript 原文。用户在 Agent 尚未完成回答时继续提交的普通问题进入可见 `Queue |` 区域；只有当该输入取得串行处理锁、真正开始执行时，才移动为下一条 `You |` transcript 记录，避免后续回答与错误的问题视觉配对。`/goal <text>` 等即时控制命令不进入等待队列，也不生成新的 `You |` 对话轮次，而是立即更新 goal 状态并显示 `System | Goal set: ...`。
+对话区必须绘制明确的窗格边界，并在渲染前按终端 cell 宽度换行，避免中英文、emoji 或长路径直接越界截断。对话记录使用对齐的角色前缀（如 `You |`、`Agent |`、`System |`、`Tool |`）和必要的空行区分问答轮次。Agent 回复可在显示层做轻量 Markdown-ish 整理，将紧凑的标题、粗体标记、分隔线、列表、术语说明列表和简单表格拆成更易阅读的纯文本行，但不改变持久化 transcript 原文。用户在 Agent 尚未完成回答时继续提交的普通问题进入可见 `Queue |` 区域；只有当该输入取得串行处理锁、真正开始执行时，才移动为下一条 `You |` transcript 记录，避免后续回答与错误的问题视觉配对。`/goal <text>`、`/subagents`、`/subagent <id>` 等即时控制命令不进入等待队列，也不生成新的 `You |` 对话轮次，而是立即更新或展示对应的 `System |` 状态信息。
 
 `REPLEngine` 负责输入焦点和流式输出，`AgentInspectorPane` 只订阅运行时状态快照并渲染，不直接读取或修改 Agent、工具、子 Agent 的内部对象。所有状态来自 `RuntimeStatusModel`，由 Agent Engine、LLM Provider、Tool Registry、Sub-Agent Pool 和 Goal Tracker 通过事件更新。
 
