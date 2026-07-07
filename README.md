@@ -1,128 +1,163 @@
 # MyAgentCLI
 
-个人 AI Agent 助手，CLI 形式。基于 **DeepSeek V4 Pro**（1M 上下文窗口，1.6T/49B MoE），Python 实现。
+MyAgentCLI 是一个个人 AI Agent CLI 助手，默认使用 DeepSeek V4 Pro，通过 LiteLLM 接入模型，提供固定聊天窗口、ReAct 工具循环、子 Agent、项目记忆、会话恢复和权限控制。
 
-## 项目状态
+项目仍处于 Alpha 阶段，但核心 CLI 工作流已经可用。本仓库当前自动化测试集覆盖 515 个用例。
 
-✅ **已实现** — 24 个任务已落地，251 个自动化测试通过。
+## 功能概览
 
-## 核心特性
-
-- **REPL + 流式输出**: Rich + prompt_toolkit，Markdown 渲染，固定右侧 Agent Inspector Pane
-- **ReAct Agent 循环**: Think → Decide → Execute → Observe，默认 Think High
-- **Goal 模式**: 设定目标后 Agent 自主拆解、编排、持续推进，支持人工介入
-- **子 Agent 系统**: 独立上下文、并行/流水线编排，最大并发 min(16, CPU-2)
-- **16 个内置工具**: read/write/edit/glob、grep（ripgrep 优先 + Python 回退）、bash、web_fetch/search、spawn_subagent/send_message、task_create/update、memory_write、config_set、mcp_read_resource/mcp_get_prompt
-- **MCP 协议**: 手写 JSON-RPC client，支持 stdio 子进程通信和 SSE 传输抽象，自动发现工具/资源/提示
-- **分层上下文**: L0-L6 六层结构，75% 自动压缩，四层渐进式压缩
-- **文件级记忆**: 跨会话持久化 + MEMORY.md 索引 + 梦境机制自动整合
-- **技能系统**: 6 个内置技能 + 用户自定义，三优先级覆盖（内置 < 用户 < 项目）
-- **权限系统**: 四级分级（0=只读/1=写入/2=执行/3=网络），allow/deny 列表，对话内调整
-- **会话持久化**: JSON + Markdown transcript，`--resume` 恢复，`--list-sessions` 浏览
-- **7 级配置合并**: CLI 参数 → 运行时 → 项目配置 → 项目 AGENT.md → 用户配置 → 用户 AGENT.md → 默认值
-- **结构化日志**: JSON Lines，异步安全（QueueHandler），按天轮转，自动清理
-- **零二进制依赖**: grep 工具优先调用 ripgrep，不可用时自动回退到纯 Python（`re` + `pathlib`）
-
-## 架构
-
-```
-CLI Layer (Rich + prompt_toolkit)
-  ├─ main.py        — 入口，参数解析，组件装配
-  ├─ repl.py        — REPL 引擎
-  ├─ commands.py    — 斜杠命令 (/mode, /goal, /skills, /dream, ...)
-  ├─ renderer.py    — AgentEvent → Rich 渲染
-  ├─ layout.py      — Rich Layout/Live 固定窗格控制器
-  └─ status.py      — Agent Inspector Pane 渲染与兼容 StatusBar alias
-
-Application Layer
-  ├─ engine.py      — ReAct 循环（唯一执行模式）
-  ├─ goal.py        — Goal 追踪叠加层
-  ├─ session.py     — 会话生命周期管理
-  └─ project.py     — 项目环境检测（Git、语言、包管理器等）
-
-Service Layer
-  ├─ tools/         — 工具注册表 + 16 个内置工具 + MCP 适配
-  ├─ subagent/      — 子 Agent 池（并发控制、生命周期）
-  ├─ context/       — 上下文构建器 + 压缩引擎 + 会话持久化
-  ├─ memory/        — 记忆存储 + 语义召回 + 梦境引擎
-  └─ skills/        — 技能发现 + 加载 + 注册
-
-Infrastructure Layer
-  ├─ llm/           — LiteLLM Provider（流式、思考模式、重试）
-  ├─ config/        — 7 级 YAML 加载 + deep merge
-  ├─ permissions/   — 4 级权限控制
-  ├─ logging/       — JSON Lines 异步日志
-  └─ tools/mcp/     — MCP JSON-RPC 客户端（stdio/SSE transport）
-```
-
-## 技术栈
-
-| 组件 | 选型 | 原因 |
-|------|------|------|
-| 语言 | Python 3.12+ | AI/LLM 生态完善 |
-| CLI 输入 | prompt_toolkit | 自动补全、历史搜索、多行编辑 |
-| CLI 输出 | Rich | Markdown 渲染、Live 刷新、Panel/Layout |
-| 模型接入 | LiteLLM | 上百模型统一抽象，换模型只改配置 |
-| 基础模型 | DeepSeek V4 Pro | 1M 上下文，1.6T/49B MoE，MIT 协议 |
-| MCP | 手写 JSON-RPC client | 行业标准协议，stdio/SSE transport |
-| 配置 | YAML | 人类可读，多层合并 |
-| 持久化 | JSON + Markdown | JSON 结构化，Markdown 可读 |
-| 分发 | pipx / pip (PyPI) | Python CLI 标准分发 |
+- **固定聊天窗口**：交互模式默认进入全屏 TUI，对话记录可滚动，输入框常驻底部，右侧显示 Agent Inspector。
+- **流式 ReAct 循环**：Agent 按 Think → Decide → Execute → Observe 执行，支持 Think High、Think Max、Non-think 三种模式。
+- **Goal 模式**：可在启动时或会话中设定目标，目标会立即生效，并显示在 Inspector 中。
+- **子 Agent 编排**：支持创建子 Agent、并行任务、消息传递和任务追踪。
+- **内置工具**：文件读写编辑、glob、grep、bash、Web fetch/search、MCP 资源/提示、记忆写入、配置调整、任务管理、子 Agent 管理。
+- **权限系统**：按 read/write/exec/network 分级确认，支持 allow/deny 规则和 `--dangerously-skip-permissions` 全信任模式。
+- **会话持久化**：保存 JSON 与 Markdown transcript，支持恢复、列出、导出历史会话。
+- **项目记忆**：项目级 `.myagent/memory/` 与用户级记忆共同参与上下文构建，支持 `MEMORY.md` 索引和后台 dream 整合。
+- **CLI Runtime UX**：权限申请显示在底部临时托盘，工具输出默认折叠并可用 F3 展开，Agent 思考时显示计时。
+- **结构化日志**：使用 JSON Lines 异步日志，覆盖 LLM、工具、Agent、MCP、系统、记忆和子 Agent 事件。
 
 ## 安装
 
-```bash
-# 开发安装
-git clone <repo-url>
-cd myagentcli
-pip install -e ".[dev]"
+开发安装：
 
-# (计划) PyPI 发布后
-pipx install myagent
+```bash
+git clone <repo-url>
+cd MyAgentCLI
+pip install -e ".[dev]"
 ```
 
-## 使用
+安装后会注册 `myagent` 命令：
 
 ```bash
-# 启动 REPL
-myagent
+myagent --help
+```
 
+项目要求 Python 3.12+。当前代码在本地开发环境中也会被 Python 3.14 测试覆盖。
+
+## 快速开始
+
+启动当前目录作为项目上下文：
+
+```bash
+myagent
+```
+
+常用启动参数：
+
+```bash
 # 恢复最近会话
 myagent --resume
 
 # 恢复指定会话
 myagent --resume <session-id>
 
-# 列出所有会话
+# 列出当前项目会话
 myagent --list-sessions
 
-# 导出会话
+# 导出指定会话
 myagent --session <session-id> --export markdown
+myagent --session <session-id> --export json
 
 # 指定思考模式
+myagent --mode think-high
 myagent --mode think-max
+myagent --mode non-think
 
-# 设定目标
-myagent --goal "重构认证模块"
-
-# 全权限模式（跳过所有确认）
-myagent --dangerously-skip-permissions
+# 启动时设置目标
+myagent --goal "完成登录模块重构"
 
 # 指定项目目录
-myagent --project-dir /path/to/project
+myagent --project-dir D:\code\some-project
+
+# 跳过权限确认，适合完全可信的本地自动化场景
+myagent --dangerously-skip-permissions
 ```
 
-### Interactive Chat Window
+一次性命令不会进入全屏聊天窗口，例如 `--list-sessions` 和 `--session ... --export ...` 会输出结果后退出。
 
-By default, starting `myagent` opens a fixed full-screen chat window for interactive work. The conversation history stays in a scrollable transcript pane, the input box remains pinned to the bottom, and the right-side Agent Inspector or narrow rail shows live session state such as token usage, subagents, tool activity, and health.
+## 交互窗口
 
-The chat window draws explicit pane boundaries, wraps long transcript lines to the available terminal cell width, and labels turns with aligned `You |`, `Agent |`, `System |`, and `Tool |` prefixes. Agent replies get a display-only Markdown-ish cleanup for common headings, bold markers, separators, bullet lists, compact term lists, and simple tables so compact model output remains readable. If a normal message is submitted while the agent is still answering, it is shown in the visible `Queue |` block first and moves into the transcript only when that queued turn starts processing. Control commands such as `/goal <text>` apply immediately and are shown as system updates rather than queued user turns.
+`myagent` 默认启动固定聊天窗口：
 
-One-shot commands do not start the full-screen chat UI. Commands such as `myagent --help`, `myagent --list-sessions`, and `myagent --session <id> --export markdown` print their result and exit in the legacy command style.
+- 左侧主窗格显示系统、用户、Agent、工具和队列消息。
+- 右侧 Agent Inspector 显示 session、project、model、thinking、token、context、goal、subagent、tool 和 health 状态。
+- 输入框固定在底部，不会被流式输出推走。
+- 对话内容按终端宽度换行，常见 Markdown-ish 回复会在显示层整理成更适合阅读的标题、列表、表格和目录树。
+- Agent 忙碌时继续发送的普通消息会先进入可见队列，等上一轮完成后再进入 transcript。
+- `/goal <text>` 等即时控制命令不会进入队列，会立即更新状态。
+- 工具结果默认折叠成一行摘要，按 F3 展开最近工具详情。
+- 权限确认会显示在底部临时托盘，选择后自动消失。
 
-Chat window configuration:
+按键：
+
+| Key | 行为 |
+|---|---|
+| `Enter` | 提交当前输入 |
+| `Esc+Enter` / `Alt+Enter` | 插入换行 |
+| `F2` | 展开或折叠 Agent Inspector |
+| `F3` | 展开或折叠最近工具详情 |
+| `Ctrl+C` | 运行中中断 Agent；空闲时清空输入或触发退出确认 |
+| `Ctrl+D` | 输入为空时退出 |
+| `PageUp` / `PageDown` | 滚动对话记录 |
+| 鼠标滚轮 | 滚动对话记录，前提是 `mouse_support` 开启 |
+
+如果你更需要终端原生鼠标选择复制，可以关闭鼠标事件：
 
 ```yaml
+ui:
+  chat_window:
+    mouse_support: false
+```
+
+## 斜杠命令
+
+| 命令 | 说明 |
+|---|---|
+| `/mode think-high\|think-max\|non-think` | 切换思考模式 |
+| `/goal [text]` | 查看或设置当前目标 |
+| `/goal clear` | 清除目标 |
+| `/skills` | 列出可用技能 |
+| `/dream` | 手动运行记忆整合 |
+| `/compact` | 非破坏性压缩当前上下文 |
+| `/clear` | 清空当前 UI 内存对话，磁盘 transcript 保留 |
+| `/history [N]` | 查看最近 N 条会话历史 |
+| `/export [markdown\|json]` | 导出当前会话 |
+| `/help` | 查看命令帮助 |
+| `/exit` / `/quit` | 退出 |
+
+也可以通过 `/<skill-name>` 强制调用已注册技能。
+
+## 配置
+
+配置使用 YAML，并按以下优先级合并，越靠后优先级越高：
+
+1. 默认值
+2. `~/.myagent/AGENT.md`
+3. `~/.myagent/config.yaml`
+4. `.myagent/AGENT.md`
+5. `.myagent/config.yaml`
+6. 运行时覆盖
+7. CLI 参数
+
+常用配置示例：
+
+```yaml
+model:
+  provider: deepseek
+  model: deepseek-v4-pro
+  thinking: Think High
+
+permissions:
+  default_mode: ask
+  auto_allow:
+    levels: [0]
+    paths: []
+    commands: []
+  auto_deny:
+    paths: [".env", "*.key", "*.pem"]
+    commands: ["sudo", "rm -rf /"]
+
 ui:
   chat_window:
     enabled: true
@@ -131,78 +166,6 @@ ui:
     input_max_lines: 6
     follow_output: auto
     mouse_support: true
-```
-
-Set `ui.chat_window.enabled: false` to restore the legacy prompt-style REPL. `scrollback_lines` controls the in-memory chat viewport history, `input_min_lines` and `input_max_lines` bound the bottom input height, and `follow_output` controls whether new output follows the bottom automatically.
-`mouse_support` defaults to `true` so the full-screen chat pane receives mouse-wheel scroll events. Set `ui.chat_window.mouse_support: false` if your terminal's native text selection/copy behavior is more important than mouse-wheel scrolling.
-
-Key bindings:
-
-| Key | Behavior |
-|---|---|
-| `Enter` | Submit the current message. |
-| `Esc+Enter` or `Alt+Enter` | Insert a newline for multiline input. |
-| `F2` | Toggle the Agent Inspector / rail view. |
-| `Ctrl+C` | Interrupt an active run; when idle, clear or follow the existing exit semantics. |
-| `Ctrl+D` | Exit when the input is empty. |
-| `PageUp` / `PageDown` | Scroll the conversation history. |
-| Mouse wheel | Scroll the conversation history. |
-
-### REPL 中的斜杠命令
-
-| 命令 | 功能 |
-|------|------|
-| `/mode think-high\|think-max\|non-think` | 切换思考模式 |
-| `/goal <text>` | 设定目标（无参数查看当前） |
-| `/goal clear` | 清除目标 |
-| `/skills` | 列出可用技能 |
-| `/dream` | 手动触发梦境 |
-| `/clear` | 清空对话历史（保留磁盘 transcript） |
-| `/history` | 查看近期对话摘要 |
-| `/exit` 或 `/quit` | 退出 |
-
-## 开发
-
-```bash
-# 安装开发依赖
-pip install -e ".[dev]"
-
-# 运行全部测试
-pytest tests/ -v
-
-# 运行单个测试
-pytest tests/tools/test_registry.py::TestToolRegistry::test_register_and_execute -v
-
-# 运行特定模块
-pytest tests/config/ -v
-
-# 代码检查
-ruff check myagent/
-
-# 覆盖率
-pytest tests/ -v --cov=myagent --cov-report=term-missing
-```
-
-## 配置
-
-配置文件位置（优先级从低到高）：
-
-1. 硬编码默认值
-2. `~/.myagent/AGENT.md`
-3. `~/.myagent/config.yaml`
-4. `.myagent/AGENT.md`（项目级）
-5. `.myagent/config.yaml`（项目级）
-6. 运行时覆盖
-7. CLI 参数
-
-完整配置项见 [设计文档 §九](docs/superpowers/specs/2026-07-02-myagentcli-design.md)。
-
-### Agent Inspector Pane 配置
-
-CLI 默认在右侧显示固定 `Agent Inspector Pane`，用于展示会话、token、上下文占用、目标、子 Agent、工具调用和健康状态。终端宽度低于 `collapse_below_columns` 时会自动折叠成窄 rail；`F2` 可在当前布局中展开或收起 Inspector，不会提交当前输入。
-
-```yaml
-ui:
   status_pane:
     enabled: true
     placement: right
@@ -213,14 +176,115 @@ ui:
     rail_width: 5
     toggle_key: f2
     sections: [session, tokens, goal, subagents, tools, health]
+
+session:
+  save_transcripts: true
+  transcript_format: [json, markdown]
+  sessions_dir: ~/.myagent/sessions/
+
+logging:
+  level: INFO
+  dir: ~/.myagent/logs/
+  format: jsonl
+  retention_days: 30
 ```
 
-兼容性：旧配置 `ui.show_status_bar` 仍会映射到 `ui.status_pane.enabled`，`ui.status_bar_items` 仍会映射到 `ui.status_pane.sections`。显式配置 `ui.status_pane.*` 时优先使用新配置。
+完整设计见 [设计文档](docs/superpowers/specs/2026-07-02-myagentcli-design.md)。
 
-## 文档
+## 数据位置
 
-- [设计文档](docs/superpowers/specs/2026-07-02-myagentcli-design.md)
+- **项目配置**：`.myagent/config.yaml`
+- **项目记忆**：`.myagent/memory/*.md` 与 `.myagent/memory/MEMORY.md`
+- **用户配置**：`~/.myagent/config.yaml`
+- **用户记忆**：`~/.myagent/memory/`
+- **会话记录**：默认 `~/.myagent/sessions/<project-name>/<project-hash>/<session-id>/`
+- **日志**：默认 `~/.myagent/logs/`
+
+每个会话目录会保存 transcript 数据，可用于 `--resume`、`--list-sessions` 和 `--export`。
+
+## 架构
+
+MyAgentCLI 是四层异步单体：
+
+```text
+CLI Layer
+  ├─ chat_window.py       固定聊天窗口
+  ├─ input_controller.py  输入与快捷键
+  ├─ status.py            Agent Inspector
+  ├─ repl.py              REPL 事件桥接
+  └─ commands.py          斜杠命令
+
+Application Layer
+  ├─ engine.py            ReAct 循环
+  ├─ goal.py              Goal 追踪
+  ├─ session.py           会话生命周期
+  └─ project.py           项目环境检测
+
+Service Layer
+  ├─ tools/               内置工具与 MCP 适配
+  ├─ subagent/            子 Agent 池
+  ├─ context/             上下文构建与压缩
+  ├─ memory/              记忆存储、召回、dream
+  └─ skills/              技能加载与注册
+
+Infrastructure Layer
+  ├─ llm/                 LiteLLM Provider
+  ├─ config/              YAML 加载与合并
+  ├─ permissions/         权限控制
+  └─ logging/             异步结构化日志
+```
+
+## 内置工具
+
+| 工具 | 用途 |
+|---|---|
+| `read` / `write` / `edit` | 文件读取、写入、编辑 |
+| `glob` / `grep` | 文件匹配与内容搜索 |
+| `bash` | 执行 shell 命令 |
+| `web_fetch` / `web_search` | 抓取网页与搜索 |
+| `spawn_subagent` / `send_message` | 子 Agent 创建与通信 |
+| `task_create` / `task_update` | 任务追踪 |
+| `memory_write` | 写入项目或用户记忆 |
+| `config_set` | 运行时配置调整 |
+| `mcp_read_resource` / `mcp_get_prompt` | MCP 资源与提示访问 |
+
+## 开发
+
+安装开发依赖：
+
+```bash
+pip install -e ".[dev]"
+```
+
+常用验证命令：
+
+```bash
+# 全量测试
+pytest tests/ -v
+
+# 快速全量测试
+pytest tests/ -q
+
+# 单个测试
+pytest tests/tools/test_registry.py::test_register_and_execute -v
+
+# 特定模块
+pytest tests/cli/test_chat_window.py -q
+pytest tests/config/ -v
+
+# Lint
+ruff check myagent/
+
+# 覆盖率
+pytest tests/ -v --cov=myagent --cov-report=term-missing
+```
+
+## 相关文档
+
+- [总体设计文档](docs/superpowers/specs/2026-07-02-myagentcli-design.md)
+- [Chat Window UI 设计](docs/superpowers/specs/2026-07-05-chat-window-ui-design.md)
 - [实现计划](docs/superpowers/plans/2026-07-03-myagentcli-implementation.md)
+- [CLI Runtime UX 计划](docs/superpowers/plans/2026-07-07-cli-runtime-ux.md)
 
 ## License
 
