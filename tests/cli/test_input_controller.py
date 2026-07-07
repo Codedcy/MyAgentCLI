@@ -146,6 +146,22 @@ def test_escape_enter_inserts_newline_through_action() -> None:
     assert buffer.text == "draft\n"
 
 
+def test_escape_interrupts_active_agent_run_without_touching_input() -> None:
+    controller = InputController(SimpleNamespace())
+    spy = ActionSpy(interrupt_result=True)
+
+    buffer = invoke_binding(
+        controller.build_key_bindings(spy.actions()),
+        (Keys.Escape,),
+        "draft",
+    )
+
+    assert spy.interrupt_calls == 1
+    assert spy.request_exit_calls == 0
+    assert buffer.reset_calls == 0
+    assert buffer.text == "draft"
+
+
 def test_empty_enter_submission_is_ignored_before_submit_action() -> None:
     controller = InputController(SimpleNamespace())
     spy = ActionSpy()

@@ -221,7 +221,7 @@ class CommandDispatcher:
             "  /exit, /quit                          — Exit MyAgentCLI",
             "",
             "You can also type /<skill-name> to invoke a registered skill.",
-            "Use Ctrl+C to interrupt a running agent, Ctrl+D to exit.",
+            "Use Esc or Ctrl+C to interrupt a running agent, Ctrl+D to exit.",
         ]
         return CommandResult(output="\n".join(lines))
 

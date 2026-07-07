@@ -148,6 +148,55 @@ async def test_react_loop_iterates_multiple_turns():
 
 
 @pytest.mark.asyncio
+async def test_react_loop_default_has_no_iteration_cap():
+    tool_generations = [
+        _async_gen([
+            FakeToolCall("read", f"call-{index}", {"file_path": f"{index}.txt"}),
+            FakeDone(),
+        ])
+        for index in range(55)
+    ]
+    final_gen = _async_gen([
+        FakeTextDelta("Finished after many tool steps"),
+        FakeDone(FakeUsage()),
+    ])
+    llm = MagicMock()
+    llm.complete = MagicMock(side_effect=[*tool_generations, final_gen])
+
+    tool = MagicMock()
+    tool.execute = AsyncMock(return_value=ToolResult(output="ok"))
+    registry = MagicMock()
+    registry.get = MagicMock(return_value=tool)
+
+    builder = MagicMock()
+    builder.build = AsyncMock(return_value=LLMRequest(
+        system="test", messages=[], tools=[]
+    ))
+
+    engine = AgentEngine(
+        llm=llm,
+        tool_registry=registry,
+        context_builder=builder,
+    )
+    session = MagicMock()
+    session.get_recent_messages.return_value = []
+    session.id = "test"
+
+    events = [e async for e in engine.run("keep going", session)]
+
+    assert llm.complete.call_count == 56
+    assert any(
+        isinstance(event, TextChunk)
+        and event.content == "Finished after many tool steps"
+        for event in events
+    )
+    assert not any(
+        isinstance(event, Error) and "max iterations" in event.message
+        for event in events
+    )
+
+
+@pytest.mark.asyncio
 async def test_background_subagent_completion_reenters_react_loop():
     gen1 = _async_gen([
         FakeToolCall(

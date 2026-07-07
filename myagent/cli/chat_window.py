@@ -7,6 +7,7 @@ import contextlib
 import inspect
 import logging
 import re
+import sys
 import traceback
 from collections.abc import Callable
 from typing import Any
@@ -37,6 +38,9 @@ DEFAULT_COLUMNS = 100
 DEFAULT_ROWS = 24
 INPUT_PROMPT = "INPUT> "
 EXIT_CONFIRMATION_MESSAGE = "Press Ctrl+C again or Ctrl+D to exit."
+MOUSE_REPORTING_RESET_SEQUENCE = (
+    "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1015l"
+)
 ROLE_LABELS = {
     "assistant": "Agent",
     "error": "Error",
@@ -576,12 +580,15 @@ class ChatWindowController:
         self._on_interrupt = on_interrupt
         started = False
         try:
+            mouse_support = self._mouse_support_enabled()
+            if not mouse_support:
+                self._reset_terminal_mouse_reporting()
             layout = self._build_layout()
             self._app = Application(
                 layout=layout,
                 key_bindings=self._key_bindings,
                 full_screen=True,
-                mouse_support=self._mouse_support_enabled(),
+                mouse_support=mouse_support,
             )
             started = True
             self._is_running = True
@@ -603,6 +610,8 @@ class ChatWindowController:
             self._finish_pending_ask(None)
             if started and self._on_exit is not None:
                 await self._call_async(self._on_exit)
+            if not self._mouse_support_enabled():
+                self._reset_terminal_mouse_reporting()
             self._app = None
 
     def append_user_input(self, text: str) -> None:
@@ -1886,6 +1895,13 @@ class ChatWindowController:
 
     def _mouse_support_enabled(self) -> bool:
         return bool(getattr(self._chat_config(), "mouse_support", False))
+
+    def _reset_terminal_mouse_reporting(self) -> None:
+        is_tty = getattr(sys.stdout, "isatty", None)
+        if callable(is_tty) and not is_tty():
+            return
+        sys.stdout.write(MOUSE_REPORTING_RESET_SEQUENCE)
+        sys.stdout.flush()
 
     def _status_config(self) -> Any:
         ui_config = getattr(self.config, "ui", None)

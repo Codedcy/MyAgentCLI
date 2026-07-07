@@ -990,6 +990,7 @@ MyAgentCLI (D:\code\MyAgentCLI):
 3. Agent Inspector Pane 停止统一 Live display
 4. 进程正常退出（exit code 0）
 
+Esc 或 Ctrl+C 在运行中中断当前 Agent 对话；Esc 在 idle 状态不退出。
 Ctrl+C 在 idle 状态时触发同样的退出流程（先确认 "Exit? (y/n)"）。
 
 ---
@@ -1198,9 +1199,10 @@ errors.
 
 ### Mouse Wheel, Selection, And Copy
 
-The chat window enables prompt-toolkit mouse reporting by default
-(`ui.chat_window.mouse_support: true`) so the fixed conversation pane can receive
-mouse-wheel scroll events. Users who prefer the host terminal's native
-selection/copy behavior can set `ui.chat_window.mouse_support: false`; in that
-mode keyboard scrolling remains available through PageUp/PageDown and the
+The chat window disables prompt-toolkit mouse reporting by default
+(`ui.chat_window.mouse_support: false`) so Windows terminals do not echo SGR
+mouse reports into the input buffer as literal text. Users can explicitly set
+`ui.chat_window.mouse_support: true` when their terminal handles mouse reporting
+cleanly and they want mouse-wheel events inside the fixed pane. In the default
+mode, keyboard scrolling remains available through PageUp/PageDown and the
 terminal owns mouse selection.

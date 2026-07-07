@@ -98,10 +98,11 @@ myagent --dangerously-skip-permissions
 | `Esc+Enter` / `Alt+Enter` | 插入换行 |
 | `F2` | 展开或折叠 Agent Inspector |
 | `F3` | 展开或折叠最近工具详情 |
+| `Esc` | 运行中中断当前 Agent 对话；空闲时不退出 |
 | `Ctrl+C` | 运行中中断 Agent；空闲时清空输入或触发退出确认 |
 | `Ctrl+D` | 输入为空时退出 |
 | `PageUp` / `PageDown` | 滚动对话记录 |
-| 鼠标滚轮 | 滚动对话记录，前提是 `mouse_support` 开启 |
+| 鼠标滚轮 | 滚动对话记录，前提是显式开启 `mouse_support` |
 
 如果你更需要终端原生鼠标选择复制，可以关闭鼠标事件：
 
@@ -167,7 +168,7 @@ ui:
     input_min_lines: 1
     input_max_lines: 6
     follow_output: auto
-    mouse_support: true
+    mouse_support: false
   status_pane:
     enabled: true
     placement: right

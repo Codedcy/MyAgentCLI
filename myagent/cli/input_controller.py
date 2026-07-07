@@ -51,9 +51,10 @@ logger = logging.getLogger("myagent.cli.input_controller")
 class ChatInputActions:
     """Callbacks used by the chat input key bindings.
 
-    ``interrupt`` returns True when an active run was interrupted; Ctrl+C then
-    stops without idle behavior. It returns False when no active run exists, so
-    the controller may clear non-empty input or request exit for empty input.
+    ``interrupt`` returns True when an active run was interrupted; Ctrl+C or
+    Esc then stops without idle behavior. It returns False when no active run
+    exists, so the controller may clear non-empty input or request exit for
+    empty input.
     """
 
     submit: Callable[[str], Any]
@@ -93,6 +94,10 @@ class InputController:
         @kb.add("escape", "enter")
         def _(event) -> None:
             actions.insert_newline(self._event_buffer(event))
+
+        @kb.add("escape")
+        def _(event) -> None:
+            actions.interrupt()
 
         @kb.add("c-c")
         def _(event) -> None:

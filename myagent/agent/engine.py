@@ -170,7 +170,7 @@ class AgentEngine:
 
     # ── ReAct loop ──────────────────────────────────────────────────
 
-    MAX_ITERATIONS = 50
+    MAX_ITERATIONS: int | None = None
 
     async def _react_loop(
         self, request, session, user_input: str = ""
@@ -209,7 +209,7 @@ class AgentEngine:
         active_skill: str | None = None  # gap-32: track active skill for context rebuild
         pending_background_subagents: set[str] = set()
 
-        while iteration < self.MAX_ITERATIONS:
+        while self.MAX_ITERATIONS is None or iteration < self.MAX_ITERATIONS:
             iteration += 1
 
             # G10: Drain sub-agent-to-main-agent outbound messages
