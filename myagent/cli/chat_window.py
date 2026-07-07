@@ -27,6 +27,7 @@ from myagent.cli.input_controller import (
 )
 from myagent.cli.rich_capture import capture_renderable, sanitize_terminal_text
 from myagent.cli.status import AgentInspectorPane
+from myagent.cli.syntax_highlight import Fragment, StyledLine, highlight_transcript_text
 from myagent.cli.text_decode import StreamingTextSanitizer
 from myagent.cli.transcript import TranscriptBuffer, TranscriptEntry, TranscriptLine
 
@@ -770,7 +771,7 @@ class ChatWindowController:
                 self._clear_transient_prompt()
 
     def _build_layout(self) -> Layout:
-        self._body_control = _ChatBodyControl(self._body_text, self._scroll_lines)
+        self._body_control = _ChatBodyControl(self._body_fragments, self._scroll_lines)
         body = Window(content=self._body_control, wrap_lines=False)
         self._input_field = TextArea(
             height=self.input_controller.input_height_for_text(""),
@@ -788,6 +789,15 @@ class ChatWindowController:
         input_text = self._current_input_text()
         input_height = self._sync_input_height(input_text)
         return self._render_body_for_size(
+            terminal_columns=columns,
+            terminal_rows=max(1, rows - input_height),
+        )
+
+    def _body_fragments(self) -> list[Fragment]:
+        columns, rows = self._current_terminal_size()
+        input_text = self._current_input_text()
+        input_height = self._sync_input_height(input_text)
+        return self._render_body_fragments_for_size(
             terminal_columns=columns,
             terminal_rows=max(1, rows - input_height),
         )
@@ -866,6 +876,154 @@ class ChatWindowController:
             )
         )
 
+    def _render_body_fragments_for_size(
+        self,
+        terminal_columns: int,
+        terminal_rows: int,
+    ) -> list[Fragment]:
+        lines = self._render_styled_body_lines_for_size(
+            terminal_columns,
+            terminal_rows,
+        )
+        return self._styled_lines_to_fragments(lines)
+
+    def _render_styled_body_lines_for_size(
+        self,
+        terminal_columns: int,
+        terminal_rows: int,
+    ) -> list[StyledLine]:
+        columns = max(1, int(terminal_columns))
+        rows = max(1, int(terminal_rows))
+        self._last_terminal_columns = columns
+        self._last_terminal_rows = rows
+
+        status_text = self._status_text(columns)
+        status_lines = status_text.splitlines()
+        if rows < 3 or columns < 4:
+            self._last_viewport_height = rows
+            if not status_lines:
+                return [
+                    self._pad_styled_line(line, columns)
+                    for line in self._conversation_styled_lines(rows, columns)
+                ]
+            return self._render_unbordered_styled_body(columns, rows, status_lines)
+
+        content_rows = rows - 2
+        self._last_viewport_height = content_rows
+        inner_columns = columns - 2
+        if not status_lines:
+            conversation_width = inner_columns
+            self._last_conversation_width = conversation_width
+            conversation_lines = self._conversation_styled_lines(
+                content_rows,
+                conversation_width,
+            )
+            return self._render_bordered_styled_body(
+                columns=columns,
+                conversation_width=conversation_width,
+                conversation_lines=conversation_lines,
+                status_width=0,
+                status_lines=[],
+            )
+
+        status_width = min(
+            max((get_cwidth(line) for line in status_lines), default=0),
+            max(1, inner_columns - 2),
+        )
+        conversation_width = max(1, inner_columns - status_width - 1)
+        self._last_conversation_width = conversation_width
+        conversation_lines = self._conversation_styled_lines(
+            content_rows,
+            conversation_width,
+        )
+        return self._render_bordered_styled_body(
+            columns=columns,
+            conversation_width=conversation_width,
+            conversation_lines=conversation_lines,
+            status_width=status_width,
+            status_lines=status_lines,
+        )
+
+    def _render_unbordered_styled_body(
+        self,
+        columns: int,
+        rows: int,
+        status_lines: list[str],
+    ) -> list[StyledLine]:
+        status_width = min(
+            max((get_cwidth(line) for line in status_lines), default=0),
+            max(1, columns - 1),
+        )
+        conversation_width = max(1, columns - status_width - 1)
+        self._last_conversation_width = conversation_width
+        conversation_lines = self._conversation_styled_lines(rows, conversation_width)
+        rendered_lines: list[StyledLine] = []
+        for index in range(rows):
+            left = (
+                conversation_lines[index]
+                if index < len(conversation_lines)
+                else self._styled_from_plain("")
+            )
+            right = status_lines[index] if index < len(status_lines) else ""
+            if right:
+                padded_left = self._pad_styled_line(left, conversation_width)
+                rendered_lines.append(
+                    self._pad_styled_line(
+                        StyledLine(
+                            f"{padded_left.plain} {right}",
+                            [*padded_left.fragments, ("", f" {right}")],
+                        ),
+                        columns,
+                    )
+                )
+            else:
+                rendered_lines.append(self._pad_styled_line(left, columns))
+        return rendered_lines
+
+    def _render_bordered_styled_body(
+        self,
+        *,
+        columns: int,
+        conversation_width: int,
+        conversation_lines: list[StyledLine],
+        status_width: int,
+        status_lines: list[str],
+    ) -> list[StyledLine]:
+        has_status = status_width > 0 and bool(status_lines)
+        top = f"+{'-' * conversation_width}"
+        if has_status:
+            top = f"{top}+{'-' * status_width}"
+        top = f"{top}+"
+
+        rendered = [self._pad_styled_line(self._styled_from_plain(top), columns)]
+        for index in range(len(conversation_lines)):
+            left = (
+                conversation_lines[index]
+                if index < len(conversation_lines)
+                else self._styled_from_plain("")
+            )
+            padded_left = self._pad_styled_line(left, conversation_width)
+            plain = f"|{padded_left.plain}"
+            fragments: list[Fragment] = [("", "|"), *padded_left.fragments]
+            if has_status:
+                right = status_lines[index] if index < len(status_lines) else ""
+                padded_right = _pad_cells(right, status_width)
+                plain = f"{plain}|{padded_right}"
+                fragments.extend([("", "|"), ("", padded_right)])
+            plain = f"{plain}|"
+            fragments.append(("", "|"))
+            rendered.append(self._pad_styled_line(StyledLine(plain, fragments), columns))
+        rendered.append(self._pad_styled_line(self._styled_from_plain(top), columns))
+        return rendered
+
+    def _styled_lines_to_fragments(self, lines: list[StyledLine]) -> list[Fragment]:
+        fragments: list[Fragment] = []
+        for index, line in enumerate(lines):
+            if index:
+                fragments.append(("", "\n"))
+            fragments.extend(line.fragments)
+        return fragments
+
     def _render_unbordered_body(
         self,
         columns: int,
@@ -921,6 +1079,68 @@ class ChatWindowController:
             rendered.append(_pad_cells(line, columns))
         rendered.append(_pad_cells(top, columns))
         return rendered
+
+    def _conversation_styled_lines(self, height: int, width: int) -> list[StyledLine]:
+        height = max(1, int(height))
+        width = max(1, int(width))
+        self._last_conversation_width = width
+
+        prompt_lines = [
+            self._styled_from_plain(line) for line in self._transient_prompt_lines(width)
+        ]
+        bottom_lines = [
+            self._styled_from_plain(line) for line in self._bottom_state_lines(width)
+        ]
+        if prompt_lines:
+            if bottom_lines and height > len(bottom_lines) + len(prompt_lines):
+                bottom_lines.append(self._styled_from_plain(""))
+            bottom_lines.extend(prompt_lines)
+        bottom_separator_height = 1 if bottom_lines and height > len(bottom_lines) else 0
+        content_height = max(0, height - len(bottom_lines) - bottom_separator_height)
+        transcript_lines = self._render_styled_transcript_lines(width)
+        queue_lines = [
+            self._styled_from_plain(line)
+            for line in self._visible_queue_lines(
+                width=width,
+                height=content_height,
+                has_transcript=bool(transcript_lines),
+            )
+        ]
+        separator_height = 1 if transcript_lines and queue_lines else 0
+        transcript_height = max(0, content_height - len(queue_lines) - separator_height)
+        lines = self._slice_visual_styled_transcript_lines(
+            transcript_lines,
+            transcript_height,
+        )
+
+        if self._visual_unread_count and self._visual_scroll_offset > 0:
+            self._place_unread_marker_styled(
+                lines,
+                f"[{self._visual_unread_count} new messages]",
+                width,
+            )
+
+        if queue_lines:
+            if lines and len(lines) < content_height:
+                lines.append(self._styled_from_plain(""))
+            lines.extend(queue_lines)
+
+        if not lines and not bottom_lines:
+            lines = [self._styled_from_plain("Conversation")]
+
+        clipped = lines[:content_height]
+        if bottom_lines:
+            clipped.extend(
+                self._styled_from_plain("")
+                for _ in range(max(0, content_height - len(clipped)))
+            )
+            if bottom_separator_height:
+                clipped.append(self._styled_from_plain(""))
+            clipped.extend(bottom_lines)
+        return [self._clip_styled_line(line, width) for line in clipped] + [
+            self._styled_from_plain("")
+            for _ in range(max(0, height - len(clipped)))
+        ]
 
     def _conversation_lines(self, height: int, width: int) -> list[str]:
         height = max(1, int(height))
@@ -984,6 +1204,16 @@ class ChatWindowController:
             previous_role = entry.role
         return lines
 
+    def _render_styled_transcript_lines(self, width: int) -> list[StyledLine]:
+        lines: list[StyledLine] = []
+        previous_role: str | None = None
+        for entry in self.transcript.entries():
+            if lines and previous_role != entry.role:
+                lines.append(self._styled_from_plain(""))
+            lines.extend(self._transcript_entry_styled_lines(entry, width))
+            previous_role = entry.role
+        return lines
+
     def _transcript_entry_text(
         self,
         entry: TranscriptEntry,
@@ -1000,10 +1230,54 @@ class ChatWindowController:
             lines.extend(self._transcript_line_text(line, width))
         return lines
 
+    def _transcript_entry_styled_lines(
+        self,
+        entry: TranscriptEntry,
+        width: int,
+    ) -> list[StyledLine]:
+        plain_text = (
+            _format_agent_text_for_display(entry.plain_text)
+            if entry.role == "assistant"
+            else self._transcript_display_text(entry)
+        )
+        highlighted_lines = highlight_transcript_text(
+            plain_text,
+            enabled=self._syntax_highlight_enabled()
+            and self._entry_syntax_highlight_role(entry),
+        )
+        lines: list[StyledLine] = []
+        for line_index, styled_line in enumerate(highlighted_lines):
+            prefix = (
+                self._role_prefix(ROLE_LABELS.get(entry.role, entry.role.title()))
+                if line_index == 0
+                else self._continuation_prefix()
+            )
+            lines.extend(self._wrap_prefixed_styled_line(prefix, styled_line, width))
+        return lines
+
+    def _entry_syntax_highlight_role(self, entry: TranscriptEntry) -> bool:
+        if entry.role == "assistant":
+            return True
+        return bool(entry.role == "tool" and entry.expanded and entry.detail_text)
+
     def _transcript_display_text(self, entry: TranscriptEntry) -> str:
         if entry.role == "tool" and entry.expanded and entry.detail_text:
             return f"{entry.plain_text}\n{entry.detail_text}"
         return entry.plain_text
+
+    def _slice_visual_styled_transcript_lines(
+        self,
+        transcript_lines: list[StyledLine],
+        height: int,
+    ) -> list[StyledLine]:
+        if height <= 0 or not transcript_lines:
+            return []
+
+        total_lines = len(transcript_lines)
+        self._clamp_visual_scroll_offset(total_lines, height)
+        bottom = max(0, total_lines - self._visual_scroll_offset)
+        top = max(0, bottom - height)
+        return transcript_lines[top:bottom]
 
     def _slice_visual_transcript_lines(
         self,
@@ -1152,6 +1426,137 @@ class ChatWindowController:
             lines.append(f"{continuation}{' ' * continuation_indent}{segment}")
         return [_clip_cells(line, width) for line in lines]
 
+    def _wrap_prefixed_styled_line(
+        self,
+        prefix: str,
+        styled_line: StyledLine,
+        width: int,
+    ) -> list[StyledLine]:
+        prefix_width = get_cwidth(prefix)
+        if width <= prefix_width:
+            clipped = _clip_cells(prefix.rstrip(), width)
+            return [self._styled_from_plain(clipped)]
+
+        content_width = width - prefix_width
+        continuation_indent = (
+            2 if styled_line.plain.startswith("- ") and content_width > 2 else 0
+        )
+        wrap_width = max(1, content_width - continuation_indent)
+        wrapped_content = self._wrap_styled_fragments(
+            styled_line.fragments,
+            wrap_width,
+        )
+
+        lines = [
+            self._clip_styled_line(
+                StyledLine(
+                    f"{prefix}{wrapped_content[0].plain}",
+                    [("", prefix), *wrapped_content[0].fragments],
+                ),
+                width,
+            )
+        ]
+        continuation = self._continuation_prefix()
+        for segment in wrapped_content[1:]:
+            indent = " " * continuation_indent
+            lines.append(
+                self._clip_styled_line(
+                    StyledLine(
+                        f"{continuation}{indent}{segment.plain}",
+                        [("", continuation), ("", indent), *segment.fragments],
+                    ),
+                    width,
+                )
+            )
+        return lines
+
+    def _wrap_styled_fragments(
+        self,
+        fragments: list[Fragment],
+        width: int,
+    ) -> list[StyledLine]:
+        if width <= 0:
+            return [self._styled_from_plain("")]
+
+        lines: list[list[Fragment]] = [[]]
+        current_cells = 0
+        for style, text in fragments:
+            for chunk_style, chunk_text in self._wrap_fragment_chunks(style, text):
+                chunk_parts: list[str] = []
+                for character in chunk_text:
+                    character_width = get_cwidth(character)
+                    if current_cells and current_cells + character_width > width:
+                        if chunk_parts:
+                            lines[-1].append((chunk_style, "".join(chunk_parts)))
+                            chunk_parts = []
+                        lines.append([])
+                        current_cells = 0
+
+                    if current_cells == 0 and character_width > width:
+                        clipped = _clip_cells(character, width)
+                        if clipped:
+                            lines[-1].append((chunk_style, clipped))
+                            lines.append([])
+                        continue
+
+                    chunk_parts.append(character)
+                    current_cells += character_width
+                if chunk_parts:
+                    lines[-1].append((chunk_style, "".join(chunk_parts)))
+
+        return [
+            StyledLine(
+                self._fragments_plain(line_fragments),
+                line_fragments or [("", "")],
+            )
+            for line_fragments in lines
+        ] or [self._styled_from_plain("")]
+
+    def _wrap_fragment_chunks(self, style: str, text: str) -> list[Fragment]:
+        if style:
+            return [(style, text)] if text else []
+        return [("", chunk) for chunk in re.findall(r"\s+|\S+", text) if chunk]
+
+    def _syntax_highlight_enabled(self) -> bool:
+        ui_config = getattr(self.config, "ui", None)
+        return bool(getattr(ui_config, "syntax_highlight", True))
+
+    def _styled_from_plain(self, text: str) -> StyledLine:
+        return StyledLine(text, [("", text)])
+
+    def _fragments_plain(self, fragments: list[Fragment]) -> str:
+        return "".join(text for _style, text in fragments)
+
+    def _pad_styled_line(self, line: StyledLine, width: int) -> StyledLine:
+        clipped = self._clip_styled_line(line, width)
+        padding = " " * max(0, width - get_cwidth(clipped.plain))
+        return StyledLine(
+            f"{clipped.plain}{padding}",
+            [*clipped.fragments, ("", padding)] if padding else clipped.fragments,
+        )
+
+    def _clip_styled_line(self, line: StyledLine, width: int) -> StyledLine:
+        cells = 0
+        fragments: list[Fragment] = []
+        plain_parts: list[str] = []
+        for style, text in line.fragments:
+            kept: list[str] = []
+            for character in text:
+                character_width = get_cwidth(character)
+                if cells + character_width > width:
+                    kept_text = "".join(kept)
+                    if kept_text:
+                        fragments.append((style, kept_text))
+                        plain_parts.append(kept_text)
+                    return StyledLine("".join(plain_parts), fragments or [("", "")])
+                kept.append(character)
+                cells += character_width
+            kept_text = "".join(kept)
+            if kept_text:
+                fragments.append((style, kept_text))
+                plain_parts.append(kept_text)
+        return StyledLine("".join(plain_parts), fragments or [("", "")])
+
     def _place_unread_marker(
         self,
         lines: list[str],
@@ -1184,6 +1589,47 @@ class ChatWindowController:
             lines[-1] = f"{prefix}{separator}{marker_text}"
         else:
             lines[-1] = marker_text
+
+    def _place_unread_marker_styled(
+        self,
+        lines: list[StyledLine],
+        marker: str,
+        width: int,
+    ) -> None:
+        if width <= 0:
+            return
+
+        marker_text = _clip_cells(marker, width)
+        if not lines:
+            lines.append(self._styled_from_plain(marker_text))
+            return
+
+        separator = "  "
+        candidate = f"{lines[-1].plain}{separator}{marker_text}"
+        if get_cwidth(candidate) <= width:
+            lines[-1] = StyledLine(
+                candidate,
+                [*lines[-1].fragments, ("", f"{separator}{marker_text}")],
+            )
+            return
+
+        marker_width = get_cwidth(marker_text)
+        separator_width = get_cwidth(separator)
+        if marker_width + separator_width > width:
+            lines[-1] = self._styled_from_plain(marker_text)
+            return
+
+        prefix_width = width - marker_width - separator_width
+        prefix = self._clip_styled_line(lines[-1], prefix_width)
+        prefix_plain = prefix.plain.rstrip()
+        if prefix_plain:
+            prefix = self._clip_styled_line(prefix, get_cwidth(prefix_plain))
+            lines[-1] = StyledLine(
+                f"{prefix.plain}{separator}{marker_text}",
+                [*prefix.fragments, ("", f"{separator}{marker_text}")],
+            )
+        else:
+            lines[-1] = self._styled_from_plain(marker_text)
 
     def _input_lines(self, text: str, width: int) -> list[str]:
         height = self.input_controller.input_height_for_text(text)

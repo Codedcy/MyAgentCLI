@@ -122,6 +122,10 @@ def visible_text(buffer: TranscriptBuffer, height: int) -> list[str]:
     return [entry.plain_text for entry in buffer.visible_entries(height)]
 
 
+def fragments_text(fragments: list[tuple[str, str]]) -> str:
+    return "".join(text for _style, text in fragments)
+
+
 def last_non_empty_line(text: str) -> str:
     lines = [line.rstrip() for line in text.splitlines() if line.strip()]
     assert lines
@@ -558,6 +562,95 @@ def test_agent_code_fence_keeps_multiple_blank_lines() -> None:
     beta_index = lines.index("       | beta")
 
     assert lines[alpha_index + 1 : beta_index] == ["       | ", "       | "]
+
+
+def test_body_fragments_highlight_fenced_python_code_without_changing_plain_text() -> None:
+    controller = make_controller(status_pane=EmptyStatusPane())
+    controller.append_output("```python\ndef run():\n    return 42\n```")
+
+    plain = controller._render_body_for_size(terminal_columns=100, terminal_rows=10)
+    fragments = controller._render_body_fragments_for_size(
+        terminal_columns=100,
+        terminal_rows=10,
+    )
+
+    assert fragments_text(fragments) == plain
+    assert any("bold" in style and text == "def" for style, text in fragments)
+    assert any("magenta" in style and text == "42" for style, text in fragments)
+
+
+def test_body_fragments_highlight_sql_but_not_plain_prose_keyword() -> None:
+    controller = make_controller(status_pane=EmptyStatusPane())
+    controller.append_output("Please select an option.\n```sql\nSELECT * FROM users\n```")
+
+    fragments = controller._render_body_fragments_for_size(
+        terminal_columns=100,
+        terminal_rows=10,
+    )
+
+    assert any("bold" in style and text.upper() == "SELECT" for style, text in fragments)
+    prose_select = [style for style, text in fragments if text == "select"]
+    assert prose_select == [""]
+
+
+def test_body_fragments_support_cpp_and_rust_fences() -> None:
+    controller = make_controller(status_pane=EmptyStatusPane())
+    controller.append_output(
+        "```cpp\nint main() { return 0; }\n```\n"
+        "```rust\nfn main() { let value = 1; }\n```"
+    )
+
+    fragments = controller._render_body_fragments_for_size(
+        terminal_columns=120,
+        terminal_rows=14,
+    )
+
+    assert any("bold" in style and text == "int" for style, text in fragments)
+    assert any("bold" in style and text == "fn" for style, text in fragments)
+    assert any("magenta" in style and text in {"0", "1"} for style, text in fragments)
+
+
+def test_body_fragments_can_disable_syntax_highlighting() -> None:
+    config = make_config()
+    config.ui.syntax_highlight = False
+    controller = make_controller(config=config, status_pane=EmptyStatusPane())
+    controller.append_output("```python\ndef run():\n    return 42\n```")
+
+    fragments = controller._render_body_fragments_for_size(
+        terminal_columns=100,
+        terminal_rows=10,
+    )
+
+    assert fragments_text(fragments) == controller._render_body_for_size(100, 10)
+    assert all(style == "" for style, text in fragments if text.strip())
+
+
+def test_body_fragments_highlight_only_expanded_tool_details() -> None:
+    controller = make_controller(status_pane=EmptyStatusPane())
+    controller.append_tool(
+        "Tool summary with def and SELECT",
+        detail_text="```python\ndef tool_result():\n    return 7\n```",
+    )
+
+    collapsed = controller._render_body_fragments_for_size(
+        terminal_columns=100,
+        terminal_rows=8,
+    )
+    assert all(
+        "bold" not in style
+        for style, text in collapsed
+        if text in {"def", "SELECT"}
+    )
+
+    assert controller.toggle_latest_tool_detail() is True
+    expanded = controller._render_body_fragments_for_size(
+        terminal_columns=100,
+        terminal_rows=10,
+    )
+
+    assert fragments_text(expanded) == controller._render_body_for_size(100, 10)
+    assert any("bold" in style and text == "def" for style, text in expanded)
+    assert any("magenta" in style and text == "7" for style, text in expanded)
 
 
 def test_submissions_waiting_for_agent_are_visible_as_queue() -> None:
