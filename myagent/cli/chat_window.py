@@ -15,10 +15,16 @@ from prompt_toolkit.application import Application
 from prompt_toolkit.application.current import get_app_or_none
 from prompt_toolkit.layout import HSplit, Layout, Window
 from prompt_toolkit.layout.controls import FormattedTextControl
+from prompt_toolkit.mouse_events import MouseEventType
 from prompt_toolkit.utils import get_cwidth
 from prompt_toolkit.widgets import TextArea
 
-from myagent.cli.input_controller import ChatInputActions, InputController
+from myagent.cli.control_commands import is_immediate_chat_command
+from myagent.cli.input_controller import (
+    SCROLL_LINES_PER_WHEEL_EVENT,
+    ChatInputActions,
+    InputController,
+)
 from myagent.cli.rich_capture import capture_renderable, sanitize_terminal_text
 from myagent.cli.status import AgentInspectorPane
 from myagent.cli.transcript import TranscriptBuffer, TranscriptEntry, TranscriptLine
@@ -39,8 +45,12 @@ ROLE_LABELS = {
 ROLE_LABEL_WIDTH = max(len(label) for label in ROLE_LABELS.values())
 INLINE_HEADING_PATTERN = re.compile(r"([^#\n])\s*(#{2,6}\s+)")
 MARKDOWN_SIGNAL_PATTERN = re.compile(
-    r"---\s*#{2,6}\s*|(?:^|\n)\s*#{2,6}\s+|[^#\n]\s*#{2,6}\s+|(?:^|\n)\s*[-*]\s+"
+    r"---\s*#{2,6}\s*|(?:^|\n)\s*#{2,6}\s+|[^#\n]\s*#{2,6}\s+|(?:^|\n)\s*[-*]\s+|"
+    r"(?:^|\n)?\s*\|[^|\n]+\|[^|\n]+\|.*\|\s*:?-{3,}:?\s*\||"
+    r"(?:^|\n)\s*\|[^\n]*\|\s*\n\s*\|(?:\s*:?-{3,}:?\s*\|)+"
 )
+DASH_SEPARATOR_PATTERN = re.compile(r"\s+[-\u2013\u2014]\s+")
+TABLE_SEPARATOR_CELL_PATTERN = re.compile(r":?-{3,}:?")
 
 
 def _clip_cells(text: str, width: int) -> str:
@@ -147,6 +157,7 @@ def _format_agent_markdown_segment(segment: str) -> str:
     segment = re.sub(r"\s*---\s*(?=#{2,6}\s*)", "\n\n", segment)
     segment = INLINE_HEADING_PATTERN.sub(r"\1\n\n\2", segment)
     segment = _expand_compact_heading_lists(segment)
+    segment = _expand_markdown_table_blocks(segment)
 
     cleaned_lines: list[str] = []
     for line in segment.split("\n"):
@@ -157,6 +168,10 @@ def _format_agent_markdown_segment(segment: str) -> str:
 def _expand_compact_heading_lists(segment: str) -> str:
     lines: list[str] = []
     for line in segment.split("\n"):
+        if "|" in line:
+            lines.append(line)
+            continue
+
         match = re.match(r"^(\s*#{2,6}\s+.*?\S)-\s+(.+)$", line)
         if not match:
             lines.append(line)
@@ -180,7 +195,186 @@ def _clean_agent_markdown_line(line: str) -> list[str]:
     stripped = re.sub(r"^#{2,6}\s*", "", stripped)
     stripped = re.sub(r"\*\*([^*]+)\*\*", r"\1", stripped)
     stripped = re.sub(r"^\*\s+", "- ", stripped)
+    table_lines = _format_pipe_table_line(stripped)
+    if table_lines is not None:
+        return table_lines
+    dash_list_lines = _format_dash_separated_bullet_line(stripped)
+    if dash_list_lines is not None:
+        return dash_list_lines
     return [stripped]
+
+
+def _format_dash_separated_bullet_line(stripped: str) -> list[str] | None:
+    if not stripped.startswith("- "):
+        return None
+
+    parts = [
+        part.strip()
+        for part in DASH_SEPARATOR_PATTERN.split(stripped[2:].strip())
+        if part.strip()
+    ]
+    if len(parts) < 3:
+        return None
+
+    lines: list[str] = []
+    for index in range(0, len(parts), 2):
+        label = parts[index]
+        if index + 1 < len(parts):
+            lines.append(f"- {label}: {parts[index + 1]}")
+        else:
+            lines.append(f"- {label}")
+    return lines
+
+
+def _format_pipe_table_line(stripped: str) -> list[str] | None:
+    if stripped.startswith("- ") or "`" in stripped:
+        return None
+    if stripped.count("|") < 2:
+        return None
+
+    prefix = ""
+    table_text = stripped
+    if not stripped.lstrip().startswith("|"):
+        before_pipe, _, after_pipe = stripped.partition("|")
+        if before_pipe.strip():
+            prefix = before_pipe.strip()
+            table_text = f"|{after_pipe}"
+
+    cells = _pipe_cells(table_text)
+    if len(cells) < 2:
+        return [prefix] if prefix else None
+
+    lines: list[str] = [prefix] if prefix else []
+    separator_index = next(
+        (
+            index
+            for index, cell in enumerate(cells)
+            if _is_table_separator_cell(cell)
+        ),
+        None,
+    )
+    if separator_index is not None:
+        if separator_index == 0:
+            return lines or [""]
+        column_count = separator_index
+        header = cells[:column_count]
+        data_cells = [
+            cell
+            for cell in cells[separator_index:]
+            if not _is_table_separator_cell(cell)
+        ]
+        rows = [header]
+        rows.extend(_chunk_cells(data_cells, column_count))
+        lines.extend(_render_table_rows(rows))
+        return lines
+
+    return None
+
+
+def _expand_markdown_table_blocks(segment: str) -> str:
+    lines = segment.split("\n")
+    expanded: list[str] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if (
+            index + 1 < len(lines)
+            and _is_pipe_table_row(line)
+            and _is_pipe_separator_row(lines[index + 1])
+        ):
+            rows = [_pipe_cells(line)]
+            index += 2
+            while (
+                index < len(lines)
+                and _is_pipe_table_row(lines[index])
+                and not _is_pipe_separator_row(lines[index])
+            ):
+                rows.append(_pipe_cells(lines[index]))
+                index += 1
+            expanded.extend(_render_table_rows(rows))
+            continue
+
+        expanded.append(line)
+        index += 1
+    return "\n".join(expanded)
+
+
+def _pipe_cells(line: str) -> list[str]:
+    return [cell.strip() for cell in line.strip().strip("|").split("|")]
+
+
+def _is_pipe_table_row(line: str) -> bool:
+    stripped = line.strip()
+    return stripped.startswith("|") and stripped.count("|") >= 2
+
+
+def _is_pipe_separator_row(line: str) -> bool:
+    if not _is_pipe_table_row(line):
+        return False
+    cells = _pipe_cells(line)
+    return bool(cells) and all(_is_table_separator_cell(cell) for cell in cells)
+
+
+def _is_table_separator_cell(cell: str) -> bool:
+    compact = cell.replace(" ", "")
+    return bool(TABLE_SEPARATOR_CELL_PATTERN.fullmatch(compact))
+
+
+def _chunk_cells(cells: list[str], column_count: int) -> list[list[str]]:
+    rows: list[list[str]] = []
+    for index in range(0, len(cells), column_count):
+        row = cells[index : index + column_count]
+        if row:
+            rows.append(row)
+    return rows
+
+
+def _render_table_rows(rows: list[list[str]]) -> list[str]:
+    if not rows:
+        return []
+
+    column_count = max(len(row) for row in rows)
+    widths = [
+        min(
+            24,
+            max(
+                (get_cwidth(row[index]) for row in rows if index < len(row)),
+                default=0,
+            ),
+        )
+        for index in range(column_count)
+    ]
+
+    rendered: list[str] = []
+    for row in rows:
+        padded_cells: list[str] = []
+        for index, cell in enumerate(row):
+            if index == len(row) - 1:
+                padded_cells.append(cell)
+            else:
+                padded_cells.append(_pad_cells(cell, widths[index]))
+        rendered.append("  ".join(padded_cells).rstrip())
+    return rendered
+
+
+class _ChatBodyControl(FormattedTextControl):
+    def __init__(self, text: Any, scroll_lines: Callable[[int], Any]) -> None:
+        super().__init__(text)
+        self._scroll_lines_callback = scroll_lines
+
+    def mouse_handler(self, mouse_event):
+        result = super().mouse_handler(mouse_event)
+        if result is not NotImplemented:
+            return result
+
+        event_type = getattr(mouse_event, "event_type", None)
+        if event_type == MouseEventType.SCROLL_UP:
+            self._scroll_lines_callback(-SCROLL_LINES_PER_WHEEL_EVENT)
+            return None
+        if event_type == MouseEventType.SCROLL_DOWN:
+            self._scroll_lines_callback(SCROLL_LINES_PER_WHEEL_EVENT)
+            return None
+        return NotImplemented
 
 
 class ChatWindowController:
@@ -409,7 +603,7 @@ class ChatWindowController:
                 self._ask_future = None
 
     def _build_layout(self) -> Layout:
-        self._body_control = FormattedTextControl(self._body_text)
+        self._body_control = _ChatBodyControl(self._body_text, self._scroll_lines)
         body = Window(content=self._body_control, wrap_lines=False)
         self._input_field = TextArea(
             height=self.input_controller.input_height_for_text(""),
@@ -713,11 +907,13 @@ class ChatWindowController:
             return [_clip_cells(prefix.rstrip(), width)]
 
         content_width = width - prefix_width
-        wrapped = _wrap_cells(text, content_width)
+        continuation_indent = 2 if text.startswith("- ") and content_width > 2 else 0
+        wrap_width = max(1, content_width - continuation_indent)
+        wrapped = _wrap_cells(text, wrap_width)
         lines = [f"{prefix}{wrapped[0]}"]
         continuation = self._continuation_prefix()
         for segment in wrapped[1:]:
-            lines.append(f"{continuation}{segment}")
+            lines.append(f"{continuation}{' ' * continuation_indent}{segment}")
         return [_clip_cells(line, width) for line in lines]
 
     def _place_unread_marker(
@@ -820,7 +1016,7 @@ class ChatWindowController:
             self.append_user_input(normalized)
             self._finish_pending_ask(normalized)
             return
-        if self._agent_running:
+        if self._agent_running and not is_immediate_chat_command(normalized):
             self._queue_submission(normalized)
         if self._on_submit is not None:
             self._call_background(self._on_submit, normalized)

@@ -27,7 +27,7 @@ from myagent.agent.engine import (
 )
 from myagent.agent.runtime_status import RuntimeStatusModel
 from myagent.cli.chat_window import ChatWindowController
-from myagent.cli.commands import CommandResult
+from myagent.cli.commands import CommandDispatcher, CommandResult
 from myagent.cli.renderer import Renderer
 from myagent.cli.repl import REPLEngine
 from myagent.cli.rich_capture import capture_renderable, sanitize_terminal_text
@@ -930,6 +930,52 @@ async def test_chat_submission_routes_slash_command_after_appending_user_turn():
         ("user", "/mode think-high"),
         ("system", "Thinking mode: think-high"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_chat_goal_command_bypasses_pending_submission_queue():
+    class FakeGoalTracker:
+        def __init__(self):
+            self.goal = None
+
+        def get_goal(self):
+            return self.goal
+
+        def set_goal(self, goal):
+            self.goal = goal
+
+        def clear_goal(self):
+            self.goal = None
+
+    transcript = TranscriptBuffer()
+    model = RuntimeStatusModel()
+    goal_tracker = FakeGoalTracker()
+    engine = SimpleNamespace(goal_tracker=goal_tracker, skill_registry=None)
+    chat = make_real_chat_controller(transcript=transcript)
+    repl = active_chat_repl(
+        chat,
+        commands=CommandDispatcher(),
+        engine=engine,
+        status_model=model,
+    )
+    repl._current_session = SimpleNamespace(id="session-1")
+    repl._chat_submission_lock = asyncio.Lock()
+    await repl._chat_submission_lock.acquire()
+
+    try:
+        await asyncio.wait_for(repl._submit_chat_input("/goal ship it"), timeout=0.2)
+    finally:
+        repl._chat_submission_lock.release()
+
+    entries = transcript_entries(transcript)
+    assert [(entry.role, entry.plain_text) for entry in entries] == [
+        ("system", "Goal set: ship it"),
+    ]
+    snapshot = model.snapshot()
+    assert goal_tracker.goal == "ship it"
+    assert snapshot.goal.name == "ship it"
+    assert snapshot.goal.active is True
+    assert snapshot.goal.waiting_for_user is False
 
 
 @pytest.mark.asyncio

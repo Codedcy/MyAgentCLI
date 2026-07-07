@@ -86,7 +86,7 @@ Default bindings:
 - `F2`: toggle Inspector full/rail state.
 - `Ctrl+C`: interrupt the running agent when a run is active; clear current input or ask exit confirmation when idle, preserving existing semantics.
 - `Ctrl+D`: exit when input is empty.
-- `PageUp/PageDown`, mouse wheel: scroll conversation history.
+- `PageUp/PageDown`, mouse wheel over the conversation body: scroll conversation history.
 - `Home/End` inside input keeps normal input editing semantics; scroll-specific bindings should not steal ordinary text editing keys.
 
 The input box defaults to one visual line and can grow up to six visual lines before scrolling internally. Very long input should scroll inside the input box, not resize the bottom bar enough to hide the transcript.
@@ -101,8 +101,8 @@ The conversation pane is an independent viewport:
 - a small unread/new-output marker can appear when output arrives while scrolled away from bottom;
 - all transcript text is wrapped to the available terminal cell width before clipping, so long CJK/emoji/ASCII lines stay inside pane boundaries;
 - role labels are aligned (`You |`, `Agent |`, `System |`, `Tool |`) and role changes may include a blank visual separator for readability;
-- assistant replies may receive display-only Markdown-ish cleanup for common compact headings, bold markers, horizontal separators, and bullet lists; this improves readability without changing persisted transcript text;
-- submissions made while an agent turn is active remain in a visible queue until their own turn starts, preventing queued questions from visually pairing with the wrong answer;
+- assistant replies may receive display-only Markdown-ish cleanup for common compact headings, bold markers, horizontal separators, bullet lists, compact term lists, and simple tables; this improves readability without changing persisted transcript text;
+- submissions made while an agent turn is active remain in a visible queue until their own turn starts, preventing queued questions from visually pairing with the wrong answer; immediate control commands such as `/goal <text>` do not queue and do not append a user turn;
 - clearing the screen clears the transcript viewport for the current UI session while preserving session persistence behavior already defined by commands.
 
 ## Configuration
@@ -156,10 +156,10 @@ Required tests:
 - startup wiring tests proving one-shot commands skip chat window and interactive REPL uses it by default;
 - layout tests for wide, narrow, and minimum terminal sizes;
 - layout tests proving pane boundaries are drawn and long transcript lines wrap within terminal cell width;
-- formatting tests proving compact assistant Markdown-ish text is split into readable headings and list lines while existing code fences remain intact;
+- formatting tests proving compact assistant Markdown-ish text is split into readable headings, list lines, term lists, and table rows while existing code fences remain intact;
 - input tests for Enter submit, multiline insert, Tab completion, `F2`, `Ctrl+C`, and `Ctrl+D`;
-- scroll tests for mouse wheel/PageUp/PageDown, auto-follow at bottom, and no auto-yank when scrolled up;
-- queue tests proving submissions made during an active agent turn are visible as pending and move into the transcript only when processing starts;
+- scroll tests for mouse wheel over the conversation body, PageUp/PageDown, auto-follow at bottom, and no auto-yank when scrolled up;
+- queue tests proving submissions made during an active agent turn are visible as pending and move into the transcript only when processing starts, while `/goal <text>` applies immediately as a system/status update;
 - engine integration tests proving streamed text, Rich panels, tool events, errors, and `StatusUpdate` route to the correct sinks;
 - fallback tests for full-screen startup/render failure;
 - regression tests proving no second Rich `Live` owner appears in chat-window mode.

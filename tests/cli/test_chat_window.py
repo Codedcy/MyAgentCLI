@@ -7,6 +7,7 @@ from unittest.mock import Mock
 
 import pytest
 from prompt_toolkit.keys import Keys
+from prompt_toolkit.mouse_events import MouseEventType
 from prompt_toolkit.utils import get_cwidth
 from rich.panel import Panel
 
@@ -289,6 +290,93 @@ def test_agent_inline_heading_without_rule_gets_readable_breaks() -> None:
     assert all("###" not in line for line in lines)
 
 
+def test_agent_dash_separated_feature_list_gets_readable_item_lines() -> None:
+    controller = make_controller(status_pane=EmptyStatusPane())
+    controller.append_output(
+        "### Files\n"
+        "- Read - Inspect any file contents - Write - Create or overwrite files "
+        "- Search - Find content with regex"
+    )
+
+    lines = controller._conversation_lines(height=10, width=72)
+
+    assert any("Agent  | Files" in line for line in lines)
+    assert any("       | - Read: Inspect any file contents" in line for line in lines)
+    assert any("       | - Write: Create or overwrite files" in line for line in lines)
+    assert any("       | - Search: Find content with regex" in line for line in lines)
+    assert not any("Read - Inspect any file contents - Write" in line for line in lines)
+
+
+def test_agent_collapsed_markdown_table_gets_readable_rows() -> None:
+    controller = make_controller(status_pane=EmptyStatusPane())
+    controller.append_output(
+        "### Use cases | Scenario | I can do | --- | --- | Code | Create features | "
+        "Review | Find bugs | Docs | Write README |"
+    )
+
+    lines = controller._conversation_lines(height=10, width=80)
+
+    assert any("Agent  | Use cases" in line for line in lines)
+    assert any("Scenario" in line and "I can do" in line for line in lines)
+    assert any("Code" in line and "Create features" in line for line in lines)
+    assert any("Review" in line and "Find bugs" in line for line in lines)
+    assert any("Docs" in line and "Write README" in line for line in lines)
+    assert not any("---" in line or "| ---" in line for line in lines)
+
+
+def test_agent_pure_collapsed_markdown_table_gets_readable_rows() -> None:
+    controller = make_controller(status_pane=EmptyStatusPane())
+    controller.append_output(
+        "| Scenario | I can do | --- | --- | Code | Create features | "
+        "Review | Find bugs |"
+    )
+
+    lines = controller._conversation_lines(height=8, width=80)
+
+    assert any("Agent  | Scenario" in line and "I can do" in line for line in lines)
+    assert any("       | Code" in line and "Create features" in line for line in lines)
+    assert any("       | Review" in line and "Find bugs" in line for line in lines)
+    assert not any("---" in line or "| ---" in line for line in lines)
+
+
+def test_agent_shell_pipeline_bullet_stays_literal() -> None:
+    controller = make_controller(status_pane=EmptyStatusPane())
+    controller.append_output("- Run `cat log.txt | grep error | sort`")
+
+    lines = controller._conversation_lines(height=4, width=90)
+
+    assert any("Agent  | - Run `cat log.txt | grep error | sort`" in line for line in lines)
+    assert not any("grep error | sort" in line for line in lines if "cat log" not in line)
+
+
+def test_agent_plain_pipe_text_after_heading_stays_literal() -> None:
+    controller = make_controller(status_pane=EmptyStatusPane())
+    controller.append_output("### Notes\nRun cat log.txt | grep error | sort")
+
+    lines = controller._conversation_lines(height=6, width=90)
+
+    assert any("Agent  | Notes" in line for line in lines)
+    assert any("       | Run cat log.txt | grep error | sort" in line for line in lines)
+    assert not any("grep error | sort" in line for line in lines if "Run cat" not in line)
+
+
+def test_agent_standard_markdown_table_gets_readable_rows() -> None:
+    controller = make_controller(status_pane=EmptyStatusPane())
+    controller.append_output(
+        "| Scenario | I can do |\n"
+        "| --- | --- |\n"
+        "| Code | Create features |\n"
+        "| Review | Find bugs |"
+    )
+
+    lines = controller._conversation_lines(height=8, width=80)
+
+    assert any("Agent  | Scenario" in line and "I can do" in line for line in lines)
+    assert any("       | Code" in line and "Create features" in line for line in lines)
+    assert any("       | Review" in line and "Find bugs" in line for line in lines)
+    assert not any("---" in line for line in lines)
+
+
 def test_agent_existing_markdown_line_breaks_stay_readable() -> None:
     controller = make_controller(status_pane=EmptyStatusPane())
     controller.append_output(
@@ -400,6 +488,18 @@ def test_submissions_waiting_for_agent_are_visible_as_queue() -> None:
     assert not any("Queue  |" in line for line in controller._conversation_lines(6, 60))
 
 
+def test_goal_submission_during_agent_run_does_not_enter_visible_queue() -> None:
+    submitted: list[str] = []
+    controller = make_controller(status_pane=EmptyStatusPane())
+    controller._on_submit = submitted.append
+    controller.set_agent_running(True)
+
+    controller._handle_submit("/goal ship it")
+
+    assert submitted == ["/goal ship it"]
+    assert not any("Queue  |" in line for line in controller._conversation_lines(6, 60))
+
+
 def test_long_queued_submission_preserves_queue_header_in_small_viewport() -> None:
     controller = make_controller(status_pane=EmptyStatusPane())
     controller.set_agent_running(True)
@@ -475,6 +575,26 @@ def test_page_and_wheel_actions_move_transcript_viewport_and_refresh() -> None:
     controller._scroll_lines(3)
     assert visible_text(transcript, 3) == ["line-5", "line-6", "line-7"]
     assert transcript.unread_count == 0
+
+
+def test_mouse_wheel_on_body_scrolls_visual_transcript() -> None:
+    transcript = TranscriptBuffer()
+    controller = make_controller(transcript=transcript, status_pane=EmptyStatusPane())
+    controller._build_layout()
+    for index in range(8):
+        controller.append_output(f"line-{index}")
+    controller._render_body_for_size(terminal_columns=100, terminal_rows=5)
+
+    event = SimpleNamespace(
+        event_type=MouseEventType.SCROLL_UP,
+        position=SimpleNamespace(x=0, y=0),
+    )
+    result = controller._body_control.mouse_handler(event)
+    scrolled = controller._render_body_for_size(terminal_columns=100, terminal_rows=5)
+
+    assert result is None
+    assert "line-2" in scrolled
+    assert "line-7" not in scrolled
 
 
 def test_scroll_moves_within_single_multiline_transcript_entry() -> None:

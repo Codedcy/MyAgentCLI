@@ -1,9 +1,10 @@
 """Tests for GoalTracker."""
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from myagent.agent.goal import GoalTracker, GoalCheckResult
+import pytest
+
+from myagent.agent.goal import GoalTracker
 
 
 @pytest.mark.asyncio
@@ -27,10 +28,17 @@ async def test_check_goal_no_goal_returns_false():
 @pytest.mark.asyncio
 async def test_set_clear_goal():
     tracker = GoalTracker()
+    assert tracker.get_goal_snapshot() == (None, 0)
     tracker.set_goal("Test goal")
     assert tracker.get_goal() == "Test goal"
+    goal, version = tracker.get_goal_snapshot()
+    assert goal == "Test goal"
+    assert version == 1
+    assert tracker.is_current_goal(goal, version) is True
     tracker.clear_goal()
     assert tracker.get_goal() is None
+    assert tracker.is_current_goal(goal, version) is False
+    assert tracker.get_goal_snapshot() == (None, 2)
 
 
 @pytest.mark.asyncio

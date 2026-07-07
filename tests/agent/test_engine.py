@@ -14,7 +14,7 @@ from myagent.agent.engine import (
     TextChunk,
     ToolCallEnd,
 )
-from myagent.agent.goal import GoalCheckResult
+from myagent.agent.goal import GoalCheckResult, GoalTracker
 from myagent.context.builder import LLMRequest
 from myagent.tools.base import ToolResult
 
@@ -436,6 +436,53 @@ async def test_react_loop_yields_goal_status_when_goal_remains_open():
     assert [update.data["state"] for update in goal_updates] == ["checking", "open"]
     assert goal_updates[-1].data["active"] is True
     assert goal_updates[-1].data["achieved"] is False
+
+
+@pytest.mark.asyncio
+async def test_react_loop_ignores_stale_goal_check_after_goal_changes():
+    gen1 = _async_gen([FakeTextDelta("Done with old goal"), FakeDone(FakeUsage())])
+    gen2 = _async_gen([FakeTextDelta("Done with new goal"), FakeDone(FakeUsage())])
+    llm = MagicMock()
+    llm.complete = MagicMock(side_effect=[gen1, gen2])
+
+    goal_tracker = GoalTracker()
+    goal_tracker.set_goal("old goal")
+    checked_goals: list[str | None] = []
+
+    async def check_goal(session, messages, goal=None):
+        checked_goals.append(goal)
+        if len(checked_goals) == 1:
+            goal_tracker.set_goal("new goal")
+            return GoalCheckResult(
+                achieved=False,
+                reasoning="old result",
+                remaining_work="old work",
+            )
+        return GoalCheckResult(achieved=True, reasoning="new done")
+
+    goal_tracker.check_goal = check_goal
+    builder = MagicMock()
+    builder.build = AsyncMock(return_value=LLMRequest(
+        system="test", messages=[], tools=[]
+    ))
+
+    engine = AgentEngine(llm=llm, goal_tracker=goal_tracker, context_builder=builder)
+    session = MagicMock()
+    session.get_recent_messages.return_value = []
+    session.id = "test"
+
+    events = [e async for e in engine.run("continue", session)]
+
+    goal_updates = [
+        e for e in events
+        if isinstance(e, StatusUpdate) and e.scope == "goal"
+    ]
+    assert checked_goals == ["old goal", "new goal"]
+    assert [(update.data["name"], update.data["state"]) for update in goal_updates] == [
+        ("old goal", "checking"),
+        ("new goal", "checking"),
+        ("new goal", "achieved"),
+    ]
 
 
 @pytest.mark.asyncio

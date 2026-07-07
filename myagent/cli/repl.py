@@ -11,6 +11,11 @@ from pathlib import Path
 from prompt_toolkit.completion import Completer
 from prompt_toolkit.key_binding import KeyBindings
 
+from myagent.cli.control_commands import (
+    is_immediate_chat_command,
+    slash_command_args,
+    slash_command_name,
+)
 from myagent.cli.layout import AgentLayoutController
 
 logger = logging.getLogger("myagent.cli.repl")
@@ -474,6 +479,26 @@ class REPLEngine:
             goal_waiting_for_user=True,
         )
 
+    def _sync_goal_command_status(self, text: str, ctx) -> None:
+        if slash_command_name(text) != "goal":
+            return
+        if not slash_command_args(text):
+            return
+
+        goal = ctx.goal_tracker.get_goal() if ctx.goal_tracker else None
+        updates = {
+            "name": goal or "",
+            "active": bool(goal),
+            "achieved": False,
+            "waiting_for_user": False,
+        }
+        if self._status_model:
+            self._status_model.update_goal(**updates)
+        self._update_legacy_status_bar(
+            **self._legacy_goal_status_updates(updates)
+        )
+        self._refresh_chat_window()
+
     def _update_health_error(self, message: str) -> None:
         summary = self._short_status_summary(message)
         if self._status_model:
@@ -688,7 +713,10 @@ class REPLEngine:
             set_agent_running(running)
 
     def _submit_chat_input(self, text: str):
-        task = asyncio.create_task(self._process_chat_submission(text))
+        if is_immediate_chat_command(text):
+            task = asyncio.create_task(self._process_immediate_chat_command(text))
+        else:
+            task = asyncio.create_task(self._process_chat_submission(text))
         self._chat_submission_tasks.add(task)
         task.add_done_callback(self._on_chat_submission_done)
         return self._await_chat_submission_task(task)
@@ -765,6 +793,9 @@ class REPLEngine:
         async with self._chat_submission_lock:
             self._mark_chat_submission_started(text)
             await self.process_input(text)
+
+    async def _process_immediate_chat_command(self, text: str) -> None:
+        await self.process_input(text)
 
     def _mark_chat_submission_started(self, text: str) -> None:
         if not self._chat_window_active():
@@ -1098,6 +1129,8 @@ class REPLEngine:
                     dream_engine=self._dream_engine,
                 )
                 result = await self._commands.dispatch(text, ctx)
+                if result.success:
+                    self._sync_goal_command_status(text, ctx)
                 if not self._append_chat_system_output(result.output):
                     self._output_to_console(result.output)
 

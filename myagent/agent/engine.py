@@ -613,7 +613,7 @@ class AgentEngine:
                 return
 
             # ── Goal check ──────────────────────────────────────
-            goal = self.goal_tracker.get_goal() if self.goal_tracker else None
+            goal, goal_version = self._goal_snapshot()
             if goal:
                 yield self._goal_status_update(
                     goal,
@@ -621,7 +621,11 @@ class AgentEngine:
                     achieved=False,
                 )
                 try:
-                    goal_check = await self.goal_tracker.check_goal(session, messages)
+                    goal_check = await self.goal_tracker.check_goal(
+                        session,
+                        messages,
+                        goal=goal,
+                    )
                 except Exception as e:
                     logger.error(
                         "Goal check failed: %s", str(e),
@@ -630,6 +634,9 @@ class AgentEngine:
                     )
                     yield Done()
                     return
+
+                if not self._is_goal_snapshot_current(goal, goal_version):
+                    continue
 
                 if not goal_check.achieved:
                     yield self._goal_status_update(
@@ -743,6 +750,33 @@ class AgentEngine:
         if isinstance(session_id, str) and session_id:
             return ("session_id", session_id)
         return ("session_object", id(session))
+
+    def _goal_snapshot(self) -> tuple[object | None, object | None]:
+        if not self.goal_tracker:
+            return None, None
+
+        get_snapshot = getattr(self.goal_tracker, "get_goal_snapshot", None)
+        if callable(get_snapshot):
+            snapshot = get_snapshot()
+            if isinstance(snapshot, tuple) and len(snapshot) == 2:
+                return snapshot
+
+        return self.goal_tracker.get_goal(), None
+
+    def _is_goal_snapshot_current(
+        self,
+        goal: object | None,
+        version: object | None,
+    ) -> bool:
+        if not self.goal_tracker or version is None:
+            return True
+
+        is_current = getattr(self.goal_tracker, "is_current_goal", None)
+        if callable(is_current):
+            return bool(is_current(goal, version))
+
+        current_goal, current_version = self._goal_snapshot()
+        return current_goal == goal and current_version == version
 
     def _goal_status_update(
         self,

@@ -34,19 +34,28 @@ class GoalTracker:
 
     def __init__(self, llm: LLMProvider | None = None):
         self._goal: str | None = None
+        self._version = 0
         self._llm: LLMProvider | None = llm
 
     def set_goal(self, goal: str) -> None:
         self._goal = goal
+        self._version += 1
 
     def clear_goal(self) -> None:
         self._goal = None
+        self._version += 1
 
     def get_goal(self) -> str | None:
         return self._goal
 
+    def get_goal_snapshot(self) -> tuple[str | None, int]:
+        return self._goal, self._version
+
+    def is_current_goal(self, goal: str | None, version: int) -> bool:
+        return self._goal == goal and self._version == version
+
     async def check_goal(
-        self, session, recent_history: list
+        self, session, recent_history: list, goal: str | None = None
     ) -> GoalCheckResult:
         """Judge if the goal is achieved based on conversation history.
 
@@ -62,7 +71,8 @@ class GoalTracker:
             GoalCheckResult with achieved status, reasoning, and
             optional remaining work description.
         """
-        if not self._goal:
+        goal_text = self._goal if goal is None else goal
+        if not goal_text:
             return GoalCheckResult(achieved=False, reasoning="No goal set")
 
         if self._llm is None:
@@ -72,7 +82,7 @@ class GoalTracker:
             )
 
         try:
-            return await self._llm_check(session, recent_history)
+            return await self._llm_check(session, recent_history, goal_text)
         except Exception:
             logger.exception(
                 "Goal evaluation via LLM failed",
@@ -89,7 +99,12 @@ class GoalTracker:
 
     # ── internal methods ──────────────────────────────────────────
 
-    async def _llm_check(self, session, recent_history: list) -> GoalCheckResult:
+    async def _llm_check(
+        self,
+        session,
+        recent_history: list,
+        goal: str,
+    ) -> GoalCheckResult:
         """Build evaluation prompt, call LLM, and parse the JSON response.
 
         Summarises the last 20 messages from recent_history, sends an
@@ -110,7 +125,7 @@ class GoalTracker:
         )
 
         user_message = (
-            f"Goal: {self._goal}\n\n"
+            f"Goal: {goal}\n\n"
             f"Conversation history summary:\n{history_summary}\n\n"
             "Based on the conversation above, has the goal been achieved? "
             "Respond with JSON only."
@@ -136,7 +151,7 @@ class GoalTracker:
             "Goal evaluation completed",
             extra={
                 "category": "agent",
-                "goal": self._goal[:100],
+                "goal": goal[:100],
                 "collected_chars": len(collected_text),
             },
         )
