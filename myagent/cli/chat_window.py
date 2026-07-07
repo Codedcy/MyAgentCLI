@@ -56,6 +56,16 @@ DASH_SEPARATOR_PATTERN = re.compile(r"\s+[-\u2013\u2014]\s+")
 ORDERED_LIST_MARKER_PATTERN = re.compile(r"(?<!\S)(\d{1,2})\.\s+(?=\S)")
 TABLE_SEPARATOR_CELL_PATTERN = re.compile(r":?-{3,}:?")
 TREE_BRANCH_PATTERN = re.compile(r"\s*(?=[├└]──)")
+DEPENDENCY_GRAPH_TITLE_PATTERN = re.compile(
+    r"^(?P<title>(?:依赖图|依赖关系|Dependency Graph|Dependencies))\s*"
+    r"(?=(?:Phase|阶段|Step|\d))",
+    re.IGNORECASE,
+)
+DEPENDENCY_GRAPH_GAP_PATTERN = re.compile(r"\s{2,}(?=(?:-->|[└├]-->|[└├]))")
+DEPENDENCY_GRAPH_PROSE_JOIN_PATTERN = re.compile(
+    r"(?<=[)）])(?=Phase\s+\d+\s+(?:和|与|and)\b)",
+    re.IGNORECASE,
+)
 
 
 def _clip_cells(text: str, width: int) -> str:
@@ -257,10 +267,37 @@ def _clean_agent_markdown_line(line: str) -> list[str]:
     table_lines = _format_pipe_table_line(stripped)
     if table_lines is not None:
         return table_lines
+    dependency_lines = _format_dependency_graph_line(stripped)
+    if dependency_lines is not None:
+        return dependency_lines
     dash_list_lines = _format_dash_separated_bullet_line(stripped)
     if dash_list_lines is not None:
         return dash_list_lines
     return [stripped]
+
+
+def _format_dependency_graph_line(stripped: str) -> list[str] | None:
+    if "-->" not in stripped:
+        return None
+    if not (
+        "Phase" in stripped
+        or "阶段" in stripped
+        or "依赖图" in stripped
+        or any(symbol in stripped for symbol in ("┐", "┤", "└", "├"))
+    ):
+        return None
+
+    lines: list[str] = []
+    body = stripped
+    title_match = DEPENDENCY_GRAPH_TITLE_PATTERN.match(body)
+    if title_match:
+        lines.append(title_match.group("title").strip())
+        body = body[title_match.end() :].strip()
+
+    body = DEPENDENCY_GRAPH_GAP_PATTERN.sub("\n", body)
+    body = DEPENDENCY_GRAPH_PROSE_JOIN_PATTERN.sub("\n", body)
+    lines.extend(line.strip() for line in body.splitlines() if line.strip())
+    return lines if lines else None
 
 
 def _format_dash_separated_bullet_line(stripped: str) -> list[str] | None:
@@ -499,6 +536,7 @@ class ChatWindowController:
         self._ask_future: asyncio.Future[str | None] | None = None
         self._ask_transient = False
         self._transient_prompt_text: str | None = None
+        self._sanitizing_input_text = False
         self._exit_confirmation_pending = False
         self._queued_submissions: list[str] = []
         self._assistant_stream_sanitizer = StreamingTextSanitizer()
@@ -1787,10 +1825,30 @@ class ChatWindowController:
 
     def _on_input_text_changed(self, buffer: Any) -> None:
         text = getattr(buffer, "text", "") or ""
+        text = self._sanitize_input_buffer_text(buffer, text)
         if text:
             self._cancel_exit_confirmation()
         self._sync_input_height(text)
         self.refresh()
+
+    def _sanitize_input_buffer_text(self, buffer: Any, text: str) -> str:
+        if self._sanitizing_input_text:
+            return text
+
+        sanitized = sanitize_terminal_text(text)
+        if sanitized == text:
+            return text
+
+        cursor_position = getattr(buffer, "cursor_position", len(text))
+        sanitized_prefix = sanitize_terminal_text(text[:cursor_position])
+        self._sanitizing_input_text = True
+        try:
+            buffer.text = sanitized
+            with contextlib.suppress(Exception):
+                buffer.cursor_position = min(len(sanitized_prefix), len(sanitized))
+        finally:
+            self._sanitizing_input_text = False
+        return sanitized
 
     def _sync_input_height(self, text: str | None = None) -> int:
         if text is None:

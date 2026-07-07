@@ -405,6 +405,25 @@ def test_agent_compact_fenced_directory_tree_gets_readable_lines() -> None:
     assert not any("```D:\\code\\test\\├──" in line for line in lines)
 
 
+def test_agent_compact_dependency_graph_gets_readable_lines() -> None:
+    controller = make_controller(status_pane=EmptyStatusPane())
+    controller.append_output(
+        "### 依赖图Phase 1 (骨架) --> Phase 2 (后端) ┐"
+        "                 --> Phase 3 (前端) ┤\n"
+        "└--> Phase 4 (集成)Phase 2 和 Phase 3 可以并行开发。"
+    )
+
+    lines = controller._conversation_lines(height=10, width=120)
+
+    assert any("Agent  | 依赖图" in line for line in lines)
+    assert any("       | Phase 1 (骨架) --> Phase 2 (后端) ┐" in line for line in lines)
+    assert any("       | --> Phase 3 (前端) ┤" in line for line in lines)
+    assert any("       | └--> Phase 4 (集成)" in line for line in lines)
+    assert any("       | Phase 2 和 Phase 3 可以并行开发。" in line for line in lines)
+    assert not any("依赖图Phase" in line for line in lines)
+    assert not any("集成)Phase" in line for line in lines)
+
+
 def test_agent_shell_pipeline_bullet_stays_literal() -> None:
     controller = make_controller(status_pane=EmptyStatusPane())
     controller.append_output("- Run `cat log.txt | grep error | sort`")
@@ -1145,6 +1164,20 @@ def test_live_text_area_height_updates_for_multiline_drafts() -> None:
     controller._input_field.buffer.text = "one\ntwo\nthree\nfour"
     controller._body_text()
     assert controller._input_field.window.height == 3
+
+
+def test_input_text_changed_removes_terminal_mouse_reports_from_buffer() -> None:
+    controller = make_controller(status_pane=EmptyStatusPane())
+    controller._build_layout()
+    assert controller._input_field is not None
+    buffer = controller._input_field.buffer
+    buffer.text = "hello \x1b[<35;64;22M^[[<35;65;22Mworld"
+    buffer.cursor_position = len(buffer.text)
+
+    controller._on_input_text_changed(buffer)
+
+    assert buffer.text == "hello world"
+    assert buffer.cursor_position == len("hello world")
 
 
 def make_config_with_chat_lines(

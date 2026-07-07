@@ -27,6 +27,10 @@ def test_sanitize_display_text_strips_ansi_and_unsafe_controls() -> None:
     assert sanitize_display_text("\x1b[31mred\x1b[0m\x00 ok") == "red ok"
 
 
+def test_sanitize_display_text_strips_literal_sgr_mouse_reports() -> None:
+    assert sanitize_display_text("^[[<35;64;22Mdrag^[[<35;65;22m ok") == "drag ok"
+
+
 def test_streaming_text_sanitizer_buffers_split_terminal_escapes() -> None:
     sanitizer = StreamingTextSanitizer()
 
