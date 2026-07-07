@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from myagent.cli.text_decode import decode_tool_output
 from myagent.tools.base import ToolContext, ToolResult
 
 logger = logging.getLogger("myagent.tools.exec")
@@ -66,9 +67,9 @@ class BashTool:
                 )
 
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_sec)
-            output = stdout.decode("utf-8", errors="replace")
+            output = decode_tool_output(stdout)
             if stderr:
-                error_output = stderr.decode("utf-8", errors="replace")
+                error_output = decode_tool_output(stderr)
                 if error_output:
                     output += "\n[stderr]\n" + error_output
 

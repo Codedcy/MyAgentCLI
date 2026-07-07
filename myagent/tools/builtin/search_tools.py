@@ -14,6 +14,7 @@ import re
 import shutil
 from pathlib import Path
 
+from myagent.cli.text_decode import decode_tool_output
 from myagent.tools.base import ToolContext, ToolResult
 
 logger = logging.getLogger("myagent.tools.search")
@@ -207,10 +208,10 @@ class GrepTool:
                 return ToolResult(output="(no matches)", metadata={"exit_code": 1, "engine": "rg"})
             elif proc.returncode != 0:
                 return ToolResult(
-                    error=stderr.decode().strip(),
+                    error=decode_tool_output(stderr).strip(),
                     metadata={"exit_code": proc.returncode, "engine": "rg"},
                 )
-            output = stdout.decode("utf-8", errors="replace").strip() or "(no matches)"
+            output = decode_tool_output(stdout).strip() or "(no matches)"
 
             # Apply offset and head_limit as global post-processing
             # (rg's -m flag is per-file, not global, so we handle the limit here)

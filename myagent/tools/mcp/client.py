@@ -18,6 +18,8 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
+from myagent.cli.text_decode import decode_tool_output
+
 logger = logging.getLogger("myagent.tools.mcp")
 
 if TYPE_CHECKING:
@@ -140,7 +142,7 @@ class StdioTransport:
                 line = await self._process.stderr.readline()
                 if not line:
                     break
-                decoded = line.decode("utf-8", errors="replace").rstrip()
+                decoded = decode_tool_output(line).rstrip()
                 # Classify severity
                 line_lower = decoded.lower()
                 if any(marker in line_lower for marker in (
@@ -483,7 +485,7 @@ class SSETransport:
         Returns None for comment-only events (no data field) or parse errors.
         Returns MCP Content-Length framed bytes on success.
         """
-        text = event_bytes.decode("utf-8", errors="replace")
+        text = decode_tool_output(event_bytes)
         data_lines: list[str] = []
 
         for line in text.split("\n"):

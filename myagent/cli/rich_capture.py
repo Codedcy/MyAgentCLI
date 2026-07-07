@@ -9,7 +9,7 @@ import traceback
 from rich.console import Console
 from rich.text import Text
 
-from myagent.cli.layout import ANSI_PATTERN, OUTPUT_CONTROL_PATTERN
+from myagent.cli.text_decode import sanitize_display_text
 
 logger = logging.getLogger("myagent.cli.rich_capture")
 
@@ -41,9 +41,7 @@ def capture_many(renderables: list[object], width: int = 100) -> str:
 def sanitize_terminal_text(text: object) -> str:
     """Strip ANSI escapes and unsafe controls while preserving tabs and newlines."""
 
-    plain_text = "" if text is None else str(text)
-    plain_text = ANSI_PATTERN.sub("", plain_text)
-    return OUTPUT_CONTROL_PATTERN.sub("", plain_text)
+    return sanitize_display_text(text)
 
 
 def _normalize_width(width: int) -> int:

@@ -14,6 +14,8 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
+from myagent.cli.text_decode import decode_tool_output
+
 logger = logging.getLogger("myagent.agent.project")
 
 
@@ -171,7 +173,7 @@ class ProjectDetector:
                 cwd=project_dir,
             )
             stdout, _ = await proc.communicate()
-            branch = stdout.decode().strip()
+            branch = decode_tool_output(stdout).strip()
             ctx.git_branch = branch if branch else None
         except (OSError, FileNotFoundError):
             logger.exception(
@@ -192,7 +194,7 @@ class ProjectDetector:
                 cwd=project_dir,
             )
             stdout, _ = await proc.communicate()
-            lines = [line for line in stdout.decode().strip().split("\n") if line]
+            lines = [line for line in decode_tool_output(stdout).strip().split("\n") if line]
             if lines:
                 modified = sum(1 for line in lines if line[1] in "MARC")
                 untracked = sum(1 for line in lines if line.startswith("??"))
@@ -243,7 +245,7 @@ class ProjectDetector:
                     stderr=asyncio.subprocess.PIPE,
                 )
                 stdout, stderr = await proc.communicate()
-                output = (stdout + stderr).decode().strip()
+                output = decode_tool_output(stdout + stderr).strip()
                 # "Python 3.12.3" → "3.12"
                 if output.startswith("Python "):
                     version = output.split()[1]

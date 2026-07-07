@@ -16,6 +16,7 @@ import secrets
 import time
 from pathlib import Path
 
+from myagent.cli.text_decode import decode_tool_output
 from myagent.llm.provider import Done as LLMDone
 from myagent.llm.provider import LLMError
 from myagent.llm.provider import TextDelta as LLMTextDelta
@@ -622,7 +623,7 @@ class SubAgentWorker:
             if proc.returncode != 0:
                 logger.warning(
                     "Failed to create worktree: %s",
-                    stderr.decode("utf-8", errors="replace")[:200],
+                    decode_tool_output(stderr)[:200],
                     extra={"category": "subagent"},
                 )
                 return None
