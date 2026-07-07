@@ -31,4 +31,4 @@ Final review fixes: a32ec95 (8 findings fixed — 3 critical, 5 important/plausi
 |------|--------|---------|-------|
 | Task 1: Syntax Highlighting Helper | complete | d40b83b..46aaae1 | review clean |
 | Task 2: Chat Window Styled Fragments Integration | complete | 46aaae1..23298d8 | review clean |
-| Task 3: Documentation and Final Verification | complete | pending docs commit | pytest 531 passed; touched-file ruff passed; full ruff blocked by existing unrelated test lint |
+| Task 3: Documentation and Final Verification | complete | 7900320 | pytest 531 passed; touched-file ruff passed; full ruff blocked by existing unrelated test lint |
