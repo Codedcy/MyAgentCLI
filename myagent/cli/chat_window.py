@@ -483,7 +483,7 @@ class ChatWindowController:
                 layout=layout,
                 key_bindings=self._key_bindings,
                 full_screen=True,
-                mouse_support=True,
+                mouse_support=self._mouse_support_enabled(),
             )
             started = True
             self._is_running = True
@@ -1300,6 +1300,9 @@ class ChatWindowController:
         if chat_window is not None:
             return chat_window
         return getattr(self.config, "chat_window", self.config)
+
+    def _mouse_support_enabled(self) -> bool:
+        return bool(getattr(self._chat_config(), "mouse_support", False))
 
     def _status_config(self) -> Any:
         ui_config = getattr(self.config, "ui", None)

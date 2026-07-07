@@ -1146,8 +1146,8 @@ messages.
 
 All subprocess, tool, MCP stderr, and UI status text must pass through a
 shared decoding/sanitizing path before display. Byte output is decoded as UTF-8
-first, then the local preferred encoding and Windows console encodings, then
-GB18030, and only then falls back to replacement decoding. UI sanitization strips
+first, then GB18030, then the local preferred encoding and Windows console
+encodings, and only then falls back to replacement decoding. UI sanitization strips
 ANSI/control characters but must not re-encode valid Unicode.
 
 ### Permission Prompt Tray
@@ -1178,3 +1178,12 @@ status line above the input area. The timer starts on the first thinking event
 or at the beginning of an agent run, refreshes while active, and stops when the
 agent starts normal output, calls a tool, asks a user question, finishes, or
 errors.
+
+### Mouse Selection And Copy
+
+The chat window must preserve normal terminal/browser text selection and copy by
+default. Prompt-toolkit mouse reporting is disabled unless the user explicitly
+sets `ui.chat_window.mouse_support: true`. When mouse support is enabled, the
+application may capture mouse drag and wheel events for terminal mouse handling;
+when disabled, keyboard scrolling remains available and the host terminal owns
+selection/copy.

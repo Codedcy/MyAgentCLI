@@ -826,6 +826,7 @@ async def test_run_starts_full_screen_application_and_request_stop_exits_it(
     app = FakeApplication.instances[0]
     assert controller.is_running is True
     assert app.kwargs["full_screen"] is True
+    assert app.kwargs["mouse_support"] is False
     assert "layout" in app.kwargs
     assert "key_bindings" in app.kwargs
 
@@ -834,6 +835,29 @@ async def test_run_starts_full_screen_application_and_request_stop_exits_it(
 
     assert app.exit_calls == 1
     assert controller.is_running is False
+
+
+@pytest.mark.asyncio
+async def test_run_can_opt_into_mouse_support_for_terminal_mouse_events(
+    monkeypatch,
+) -> None:
+    import myagent.cli.chat_window as chat_window
+
+    FakeApplication.instances = []
+    monkeypatch.setattr(chat_window, "Application", FakeApplication)
+    config = make_config()
+    config.ui.chat_window.mouse_support = True
+    controller = make_controller(config=config)
+
+    run_task = asyncio.create_task(controller.run(lambda text: None))
+    while not FakeApplication.instances:
+        await asyncio.sleep(0)
+
+    app = FakeApplication.instances[0]
+    assert app.kwargs["mouse_support"] is True
+
+    controller.request_stop()
+    await run_task
 
 
 @pytest.mark.asyncio
