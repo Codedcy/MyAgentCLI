@@ -64,6 +64,7 @@ class MemoryStore:
 
         fm = self._parse_frontmatter(content)
         fm_name = fm.get("name", path.stem)
+        description = self._description_from_frontmatter(fm)
 
         # Dedup check: look for existing files with the same frontmatter name
         # (from a different path). If found, treat as update (not duplicate).
@@ -91,7 +92,7 @@ class MemoryStore:
 
         mf = MemoryFile(
             name=fm_name,
-            description=fm.get("description", ""),
+            description=description,
             metadata=fm.get("metadata", {}),
             content=body,
             path=path,
@@ -124,7 +125,7 @@ class MemoryStore:
             metadata["links"] = links
         return MemoryFile(
             name=fm.get("name", f.stem),
-            description=fm.get("description", ""),
+            description=self._description_from_frontmatter(fm),
             metadata=metadata,
             content=body,
             path=f,
@@ -172,6 +173,11 @@ class MemoryStore:
     def _body(self, content: str) -> str:
         m = FRONTMATTER_RE.match(content)
         return content[m.end():] if m else content
+
+    @staticmethod
+    def _description_from_frontmatter(fm: dict) -> str:
+        description = fm.get("description") or fm.get("title") or ""
+        return description if isinstance(description, str) else str(description)
 
     async def _find_by_name(self, name: str) -> Path | None:
         """Find a memory file by frontmatter name or stem across both dirs."""
@@ -331,7 +337,7 @@ class MemoryStore:
             content = f.read_text(encoding="utf-8")
             fm = self._parse_frontmatter(content)
             name = fm.get("name", f.stem)
-            desc = fm.get("description", "")
+            desc = self._description_from_frontmatter(fm)
             metadata = fm.get("metadata", {}) if isinstance(fm.get("metadata"), dict) else {}
             mtype = metadata.get("type", "reference")
             updated = metadata.get("updated", "")

@@ -64,6 +64,8 @@ class LLMRequest:
 class ContextBuilder:
     """Assembles six-layer context for LLM API calls."""
 
+    _MEMORY_CONTENT_LIMIT = 1200
+
     # Base L0 system prompt template. {model_description} is dynamically
     # populated at build time from the configured model name.
     # (gap-17-05: replaced static hardcoded model name with dynamic template)
@@ -368,8 +370,22 @@ tool usage limit."""
             return ""
         lines = []
         for m in memories:
-            lines.append(f"- **{m.name}**: {m.description}")
+            description = f": {m.description}" if m.description else ""
+            lines.append(f"- **{m.name}**{description}")
+            excerpt = self._memory_excerpt(m.content)
+            if excerpt:
+                lines.append("  Content:")
+                for line in excerpt.splitlines():
+                    lines.append(f"  {line}" if line else "  ")
         return "\n".join(lines)
+
+    def _memory_excerpt(self, content: str) -> str:
+        text = content.strip()
+        if not text:
+            return ""
+        if len(text) > self._MEMORY_CONTENT_LIMIT:
+            text = text[:self._MEMORY_CONTENT_LIMIT].rstrip() + "\n..."
+        return text
 
     def _format_skills_index(self, skills) -> str:
         if not skills:

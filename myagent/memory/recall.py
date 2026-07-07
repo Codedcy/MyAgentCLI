@@ -9,10 +9,44 @@ Fixes audit #31.
 from __future__ import annotations
 
 import logging
+import re
 
 from myagent.memory.store import MemoryFile, MemoryStore
 
 logger = logging.getLogger("myagent.memory")
+
+
+_ASCII_TOKEN_RE = re.compile(r"[a-z0-9_][a-z0-9_-]*", re.IGNORECASE)
+_CJK_RUN_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+")
+_STOP_WORDS = {
+    "the",
+    "and",
+    "for",
+    "you",
+    "can",
+    "that",
+    "this",
+    "with",
+    "have",
+    "from",
+    "are",
+    "not",
+    "but",
+    "all",
+    "was",
+    "has",
+    "had",
+    "its",
+    "his",
+    "her",
+    "our",
+    "will",
+    "would",
+    "could",
+    "should",
+    "been",
+    "being",
+}
 
 
 # ── embedding helpers (lazy-loaded) ──────────────────────────────
@@ -79,6 +113,28 @@ def _cosine_similarity(a, b) -> float:
     return float(np.dot(a, b) / (a_norm * b_norm))
 
 
+def _keyword_tokens(text: str) -> set[str]:
+    """Extract search tokens for keyword fallback, including CJK n-grams."""
+    tokens: set[str] = set()
+    normalized = text.lower()
+
+    for token in _ASCII_TOKEN_RE.findall(normalized):
+        if len(token) >= 2 and token not in _STOP_WORDS:
+            tokens.add(token)
+
+    for run in _CJK_RUN_RE.findall(text):
+        if len(run) < 2:
+            continue
+        max_n = min(4, len(run))
+        for n in range(2, max_n + 1):
+            for i in range(0, len(run) - n + 1):
+                tokens.add(run[i:i + n])
+        if len(run) <= 8:
+            tokens.add(run)
+
+    return tokens
+
+
 # ── recall ───────────────────────────────────────────────────────
 
 
@@ -105,7 +161,7 @@ async def recall(
     Returns:
         Ranked list of MemoryFile objects, most relevant first.
     """
-    query_tokens = set(query.lower().split())
+    query_tokens = _keyword_tokens(query)
     if not query_tokens:
         return []
 
