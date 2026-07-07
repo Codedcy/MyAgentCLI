@@ -576,6 +576,8 @@ class REPLEngine:
 
         normalized = choice.strip().lower()
         permissions = getattr(self._engine, "permissions", None)
+        if normalized in {"", "a", "allow", "allow once"}:
+            return True
         if normalized in {"d", "deny", "n", "no"}:
             return False
         if normalized in {"y", "yes", "allow all", "yes to all", "all"}:
@@ -583,7 +585,7 @@ class REPLEngine:
             if callable(set_mode):
                 set_mode("allow_all")
             return True
-        return True
+        return False
 
     def _sync_status_from_session(self, session) -> None:
         if not self._status_model or session is None:

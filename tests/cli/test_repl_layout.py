@@ -1943,7 +1943,13 @@ async def test_prompt_with_timeout_uses_chat_window_ask_when_active():
 
 
 @pytest.mark.asyncio
-async def test_permission_confirm_uses_active_chat_prompt_even_when_stdin_is_non_tty():
+async def test_permission_confirm_uses_active_chat_prompt_even_when_stdin_is_non_tty(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "myagent.permissions.controller.sys.stdin",
+        SimpleNamespace(isatty=lambda: False),
+    )
     permissions = PermissionController()
     chat = FakeChatWindowController(ask_response="a")
     repl = active_chat_repl(
@@ -1961,6 +1967,34 @@ async def test_permission_confirm_uses_active_chat_prompt_even_when_stdin_is_non
     assert "git status" in prompt_text
     assert timeout is None
     assert repl._chat_window_loop_active is True
+
+
+@pytest.mark.asyncio
+async def test_permission_confirm_denies_explicit_repl_deny():
+    permissions = PermissionController()
+    chat = FakeChatWindowController(ask_response="d")
+    active_chat_repl(
+        chat,
+        engine=SimpleNamespace(permissions=permissions),
+    )
+
+    allowed = await permissions.confirm("bash", {"command": "git status"})
+
+    assert allowed is False
+
+
+@pytest.mark.asyncio
+async def test_permission_confirm_denies_invalid_repl_response():
+    permissions = PermissionController()
+    chat = FakeChatWindowController(ask_response="maybe")
+    active_chat_repl(
+        chat,
+        engine=SimpleNamespace(permissions=permissions),
+    )
+
+    allowed = await permissions.confirm("bash", {"command": "git status"})
+
+    assert allowed is False
 
 
 @pytest.mark.asyncio
