@@ -40,7 +40,7 @@
 **Interfaces:**
 - Produces: `Fragment = tuple[str, str]`
 - Produces: `StyledLine(plain: str, fragments: list[Fragment])`
-- Produces: `CodeFenceSegment(is_code: bool, language: str, text: str)`
+- Produces: `CodeFenceSegment(is_code: bool, language: str, fence_language: str, text: str)`
 - Produces: `normalize_language(language: str) -> str | None`
 - Produces: `split_fenced_code_blocks(text: str) -> list[CodeFenceSegment]`
 - Produces: `highlight_transcript_text(text: str, *, enabled: bool) -> list[StyledLine]`
@@ -83,10 +83,13 @@ def test_split_fenced_code_blocks_preserves_prose_and_code() -> None:
 
     segments = split_fenced_code_blocks(text)
 
-    assert [(segment.is_code, segment.language) for segment in segments] == [
-        (False, ""),
-        (True, "python"),
-        (False, ""),
+    assert [
+        (segment.is_code, segment.language, segment.fence_language)
+        for segment in segments
+    ] == [
+        (False, "", ""),
+        (True, "python", "python"),
+        (False, "", ""),
     ]
     assert segments[0].text == "before\n"
     assert segments[1].text == "def run():\n    return 1\n"
@@ -216,6 +219,7 @@ LANGUAGE_ALIASES = {
 class CodeFenceSegment:
     is_code: bool
     language: str
+    fence_language: str
     text: str
 
 
@@ -252,13 +256,21 @@ def split_fenced_code_blocks(text: str) -> list[CodeFenceSegment]:
     cursor = 0
     for match in FENCE_PATTERN.finditer(text):
         if match.start() > cursor:
-            segments.append(CodeFenceSegment(False, "", text[cursor : match.start()]))
-        language = normalize_language(match.group(1) or "text") or ""
-        segments.append(CodeFenceSegment(True, language, match.group(2)))
+            segments.append(CodeFenceSegment(False, "", "", text[cursor : match.start()]))
+        fence_language = (match.group(1) or "text").strip()
+        language = normalize_language(fence_language) or ""
+        segments.append(
+            CodeFenceSegment(
+                True,
+                language,
+                fence_language,
+                match.group(2),
+            )
+        )
         cursor = match.end()
     if cursor < len(text):
-        segments.append(CodeFenceSegment(False, "", text[cursor:]))
-    return segments or [CodeFenceSegment(False, "", "")]
+        segments.append(CodeFenceSegment(False, "", "", text[cursor:]))
+    return segments or [CodeFenceSegment(False, "", "", "")]
 
 
 def highlight_transcript_text(text: str, *, enabled: bool) -> list[StyledLine]:
@@ -270,7 +282,8 @@ def highlight_transcript_text(text: str, *, enabled: bool) -> list[StyledLine]:
         if not segment.is_code:
             lines.extend(_plain_lines(segment.text))
             continue
-        lines.append(StyledLine(f"```{segment.language or 'text'}", [("", f"```{segment.language or 'text'}")]))
+        fence_header = f"```{segment.fence_language or 'text'}"
+        lines.append(StyledLine(fence_header, [("", fence_header)]))
         if segment.language:
             lines.extend(_highlight_code(segment.text, segment.language))
         else:
