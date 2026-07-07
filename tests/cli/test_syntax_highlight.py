@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from prompt_toolkit.styles import Style
+
 from myagent.cli.syntax_highlight import (
     Fragment,
     StyledLine,
@@ -94,6 +96,16 @@ def test_python_code_block_highlights_keywords_comments_strings_and_numbers() ->
     assert any("bold" in style and token == "def" for style, token in fragments)
     assert any("green" in style and token == '"hi"' for style, token in fragments)
     assert any("magenta" in style and token == "42" for style, token in fragments)
+
+
+def test_emitted_styles_are_valid_prompt_toolkit_styles() -> None:
+    text = "```python\n# note\ndef greet():\n    return \"hi\", 42\n```"
+
+    fragments = flatten(highlight_transcript_text(text, enabled=True))
+
+    for index, (style, _token) in enumerate(fragments):
+        if style:
+            Style.from_dict({f"fragment-{index}": style})
 
 
 def test_sql_code_block_highlights_sql_keywords_and_comments() -> None:

@@ -23,7 +23,7 @@ KEYWORD_STYLE = "bold cyan"
 TYPE_STYLE = "cyan"
 STRING_STYLE = "green"
 NUMBER_STYLE = "magenta"
-COMMENT_STYLE = "italic brightblack"
+COMMENT_STYLE = "italic ansibrightblack"
 NAME_STYLE = "yellow"
 
 LANGUAGE_ALIASES = {
