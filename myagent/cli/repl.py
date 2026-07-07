@@ -238,11 +238,18 @@ class REPLEngine:
         self._done_usage_session_total: int | None = None
         # Skill name to inject into the next engine run (gap-2-01).
         self._active_skill: str | None = None
+        self._configure_permission_prompts()
 
     def _create_console(self):
         from rich.console import Console
 
         return Console()
+
+    def _configure_permission_prompts(self) -> None:
+        permissions = getattr(self._engine, "permissions", None)
+        set_confirm_handler = getattr(permissions, "set_confirm_handler", None)
+        if callable(set_confirm_handler):
+            set_confirm_handler(self._confirm_permission_request)
 
     def _create_layout_controller(self):
         if self._status_pane is None:
@@ -514,6 +521,69 @@ class REPLEngine:
         if len(text) <= max_chars:
             return text
         return text[: max_chars - 3].rstrip() + "..."
+
+    def _format_permission_prompt(
+        self,
+        tool_name: str,
+        params: dict | None,
+        *,
+        level_name: str,
+    ) -> str:
+        prompt_lines = [
+            f"Permission required for tool: {tool_name}",
+            f"Level: {level_name}",
+        ]
+        params = params or {}
+        if params:
+            prompt_lines.append("Params:")
+            for key, value in params.items():
+                value_text = self._short_status_summary(value, max_chars=120)
+                prompt_lines.append(f"  {key}: {value_text}")
+        else:
+            prompt_lines.append("Params: (none)")
+        prompt_lines.append("")
+        prompt_lines.append("[A] allow once  [D] deny  [Y] allow all")
+        prompt_lines.append("Choice: ")
+        return "\n".join(prompt_lines)
+
+    def _set_permission_waiting(self, tool_name: str, waiting: bool) -> None:
+        if self._status_model:
+            self._status_model.update_tool(tool_name, permission_waiting=waiting)
+        self._update_legacy_status_bar(tool_permission_waiting=waiting)
+        self._refresh_chat_window()
+
+    async def _confirm_permission_request(
+        self,
+        tool_name: str,
+        params: dict,
+        level: int,
+        level_name: str,
+    ) -> bool:
+        del level
+        prompt_text = self._format_permission_prompt(
+            tool_name,
+            params,
+            level_name=level_name,
+        )
+        self._set_permission_waiting(tool_name, True)
+        try:
+            choice = await self._prompt_with_timeout(prompt_text, timeout=None)
+        finally:
+            self._set_permission_waiting(tool_name, False)
+
+        if choice is None:
+            return False
+
+        normalized = choice.strip().lower()
+        permissions = getattr(self._engine, "permissions", None)
+        if normalized in {"d", "deny", "n", "no"}:
+            return False
+        if normalized in {"y", "yes", "allow all", "yes to all", "all"}:
+            set_mode = getattr(permissions, "set_mode", None)
+            if callable(set_mode):
+                set_mode("allow_all")
+            return True
+        return True
 
     def _sync_status_from_session(self, session) -> None:
         if not self._status_model or session is None:
@@ -1304,11 +1374,16 @@ class REPLEngine:
         else:
             self._output_system_message(f"Echo: {text}")
 
-    async def _prompt_with_timeout(self, prompt_text: str, timeout: float) -> str | None:
-        """Prompt the user with a timeout. Returns the response or None if timed out.
+    async def _prompt_with_timeout(
+        self,
+        prompt_text: str,
+        timeout: float | None,
+    ) -> str | None:
+        """Prompt the user. Returns the response or None if a timed prompt expires.
 
         Uses asyncio.wait_for with the event loop. Falls back to regular
-        input if prompt_toolkit is not available.
+        input if prompt_toolkit is not available. A timeout of None waits
+        indefinitely for the response.
         """
         if self._chat_window_active():
             ask = getattr(self._chat_window, "ask", None)

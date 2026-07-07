@@ -12,9 +12,11 @@ Design doc reference: §五 权限/沙箱系统
 from __future__ import annotations
 
 import fnmatch
+import inspect
 import logging
 import sys
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import Enum
 from typing import Literal
@@ -82,6 +84,9 @@ class PermissionController:
             commands=["sudo", "rm -rf /"],
         )
         self._skip_all = False
+        self._confirm_handler: (
+            Callable[[str, dict, int, str], Awaitable[bool] | bool] | None
+        ) = None
         self._runtime_changes: list[dict] = []
 
     def skip_all(self, value: bool = True) -> None:
@@ -91,6 +96,14 @@ class PermissionController:
     def set_mode(self, mode: Literal["ask", "allow_all"]) -> None:
         """Switch default mode at runtime."""
         self.default_mode = mode
+
+    def set_confirm_handler(
+        self,
+        handler: Callable[[str, dict, int, str], Awaitable[bool] | bool] | None,
+    ) -> None:
+        """Register an interactive confirmation handler provided by the UI layer."""
+
+        self._confirm_handler = handler
 
     def apply_runtime_rule(self, rule: str) -> None:
         """Parse natural-language rule into allow/deny lists.
@@ -237,6 +250,24 @@ class PermissionController:
         level = self._get_level(tool_name)
         level_names = {0: "read", 1: "write", 2: "exec", 3: "network_write"}
         level_name = level_names.get(level, f"L{level}")
+
+        if self._confirm_handler is not None:
+            try:
+                result = self._confirm_handler(tool_name, params, level, level_name)
+                if inspect.isawaitable(result):
+                    result = await result
+                return bool(result)
+            except Exception:
+                logger.exception(
+                    "Injected permission prompt handler failed for %s",
+                    tool_name,
+                    extra={
+                        "category": "error",
+                        "component": "system",
+                        "context": f"permission_prompt_handler:{tool_name}",
+                    },
+                )
+                return False
 
         # Non-interactive environment (tests, CI, piped stdin)
         # gap-20-07: Deny instead of auto-allowing. The spec requires

@@ -582,7 +582,7 @@ class ChatWindowController:
         self._agent_running = bool(running)
         self.refresh()
 
-    async def ask(self, prompt: str, timeout: float) -> str | None:
+    async def ask(self, prompt: str, timeout: float | None) -> str | None:
         """Ask for one response through the bottom input."""
 
         if self._ask_future is not None and not self._ask_future.done():
