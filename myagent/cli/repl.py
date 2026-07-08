@@ -1121,7 +1121,11 @@ class REPLEngine:
             return
         next_text = pop_next()
         if next_text:
-            self._submit_chat_input(next_text)
+            result = self._submit_chat_input(next_text)
+            if isinstance(result, asyncio.Future):
+                return
+            if hasattr(result, "__await__"):
+                asyncio.create_task(result)
 
     async def _drain_chat_submission_tasks(self, *, cancel: bool) -> None:
         if cancel:

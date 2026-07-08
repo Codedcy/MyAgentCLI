@@ -115,7 +115,7 @@ class TestUIConfig:
         assert c.chat_window.input_min_lines == 1
         assert c.chat_window.input_max_lines == 6
         assert c.chat_window.follow_output == "auto"
-        assert c.chat_window.mouse_support is False
+        assert c.chat_window.mouse_support is True
         assert c.show_status_bar is True
         assert "subagents" in c.status_bar_items
         assert c.streaming is True

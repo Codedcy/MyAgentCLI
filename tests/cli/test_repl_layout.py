@@ -1316,6 +1316,51 @@ async def test_chat_submissions_are_serialized_and_preserve_active_engine_task()
 
 
 @pytest.mark.asyncio
+async def test_queued_chat_submission_autostarts_after_active_turn_finishes():
+    class ControlledEngine:
+        def __init__(self):
+            self.interrupt_event = SimpleNamespace(clear=lambda: None)
+            self.started = []
+            self.first_started = asyncio.Event()
+            self.second_started = asyncio.Event()
+            self.release_first = asyncio.Event()
+
+        async def run(self, text, session, active_skill=None):
+            self.started.append(text)
+            if text == "first":
+                self.first_started.set()
+                yield TextChunk("first answer")
+                await self.release_first.wait()
+                yield Done()
+                return
+
+            self.second_started.set()
+            yield TextChunk("second answer")
+            yield Done()
+
+    transcript = TranscriptBuffer()
+    chat = make_real_chat_controller(transcript=transcript)
+    engine = ControlledEngine()
+    repl = active_chat_repl(chat, engine=engine, renderer=Renderer())
+    repl._current_session = SimpleNamespace(id="session-1")
+
+    first_task = asyncio.create_task(repl._submit_chat_input("first"))
+    await asyncio.wait_for(engine.first_started.wait(), timeout=1.0)
+
+    chat._handle_submit("second")
+    queued_lines = chat._conversation_lines(height=5, width=80)
+    assert any("1. second" in line for line in queued_lines)
+
+    engine.release_first.set()
+    await asyncio.wait_for(engine.second_started.wait(), timeout=1.0)
+    await asyncio.wait_for(first_task, timeout=1.0)
+    await repl._drain_chat_submission_tasks(cancel=False)
+
+    assert engine.started == ["first", "second"]
+    assert chat.pop_next_queued_submission() is None
+
+
+@pytest.mark.asyncio
 async def test_chat_submission_appends_user_turn_only_when_processing_starts():
     class ControlledEngine:
         def __init__(self):

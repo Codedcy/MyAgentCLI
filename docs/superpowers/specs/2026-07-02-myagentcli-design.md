@@ -1209,11 +1209,11 @@ errors.
 
 ### Mouse Wheel, Selection, And Copy
 
-The chat window disables prompt-toolkit mouse reporting by default
-(`ui.chat_window.mouse_support: false`) so Windows terminals do not echo SGR
-mouse reports into the input buffer as literal text. Users can explicitly set
-`ui.chat_window.mouse_support: true` when they want mouse-wheel events inside
-the fixed pane. On Windows, the controller forces prompt-toolkit onto native
+The chat window enables prompt-toolkit mouse reporting by default
+(`ui.chat_window.mouse_support: true`) so mouse-wheel events scroll inside
+the fixed pane. Users can explicitly set `ui.chat_window.mouse_support: false`
+when native terminal selection/copy behavior is more important. On Windows,
+the controller forces prompt-toolkit onto native
 Win32 mouse input and patches output so enabling mouse support resets VT/SGR
 mouse tracking instead of writing mouse enable sequences. On non-Windows VT
 terminals, it enables only normal tracking plus SGR encoding, avoiding

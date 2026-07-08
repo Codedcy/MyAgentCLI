@@ -2,7 +2,7 @@
 
 MyAgentCLI 是一个个人 AI Agent CLI 助手，默认使用 DeepSeek V4 Pro，通过 LiteLLM 接入模型，提供固定聊天窗口、ReAct 工具循环、子 Agent、项目记忆、会话恢复和权限控制。
 
-项目仍处于 Alpha 阶段，但核心 CLI 工作流已经可用。本仓库当前自动化测试集覆盖 559 个用例。
+项目仍处于 Alpha 阶段，但核心 CLI 工作流已经可用。本仓库当前自动化测试集覆盖 561 个用例。
 
 ## 功能概览
 
@@ -102,7 +102,7 @@ myagent --dangerously-skip-permissions
 | `Ctrl+C` | 运行中中断 Agent；空闲时清空输入或触发退出确认 |
 | `Ctrl+D` | 输入为空时退出 |
 | `PageUp` / `PageDown` | 滚动对话记录 |
-| 鼠标滚轮 | 滚动对话记录，前提是显式开启 `mouse_support` |
+| 鼠标滚轮 | 滚动对话记录，默认开启，可通过 `mouse_support` 关闭 |
 
 `mouse_support: true` 会启用对话窗内滚轮滚动。Windows 下优先使用 prompt_toolkit 的原生 Win32 鼠标输入，并主动关闭 VT/SGR 鼠标上报，避免 Windows Terminal 将鼠标报告打印到输入框。如果你更需要终端原生鼠标选择复制，可以关闭鼠标事件：
 
@@ -168,7 +168,7 @@ ui:
     input_min_lines: 1
     input_max_lines: 6
     follow_output: auto
-    mouse_support: false
+    mouse_support: true
   status_pane:
     enabled: true
     placement: right

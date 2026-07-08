@@ -1079,7 +1079,7 @@ async def test_run_starts_full_screen_application_and_request_stop_exits_it(
     app = FakeApplication.instances[0]
     assert controller.is_running is True
     assert app.kwargs["full_screen"] is True
-    assert app.kwargs["mouse_support"] is False
+    assert app.kwargs["mouse_support"] is True
     assert "layout" in app.kwargs
     assert "key_bindings" in app.kwargs
 
@@ -1088,6 +1088,21 @@ async def test_run_starts_full_screen_application_and_request_stop_exits_it(
 
     assert app.exit_calls == 1
     assert controller.is_running is False
+
+
+@pytest.mark.asyncio
+async def test_call_background_accepts_already_created_task() -> None:
+    controller = make_controller()
+    completed = asyncio.Event()
+
+    async def callback() -> None:
+        completed.set()
+
+    task = asyncio.create_task(callback())
+    controller._call_background(lambda: task)
+
+    await asyncio.wait_for(completed.wait(), timeout=1.0)
+    await task
 
 
 @pytest.mark.asyncio

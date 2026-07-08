@@ -2067,6 +2067,8 @@ class ChatWindowController:
 
     def _call_background(self, callback: Callable[..., Any], *args: Any) -> None:
         result = callback(*args)
+        if isinstance(result, asyncio.Future):
+            return
         if not inspect.isawaitable(result):
             return
         try:
