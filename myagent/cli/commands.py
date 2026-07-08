@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger("myagent.cli.commands")
@@ -19,6 +20,7 @@ class CommandContext:
     session: Any = None
     config: Any = None
     subagent_pool: Any = None
+    project_dir: Path | None = None
 
 
 @dataclass
@@ -45,6 +47,7 @@ class CommandDispatcher:
         self._commands["compact"] = self._cmd_compact
         self._commands["history"] = self._cmd_history
         self._commands["export"] = self._cmd_export
+        self._commands["init"] = self._cmd_init
         self._commands["prompt"] = self._cmd_prompt
         self._commands["subagents"] = self._cmd_subagents
         self._commands["subagent"] = self._cmd_subagent
@@ -218,6 +221,7 @@ class CommandDispatcher:
             ),
             "  /export [markdown|json]               — Export current session transcript",
             "  /history [N]                          — Show recent conversation history",
+            "  /init [--force]                       - Create project AGENTS.md",
             "  /prompt [raw]                         - Show the last full LLM prompt",
             "  /help                                 — Show this help message",
             "  /exit, /quit                          — Exit MyAgentCLI",
@@ -226,6 +230,30 @@ class CommandDispatcher:
             "Use Esc or Ctrl+C to interrupt a running agent, Ctrl+D to exit.",
         ]
         return CommandResult(output="\n".join(lines))
+
+    async def _cmd_init(self, args: str, ctx: CommandContext) -> CommandResult:
+        arg = args.strip()
+        if arg not in ("", "--force"):
+            return CommandResult(output="Usage: /init [--force]", success=False)
+
+        from myagent.cli.init import initialize_project_guidance
+
+        project_dir = ctx.project_dir or Path.cwd()
+        try:
+            result = initialize_project_guidance(project_dir, force=(arg == "--force"))
+        except Exception as e:
+            logger.exception(
+                "Project guidance init command failed",
+                extra={
+                    "category": "error",
+                    "component": "system",
+                    "context": "cli_command_init",
+                },
+            )
+            return CommandResult(output=f"Init failed: {e}", success=False)
+
+        action = "Created" if result.created else "Already exists"
+        return CommandResult(output=f"{action}: {result.path}")
 
     async def _cmd_prompt(self, args: str, ctx: CommandContext) -> CommandResult:
         mode = args.strip().lower()

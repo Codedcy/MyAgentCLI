@@ -38,7 +38,7 @@ class SlashCompleter(Completer):
     # Built-in slash commands
     BUILTIN_COMMANDS = [
         "mode", "goal", "skills", "dream", "clear", "compact", "history",
-        "export", "prompt", "subagents", "subagent", "help", "exit", "quit",
+        "export", "init", "prompt", "subagents", "subagent", "help", "exit", "quit",
     ]
 
     # Mode values for /mode completion
@@ -1515,6 +1515,7 @@ class REPLEngine:
                         self._engine.skill_registry if self._engine else None
                     ),
                     dream_engine=self._dream_engine,
+                    project_dir=self._project_dir,
                     subagent_pool=(
                         getattr(self._engine, "subagent_pool", None)
                         if self._engine else None

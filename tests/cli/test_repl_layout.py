@@ -1124,6 +1124,7 @@ async def test_chat_goal_command_bypasses_pending_submission_queue():
     [
         ("/subagents", "Sub-agents:\n\n- sub-001 [running] Draft PRD"),
         ("/subagent sub-001", "Sub-agent sub-001:\nfull output"),
+        ("/init", "Already exists: D:\\code\\test\\AGENTS.md"),
         ("/prompt", "Last LLM prompt\nModel: deepseek-v4-pro"),
         ("/prompt raw", '{"model": "deepseek-v4-pro"}'),
     ],
@@ -1158,6 +1159,10 @@ async def test_subagent_status_commands_bypass_pending_submission_queue(
 
 def test_slash_completer_includes_prompt_command():
     assert "prompt" in SlashCompleter.BUILTIN_COMMANDS
+
+
+def test_slash_completer_includes_init_command():
+    assert "init" in SlashCompleter.BUILTIN_COMMANDS
 
 
 @pytest.mark.asyncio

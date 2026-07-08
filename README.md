@@ -14,7 +14,7 @@ MyAgentCLI 是一个个人 AI Agent CLI 助手，默认使用 DeepSeek V4 Pro，
 - **权限系统**：按 read/write/exec/network 分级确认，支持 allow/deny 规则和 `--dangerously-skip-permissions` 全信任模式。
 - **会话持久化**：保存 JSON 与 Markdown transcript，支持恢复、列出、导出历史会话。
 - **项目记忆**：项目级与用户级 `MEMORY.md` 索引会进入上下文，正文按需通过索引路径读取，支持后台 dream 整合。
-- **项目指导文件**：根目录 `AGENTS.md` 会在启动时自动加载到项目上下文，`myagent init` 可生成模板。
+- **项目指导文件**：根目录 `AGENTS.md` 会在启动时自动加载到项目上下文，`myagent init` 或 `/init` 可生成模板。
 - **CLI Runtime UX**：权限申请显示在底部临时托盘，工具输出默认折叠并可用 F3 展开，Agent 思考时显示计时。
 - **结构化日志**：使用 JSON Lines 异步日志，覆盖 LLM、工具、Agent、MCP、系统、记忆和子 Agent 事件。
 
@@ -130,6 +130,7 @@ ui:
 | `/clear` | 清空当前 UI 内存对话，磁盘 transcript 保留 |
 | `/history [N]` | 查看最近 N 条会话历史 |
 | `/prompt [raw]` | 查看上一轮发送给主 Agent 模型的完整 prompt，`raw` 输出 JSON |
+| `/init [--force]` | 在项目根目录生成 `AGENTS.md` 模板 |
 | `/export [markdown\|json]` | 导出当前会话 |
 | `/help` | 查看命令帮助 |
 | `/exit` / `/quit` | 退出 |
@@ -204,7 +205,7 @@ logging:
 
 项目根目录可以包含 `AGENTS.md`，用于记录项目级约定、构建测试命令、架构边界、禁止修改的路径和完成前验证要求。启动时 MyAgentCLI 会解析当前目录；如果位于 Git 仓库内，会以仓库根目录作为项目根目录，然后自动读取 `AGENTS.md` 或 `AGENTS.MD` 并注入 L3 Project Context。为兼容旧项目，也会继续读取 `.myagent/AGENT.md` 和根目录 `AGENT.md`，多个文件会按来源标题合并。
 
-`myagent init` 会在项目根目录生成 `AGENTS.md` 模板；如果文件已存在则不会覆盖，使用 `myagent init --force` 才会重新写入模板。`AGENTS.md` 只作为项目指导进入提示词，不参与配置合并；需要配置项时继续使用 `.myagent/config.yaml` 或 `.myagent/AGENT.md` 的 YAML frontmatter。
+`myagent init` 会在项目根目录生成 `AGENTS.md` 模板；交互窗口内也可以使用 `/init` 执行同一动作。如果文件已存在则不会覆盖，使用 `myagent init --force` 或 `/init --force` 才会重新写入模板。`AGENTS.md` 只作为项目指导进入提示词，不参与配置合并；需要配置项时继续使用 `.myagent/config.yaml` 或 `.myagent/AGENT.md` 的 YAML frontmatter。
 
 ## 数据位置
 

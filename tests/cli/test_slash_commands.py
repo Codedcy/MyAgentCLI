@@ -131,6 +131,43 @@ class TestCommandDispatcher:
         assert result.output == "Usage: /prompt [raw]"
 
     @pytest.mark.asyncio
+    async def test_init_command_creates_project_guidance_file(self, tmp_path):
+        dispatcher = CommandDispatcher()
+        ctx = CommandContext(project_dir=tmp_path)
+
+        result = await dispatcher.dispatch("/init", ctx)
+
+        assert result.success
+        assert "Created:" in result.output
+        assert (tmp_path / "AGENTS.md").is_file()
+
+    @pytest.mark.asyncio
+    async def test_init_command_preserves_existing_file_without_force(self, tmp_path):
+        guidance = tmp_path / "AGENTS.md"
+        guidance.write_text("custom guidance", encoding="utf-8")
+        dispatcher = CommandDispatcher()
+        ctx = CommandContext(project_dir=tmp_path)
+
+        result = await dispatcher.dispatch("/init", ctx)
+
+        assert result.success
+        assert "Already exists:" in result.output
+        assert guidance.read_text(encoding="utf-8") == "custom guidance"
+
+    @pytest.mark.asyncio
+    async def test_init_command_force_overwrites_existing_file(self, tmp_path):
+        guidance = tmp_path / "AGENTS.md"
+        guidance.write_text("custom guidance", encoding="utf-8")
+        dispatcher = CommandDispatcher()
+        ctx = CommandContext(project_dir=tmp_path)
+
+        result = await dispatcher.dispatch("/init --force", ctx)
+
+        assert result.success
+        assert "Created:" in result.output
+        assert "Project Overview" in guidance.read_text(encoding="utf-8")
+
+    @pytest.mark.asyncio
     async def test_help_lists_prompt_command(self):
         dispatcher = CommandDispatcher()
 
@@ -138,6 +175,7 @@ class TestCommandDispatcher:
 
         assert result.success
         assert "/prompt [raw]" in result.output
+        assert "/init [--force]" in result.output
 
     @pytest.mark.asyncio
     async def test_subagents_command_lists_pool_state_and_transcript_path(self):

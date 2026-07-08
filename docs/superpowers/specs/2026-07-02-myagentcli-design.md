@@ -259,7 +259,7 @@ flowchart LR
 
 项目根目录的 `AGENTS.md` 是项目级指导文件，用于记录构建/测试命令、架构约定、目录边界、验证要求和协作注意事项。启动时 ProjectDetector 会先解析项目根目录；如果当前目录位于 Git 仓库内，则以 Git 根目录作为项目根目录。随后按顺序读取 `AGENTS.md`、`AGENTS.MD`、`.myagent/AGENT.md` 和根目录 `AGENT.md`，存在多个文件时用来源标题合并到 L3 Project Context。重复路径会去重，单个文件读取失败只记录日志，不阻断启动。
 
-`myagent init` 是一次性命令，不启动 REPL、不加载 LLM、不注册工具。它在项目根目录生成 `AGENTS.md` 模板；已有 `AGENTS.md` 或 `AGENTS.MD` 时默认保留用户内容，只有传入 `--force` 才覆盖。`AGENTS.md` 不参与配置合并，只进入 system prompt 的项目上下文；配置仍由 `.myagent/config.yaml` 和带 YAML frontmatter 的 `.myagent/AGENT.md` 管理。L3 中的项目指导注入上限为 12000 字符，避免大文件挤占对话历史。
+`myagent init` 是启动级一次性命令，不启动 REPL、不加载 LLM、不注册工具。交互窗口内提供 `/init [--force]`，复用相同生成逻辑，作为即时控制命令执行，不进入普通对话队列，也不触发 Agent 回复。它在项目根目录生成 `AGENTS.md` 模板；已有 `AGENTS.md` 或 `AGENTS.MD` 时默认保留用户内容，只有传入 `--force` 才覆盖。`AGENTS.md` 不参与配置合并，只进入 system prompt 的项目上下文；配置仍由 `.myagent/config.yaml` 和带 YAML frontmatter 的 `.myagent/AGENT.md` 管理。L3 中的项目指导注入上限为 12000 字符，避免大文件挤占对话历史。
 
 ### 主 Agent vs 子 Agent 上下文
 
