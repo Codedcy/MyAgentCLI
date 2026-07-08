@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from myagent.agent.project import ProjectContext
-from myagent.context.builder import ContextBuilder
+from myagent.context.builder import ContextBuilder, Message
 from myagent.memory.store import MemoryStore
 
 
@@ -41,6 +41,29 @@ class TestContextBuilder:
         assert len(request.tools) == 1
         tool_reg.get_schemas_for.assert_called_once()
         tool_reg.get_schemas.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_build_filters_system_messages_from_history(self):
+        tool_reg = MagicMock()
+        tool_reg.get_schemas = MagicMock(return_value=[])
+        skill_reg = MagicMock()
+        skill_reg.list_all = MagicMock(return_value=[])
+
+        builder = ContextBuilder(tool_reg, None, skill_reg)
+        request = await builder.build(
+            "new input",
+            [
+                Message(role="system", content="old system prompt"),
+                Message(role="user", content="previous user"),
+            ],
+            ProjectContext(),
+        )
+
+        assert all(message["role"] != "system" for message in request.messages)
+        assert request.messages == [
+            {"role": "user", "content": "previous user"},
+            {"role": "user", "content": "new input"},
+        ]
 
     @pytest.mark.asyncio
     async def test_build_includes_recalled_memory_content_for_new_session(

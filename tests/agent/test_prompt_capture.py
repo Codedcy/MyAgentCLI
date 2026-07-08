@@ -43,6 +43,49 @@ def test_last_prompt_capture_text_includes_metadata_messages_and_tools():
     assert '"parameters"' in text
 
 
+def test_last_prompt_capture_text_renders_tool_call_message_metadata():
+    capture = LastPromptCapture.capture(
+        model="model",
+        thinking="Think High",
+        messages=[
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {
+                            "name": "read",
+                            "arguments": '{"file_path": "README.md"}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call-1",
+                "name": "read",
+                "content": "file contents",
+            },
+        ],
+        tools=[],
+        captured_at="2026-07-08T12:34:56+00:00",
+    )
+
+    text = capture.to_text()
+
+    assert "Content: null" not in text
+    assert "(content is null because this assistant message contains tool calls)" in text
+    assert "Tool calls:" in text
+    assert "[1] read (id: call-1)" in text
+    assert '"file_path": "README.md"' in text
+    assert "Tool result metadata:" in text
+    assert "name: read" in text
+    assert "tool_call_id: call-1" in text
+    assert "file contents" in text
+
+
 def test_last_prompt_capture_json_uses_stable_keys_and_preserves_content():
     capture = LastPromptCapture.capture(
         model="model",

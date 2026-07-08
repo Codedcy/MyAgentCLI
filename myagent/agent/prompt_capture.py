@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import json
 from dataclasses import dataclass
@@ -75,11 +76,8 @@ class LastPromptCapture:
         ]
         for index, message in enumerate(self.messages, 1):
             role = message.get("role", "unknown")
-            content = message.get("content", "")
-            if not isinstance(content, str):
-                content = json.dumps(content, ensure_ascii=False, default=str)
             lines.append(f"[{index}] {role}")
-            lines.append(content)
+            lines.extend(self._message_lines(message))
             lines.append("")
 
         if self.tools:
@@ -93,6 +91,70 @@ class LastPromptCapture:
             lines.append("Tools: none")
 
         return "\n".join(lines).rstrip()
+
+    def _message_lines(self, message: dict[str, Any]) -> list[str]:
+        lines: list[str] = []
+        role = message.get("role", "")
+        tool_calls = message.get("tool_calls") or []
+
+        if role == "tool":
+            metadata = []
+            if message.get("name"):
+                metadata.append(f"name: {message['name']}")
+            if message.get("tool_call_id"):
+                metadata.append(f"tool_call_id: {message['tool_call_id']}")
+            if metadata:
+                lines.append("Tool result metadata:")
+                lines.extend(metadata)
+
+        content = message.get("content", "")
+        if content is None and tool_calls:
+            lines.append(
+                "(content is null because this assistant message contains tool calls)"
+            )
+        elif content is not None:
+            lines.append(self._format_message_content(content))
+
+        if tool_calls:
+            lines.append("Tool calls:")
+            for index, tool_call in enumerate(tool_calls, 1):
+                lines.extend(self._tool_call_lines(index, tool_call))
+
+        extra = {
+            key: value
+            for key, value in message.items()
+            if key not in {"role", "content", "tool_calls", "name", "tool_call_id"}
+        }
+        if extra:
+            lines.append("Extra fields:")
+            lines.append(json.dumps(_json_safe(extra), ensure_ascii=False, indent=2))
+        return lines
+
+    @staticmethod
+    def _format_message_content(content: Any) -> str:
+        if isinstance(content, str):
+            return content
+        return json.dumps(_json_safe(content), ensure_ascii=False, indent=2)
+
+    def _tool_call_lines(self, index: int, tool_call: dict[str, Any]) -> list[str]:
+        function = tool_call.get("function")
+        function = function if isinstance(function, dict) else {}
+        name = function.get("name") or tool_call.get("name") or "unknown"
+        call_id = tool_call.get("id") or "unknown"
+        lines = [f"[{index}] {name} (id: {call_id})"]
+        arguments = function.get("arguments", {})
+        lines.append("Arguments:")
+        lines.append(self._format_tool_arguments(arguments))
+        return lines
+
+    @staticmethod
+    def _format_tool_arguments(arguments: Any) -> str:
+        if isinstance(arguments, str):
+            with contextlib.suppress(json.JSONDecodeError):
+                parsed = json.loads(arguments)
+                return json.dumps(_json_safe(parsed), ensure_ascii=False, indent=2)
+            return arguments
+        return json.dumps(_json_safe(arguments), ensure_ascii=False, indent=2)
 
     @staticmethod
     def _tool_name(tool: dict[str, Any]) -> str:

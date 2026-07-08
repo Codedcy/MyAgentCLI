@@ -331,7 +331,11 @@ tool usage limit."""
             tool_schemas = self.tool_registry.get_schemas() if self.tool_registry else []
 
         # History + current input
-        messages = [m.to_api_dict() for m in history]
+        messages = [
+            m.to_api_dict()
+            for m in history
+            if getattr(m, "role", None) != "system"
+        ]
         messages.append({"role": "user", "content": current_input})
 
         return LLMRequest(system=system, messages=messages, tools=tool_schemas)

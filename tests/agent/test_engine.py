@@ -199,6 +199,37 @@ async def test_react_loop_captures_last_prompt_passed_to_llm():
     assert capture.tools[0]["function"]["name"] == "read"
 
 
+@pytest.mark.asyncio
+async def test_react_loop_removes_system_messages_from_request_messages():
+    gen = _async_gen([FakeTextDelta("done"), FakeDone(FakeUsage())])
+    llm = MagicMock()
+    llm.model = "model"
+    llm.complete = MagicMock(return_value=gen)
+
+    builder = MagicMock()
+    builder.build = AsyncMock(return_value=LLMRequest(
+        system="fresh system",
+        messages=[
+            {"role": "system", "content": "persisted old system"},
+            {"role": "user", "content": "hello"},
+        ],
+        tools=[],
+    ))
+
+    engine = AgentEngine(llm=llm, context_builder=builder)
+    session = SimpleNamespace(id="test", get_recent_messages=lambda: [])
+
+    events = [event async for event in engine.run("hello", session)]
+
+    assert any(isinstance(event, TextChunk) for event in events)
+    sent_messages = llm.complete.call_args.kwargs["messages"]
+    system_messages = [
+        message for message in sent_messages if message.get("role") == "system"
+    ]
+    assert system_messages == [{"role": "system", "content": "fresh system"}]
+    assert all("persisted old system" not in str(message) for message in sent_messages)
+
+
 def test_prompt_token_estimation_skips_async_token_counter_without_warning(recwarn):
     llm = SimpleNamespace(token_count=AsyncMock(return_value=42))
     engine = AgentEngine(llm=llm)
@@ -211,6 +242,29 @@ def test_prompt_token_estimation_skips_async_token_counter_without_warning(recwa
         for warning in recwarn
         if "was never awaited" in str(warning.message)
     ]
+
+
+def test_persist_turn_skips_system_messages():
+    session = SimpleNamespace(
+        id="test",
+        add_message=MagicMock(),
+    )
+    engine = AgentEngine(session_store=object())
+
+    engine._persist_turn(
+        session,
+        [
+            {"role": "system", "content": "system prompt"},
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ],
+    )
+
+    persisted_roles = [
+        call.args[0].role for call in session.add_message.call_args_list
+    ]
+    assert persisted_roles == ["user", "assistant"]
+    assert session._persist_idx == 3
 
 
 @pytest.mark.asyncio

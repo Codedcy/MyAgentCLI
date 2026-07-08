@@ -258,7 +258,11 @@ class AgentEngine:
         """
         tools_list = request.tools
         api_format = request.to_api_format()
-        messages = api_format["messages"]
+        messages = [
+            message
+            for message in api_format["messages"]
+            if message.get("role") != "system"
+        ]
 
         # Prepend system message (was lost in the old single-pass code)
         if api_format.get("system"):
@@ -1658,6 +1662,8 @@ class AgentEngine:
             if not new_msgs:
                 return
             for m in new_msgs:
+                if m.get("role") == "system":
+                    continue
                 # Extract tool_call_id, name, and tool_calls from dict messages
                 # so that /history can display tool call details (gap-16-06).
                 tc_id = m.get("tool_call_id")
