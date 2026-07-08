@@ -2,7 +2,7 @@
 
 MyAgentCLI 是一个个人 AI Agent CLI 助手，默认使用 DeepSeek V4 Pro，通过 LiteLLM 接入模型，提供固定聊天窗口、ReAct 工具循环、子 Agent、项目记忆、会话恢复和权限控制。
 
-项目仍处于 Alpha 阶段，但核心 CLI 工作流已经可用。本仓库当前自动化测试集覆盖 555 个用例。
+项目仍处于 Alpha 阶段，但核心 CLI 工作流已经可用。本仓库当前自动化测试集覆盖 559 个用例。
 
 ## 功能概览
 
@@ -84,7 +84,7 @@ myagent --dangerously-skip-permissions
 - 右侧 Agent Inspector 显示 session、project、model、thinking、token、context、goal、subagent、tool 和 health 状态。
 - 输入框固定在底部，不会被流式输出推走。
 - 对话内容按终端宽度换行，常见 Markdown-ish 回复会在显示层整理成更适合阅读的标题、列表、表格和目录树。
-- 当 `ui.syntax_highlight` 开启时，Agent 回复和展开后的工具详情中的 fenced code block 会进行显示层语法高亮；支持 Python、JavaScript/TypeScript、SQL、JSON/YAML、Shell/PowerShell、HTML/CSS/XML、C/C++ 和 Rust 等语言族。
+- 当 `ui.syntax_highlight` 开启时，Agent 回复和展开后的工具详情中的 fenced code block 会进行显示层语法高亮；语言名后缺少换行的紧凑代码围栏会先规范为块级代码再渲染；支持 Python、JavaScript/TypeScript、SQL、JSON/YAML、Shell/PowerShell、HTML/CSS/XML、C/C++ 和 Rust 等语言族。
 - Agent 忙碌时继续发送的普通消息会先进入可见队列，等上一轮完成后再进入 transcript。
 - `/goal <text>` 等即时控制命令不会进入队列，会立即更新状态。
 - 工具结果默认折叠成一行摘要，按 F3 展开最近工具详情。
@@ -104,7 +104,7 @@ myagent --dangerously-skip-permissions
 | `PageUp` / `PageDown` | 滚动对话记录 |
 | 鼠标滚轮 | 滚动对话记录，前提是显式开启 `mouse_support` |
 
-`mouse_support: true` 会启用滚轮所需的终端鼠标上报，但不会开启拖拽/移动追踪，避免 Windows Terminal 将 SGR 鼠标报告打印到输入框。如果你更需要终端原生鼠标选择复制，可以关闭鼠标事件：
+`mouse_support: true` 会启用对话窗内滚轮滚动。Windows 下优先使用 prompt_toolkit 的原生 Win32 鼠标输入，并主动关闭 VT/SGR 鼠标上报，避免 Windows Terminal 将鼠标报告打印到输入框。如果你更需要终端原生鼠标选择复制，可以关闭鼠标事件：
 
 ```yaml
 ui:

@@ -563,6 +563,39 @@ def test_agent_unclosed_code_fence_is_preserved_during_streaming() -> None:
     assert any('       | print("a - b")' in line for line in lines)
 
 
+def test_agent_compact_language_code_fence_gets_readable_code_block() -> None:
+    controller = make_controller(status_pane=EmptyStatusPane())
+    controller.append_output(
+        '1. CORS```pythonapp = FastAPI(title="Calculator API")\n'
+        'app.add_middleware(CORSMiddleware)```2. API done'
+    )
+
+    lines = controller._conversation_lines(height=12, width=90)
+
+    assert any("Agent  | 1. CORS" in line for line in lines)
+    assert any("       | ```python" in line for line in lines)
+    assert any(
+        '       | app = FastAPI(title="Calculator API")' in line for line in lines
+    )
+    assert any("       | app.add_middleware(CORSMiddleware)" in line for line in lines)
+    assert any("       | 2. API done" in line for line in lines)
+    assert not any("```pythonapp" in line for line in lines)
+
+
+def test_body_fragments_highlight_compact_language_code_fence() -> None:
+    controller = make_controller(status_pane=EmptyStatusPane())
+    controller.append_output('```pythonapp = FastAPI()\nreturn 42```')
+
+    fragments = controller._render_body_fragments_for_size(
+        terminal_columns=100,
+        terminal_rows=8,
+    )
+
+    assert fragments_text(fragments) == controller._render_body_for_size(100, 8)
+    assert any("bold" in style and text == "return" for style, text in fragments)
+    assert any("magenta" in style and text == "42" for style, text in fragments)
+
+
 def test_streaming_split_ansi_sequences_do_not_leave_visible_fragments() -> None:
     controller = make_controller(status_pane=EmptyStatusPane())
 
@@ -1081,7 +1114,36 @@ async def test_run_can_enable_mouse_support_for_wheel_scrolling(
 
 
 @pytest.mark.asyncio
-async def test_mouse_support_uses_wheel_only_terminal_reporting(
+async def test_windows_mouse_support_uses_native_input_reader(
+    monkeypatch,
+) -> None:
+    import myagent.cli.chat_window as chat_window
+
+    native_input = object()
+    FakeApplication.instances = []
+    monkeypatch.setattr(chat_window, "Application", FakeApplication)
+    monkeypatch.setattr(
+        chat_window,
+        "_windows_native_mouse_input",
+        lambda: native_input,
+    )
+    config = make_config()
+    config.ui.chat_window.mouse_support = True
+    controller = make_controller(config=config)
+
+    run_task = asyncio.create_task(controller.run(lambda text: None))
+    while not FakeApplication.instances:
+        await asyncio.sleep(0)
+
+    app = FakeApplication.instances[0]
+    assert app.kwargs["input"] is native_input
+
+    controller.request_stop()
+    await run_task
+
+
+@pytest.mark.asyncio
+async def test_mouse_support_uses_native_windows_mouse_without_vt_reporting(
     monkeypatch,
 ) -> None:
     import myagent.cli.chat_window as chat_window
@@ -1101,11 +1163,13 @@ async def test_mouse_support_uses_wheel_only_terminal_reporting(
     await run_task
 
     written = "".join(app.output.writes)
-    assert "\x1b[?1000h" in written
-    assert "\x1b[?1006h" in written
+    assert app.kwargs["mouse_support"] is True
+    assert "\x1b[?1000h" not in written
+    assert "\x1b[?1006h" not in written
     assert "\x1b[?1003h" not in written
     assert "\x1b[?1002h" not in written
     assert "\x1b[?1015h" not in written
+    assert "\x1b[?1000l" in written
 
 
 @pytest.mark.asyncio

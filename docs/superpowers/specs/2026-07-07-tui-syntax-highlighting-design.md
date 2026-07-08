@@ -57,10 +57,12 @@ The helper returns prompt_toolkit-compatible style fragments while also exposing
 
 1. Build transcript entries exactly as today.
 2. Apply the existing assistant Markdown-ish cleanup.
-3. Split code fences into prose and code segments.
-4. Wrap and clip by terminal cell width while preserving fragment boundaries.
-5. Return fragments from `_body_fragments()` to `FormattedTextControl`.
-6. Keep `_body_text()` as a plain-text fallback and for tests that assert layout content.
+3. Normalize compact code fences whose language name is immediately followed by
+   code text instead of a newline.
+4. Split code fences into prose and code segments.
+5. Wrap and clip by terminal cell width while preserving fragment boundaries.
+6. Return fragments from `_body_fragments()` to `FormattedTextControl`.
+7. Keep `_body_text()` as a plain-text fallback and for tests that assert layout content.
 
 The borders, role prefixes, queue area, transient permission tray, thinking line, and input area remain structurally unchanged.
 

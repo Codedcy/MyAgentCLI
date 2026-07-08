@@ -28,7 +28,13 @@ from myagent.cli.input_controller import (
 )
 from myagent.cli.rich_capture import capture_renderable, sanitize_terminal_text
 from myagent.cli.status import AgentInspectorPane
-from myagent.cli.syntax_highlight import Fragment, StyledLine, highlight_transcript_text
+from myagent.cli.syntax_highlight import (
+    LANGUAGE_ALIASES,
+    Fragment,
+    StyledLine,
+    highlight_transcript_text,
+    normalize_language,
+)
 from myagent.cli.text_decode import StreamingTextSanitizer
 from myagent.cli.transcript import TranscriptBuffer, TranscriptEntry, TranscriptLine
 
@@ -42,6 +48,17 @@ MOUSE_REPORTING_RESET_SEQUENCE = (
     "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1015l"
 )
 MOUSE_WHEEL_REPORTING_ENABLE_SEQUENCE = "\x1b[?1000h\x1b[?1006h"
+COMPACT_CODE_FENCE_LANGUAGES = tuple(
+    sorted(
+        (
+            language
+            for language in LANGUAGE_ALIASES
+            if len(language) >= 2 and language not in {"md", "txt"}
+        ),
+        key=len,
+        reverse=True,
+    )
+)
 ROLE_LABELS = {
     "assistant": "Agent",
     "error": "Error",
@@ -156,7 +173,11 @@ def _format_agent_text_for_display(text: str) -> str:
     formatted_parts = []
     for is_code, original_segment, formatted_segment in prepared_segments:
         if is_code:
+            if formatted_parts and not formatted_parts[-1].endswith("\n"):
+                formatted_parts.append("\n")
             formatted_parts.append(formatted_segment)
+            if not formatted_segment.endswith("\n"):
+                formatted_parts.append("\n")
         elif format_markdown_segments:
             formatted_parts.append(_format_agent_markdown_segment(original_segment))
         else:
@@ -171,6 +192,13 @@ def _format_agent_code_fence_segment(segment: str) -> str:
         return segment
 
     inner = segment[3:-3].strip()
+    if _standard_code_fence_inner(inner):
+        return segment
+
+    compact_code = _format_compact_language_code_fence(inner)
+    if compact_code is not None:
+        return compact_code
+
     if "\n" in inner:
         return segment
     if "├──" not in inner and "└──" not in inner:
@@ -184,6 +212,28 @@ def _format_agent_code_fence_segment(segment: str) -> str:
     if len(lines) < 2:
         return segment
     return "\n".join(lines)
+
+
+def _standard_code_fence_inner(inner: str) -> bool:
+    first_line = inner.split("\n", 1)[0].strip()
+    return "\n" in inner and bool(first_line and normalize_language(first_line))
+
+
+def _format_compact_language_code_fence(inner: str) -> str | None:
+    stripped = inner.strip()
+    if not stripped:
+        return None
+
+    for language in COMPACT_CODE_FENCE_LANGUAGES:
+        if not stripped.lower().startswith(language):
+            continue
+
+        body = stripped[len(language) :].lstrip()
+        if not body or not normalize_language(language):
+            continue
+        return f"```{language}\n{body}\n```"
+
+    return None
 
 
 def _split_code_fence_segments(text: str) -> list[tuple[bool, str]]:
@@ -501,6 +551,36 @@ class _ChatBodyControl(FormattedTextControl):
         return NotImplemented
 
 
+def _windows_native_mouse_input() -> Any | None:
+    if not sys.platform.startswith("win"):
+        return None
+
+    try:
+        from prompt_toolkit.input.win32 import ConsoleInputReader, Win32Input
+
+        win_input = Win32Input()
+        if getattr(win_input, "_use_virtual_terminal_input", False):
+            reader = getattr(win_input, "console_input_reader", None)
+            close = getattr(reader, "close", None)
+            if callable(close):
+                close()
+            win_input.console_input_reader = ConsoleInputReader()
+            win_input._use_virtual_terminal_input = False
+        return win_input
+    except Exception as exc:
+        logger.exception(
+            "Chat window native Windows input setup failed",
+            extra={
+                "category": "error",
+                "component": "agent",
+                "context": "cli_chat_window_windows_input",
+                "exception_type": type(exc).__name__,
+                "traceback": traceback.format_exc(),
+            },
+        )
+        return None
+
+
 class ChatWindowController:
     """Owns the full-screen chat display and bottom input lifecycle."""
 
@@ -584,11 +664,13 @@ class ChatWindowController:
             mouse_support = self._mouse_support_enabled()
             self._reset_terminal_mouse_reporting()
             layout = self._build_layout()
+            app_input = _windows_native_mouse_input() if mouse_support else None
             self._app = Application(
                 layout=layout,
                 key_bindings=self._key_bindings,
                 full_screen=True,
                 mouse_support=mouse_support,
+                input=app_input,
             )
             if mouse_support:
                 self._install_wheel_only_mouse_reporting(self._app)
@@ -1901,6 +1983,9 @@ class ChatWindowController:
     def _install_wheel_only_mouse_reporting(self, app: Any) -> None:
         output = getattr(app, "output", None)
         write_raw = getattr(output, "write_raw", None)
+        if sys.platform.startswith("win"):
+            self._install_windows_native_mouse_reporting(output, write_raw)
+            return
         if not callable(write_raw):
             return
 
@@ -1921,6 +2006,46 @@ class ChatWindowController:
                     "category": "error",
                     "component": "agent",
                     "context": "cli_chat_window_mouse_setup",
+                    "exception_type": type(exc).__name__,
+                    "traceback": traceback.format_exc(),
+                },
+            )
+
+    def _install_windows_native_mouse_reporting(
+        self,
+        output: Any,
+        write_raw: Callable[[str], Any] | None,
+    ) -> None:
+        native_output = getattr(output, "win32_output", None)
+        native_enable = getattr(native_output, "enable_mouse_support", None)
+        native_disable = getattr(native_output, "disable_mouse_support", None)
+        can_reset_vt = callable(write_raw)
+        can_use_native = callable(native_enable) and callable(native_disable)
+        if not can_reset_vt and not can_use_native:
+            return
+
+        def enable_windows_mouse_support() -> None:
+            if can_reset_vt:
+                write_raw(MOUSE_REPORTING_RESET_SEQUENCE)
+            if can_use_native:
+                native_enable()
+
+        def disable_windows_mouse_support() -> None:
+            if can_use_native:
+                native_disable()
+            if can_reset_vt:
+                write_raw(MOUSE_REPORTING_RESET_SEQUENCE)
+
+        try:
+            output.enable_mouse_support = enable_windows_mouse_support
+            output.disable_mouse_support = disable_windows_mouse_support
+        except Exception as exc:
+            logger.exception(
+                "Chat window Windows mouse setup failed",
+                extra={
+                    "category": "error",
+                    "component": "agent",
+                    "context": "cli_chat_window_windows_mouse_setup",
                     "exception_type": type(exc).__name__,
                     "traceback": traceback.format_exc(),
                 },

@@ -1213,8 +1213,15 @@ The chat window disables prompt-toolkit mouse reporting by default
 (`ui.chat_window.mouse_support: false`) so Windows terminals do not echo SGR
 mouse reports into the input buffer as literal text. Users can explicitly set
 `ui.chat_window.mouse_support: true` when they want mouse-wheel events inside
-the fixed pane. When enabled, the controller patches prompt-toolkit's VT output
-to reset all mouse tracking modes and then enable only normal tracking plus SGR
-encoding, avoiding drag/any-motion tracking such as `?1003h`. In the default
-mode, keyboard scrolling remains available through PageUp/PageDown and the
-terminal owns mouse selection.
+the fixed pane. On Windows, the controller forces prompt-toolkit onto native
+Win32 mouse input and patches output so enabling mouse support resets VT/SGR
+mouse tracking instead of writing mouse enable sequences. On non-Windows VT
+terminals, it enables only normal tracking plus SGR encoding, avoiding
+drag/any-motion tracking such as `?1003h`. In the default mode, keyboard
+scrolling remains available through PageUp/PageDown and the terminal owns mouse
+selection.
+
+Before syntax highlighting, assistant text normalizes compact fenced code
+blocks where the language and code body arrive without a newline after the
+opening fence. This preserves standard Markdown code blocks, makes collapsed
+model output readable, and lets Pygments highlight supported languages.
