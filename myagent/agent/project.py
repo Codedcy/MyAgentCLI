@@ -39,7 +39,7 @@ class ProjectContext:
     # Directory structure
     structure_summary: str = ""
 
-    # AGENT.md / CLAUDE.md content (for L3 context injection)
+    # Project guidance file content (for L3 context injection)
     agent_md_content: str | None = None
 
     # Project hash
@@ -84,8 +84,10 @@ class ProjectDetector:
         ".eslintrc.cjs": "eslint",
     }
 
-    # Agent MD file candidates (searched in priority order)
-    _AGENT_MD_CANDIDATES = [
+    # Project guidance file candidates (searched in priority order)
+    _PROJECT_GUIDANCE_CANDIDATES = [
+        "AGENTS.md",
+        "AGENTS.MD",
         ".myagent/AGENT.md",
         "AGENT.md",
         "CLAUDE.md",
@@ -149,7 +151,7 @@ class ProjectDetector:
         # Directory structure
         ctx.structure_summary = self._detect_structure(project_dir)
 
-        # AGENT.md content
+        # Project guidance content
         ctx.agent_md_content = self._read_agent_md(project_dir)
 
         return ctx
@@ -330,9 +332,29 @@ class ProjectDetector:
             return "(no access)"
 
     def _read_agent_md(self, project_dir: Path) -> str | None:
-        """Read AGENT.md or CLAUDE.md from project root."""
-        for candidate in self._AGENT_MD_CANDIDATES:
+        """Read project guidance files from the project root."""
+        sections: list[str] = []
+        seen_paths: set[str] = set()
+        for candidate in self._PROJECT_GUIDANCE_CANDIDATES:
             path = project_dir / candidate
-            if path.exists():
-                return path.read_text(encoding="utf-8")
-        return None
+            if not path.is_file():
+                continue
+            path_key = str(path.resolve()).casefold()
+            if path_key in seen_paths:
+                continue
+            seen_paths.add(path_key)
+            try:
+                content = path.read_text(encoding="utf-8").strip()
+            except OSError:
+                logger.exception(
+                    "Failed to read project guidance file",
+                    extra={
+                        "category": "error",
+                        "component": "system",
+                        "context": "read project guidance",
+                    },
+                )
+                continue
+            if content:
+                sections.append(f"## {candidate}\n{content}")
+        return "\n\n".join(sections) if sections else None

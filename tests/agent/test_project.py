@@ -1,11 +1,10 @@
 """Tests for project environment detection."""
 
 import subprocess
-from pathlib import Path
 
 import pytest
 
-from myagent.agent.project import ProjectContext, ProjectDetector
+from myagent.agent.project import ProjectDetector
 
 
 class TestProjectDetector:
@@ -153,6 +152,55 @@ class TestProjectDetector:
 
         assert ctx.agent_md_content is not None
         assert "Project: Test" in ctx.agent_md_content
+
+    @pytest.mark.asyncio
+    async def test_detect_root_agents_md(self, tmp_project_dir):
+        """Detect and read root AGENTS.md as project guidance."""
+        (tmp_project_dir / "AGENTS.md").write_text(
+            "# Project Instructions\n\nUse pytest for verification.",
+            encoding="utf-8",
+        )
+
+        detector = ProjectDetector()
+        ctx = await detector.detect(tmp_project_dir)
+
+        assert ctx.agent_md_content is not None
+        assert "AGENTS.md" in ctx.agent_md_content
+        assert "Use pytest for verification." in ctx.agent_md_content
+
+    @pytest.mark.asyncio
+    async def test_detect_combines_project_guidance_files(self, tmp_project_dir):
+        """Detect all supported project guidance files without dropping legacy guidance."""
+        (tmp_project_dir / "AGENTS.md").write_text(
+            "Root project guidance.",
+            encoding="utf-8",
+        )
+        (tmp_project_dir / ".myagent").mkdir(exist_ok=True)
+        (tmp_project_dir / ".myagent" / "AGENT.md").write_text(
+            "Local project guidance.",
+            encoding="utf-8",
+        )
+
+        detector = ProjectDetector()
+        ctx = await detector.detect(tmp_project_dir)
+
+        assert ctx.agent_md_content is not None
+        assert "Root project guidance." in ctx.agent_md_content
+        assert "Local project guidance." in ctx.agent_md_content
+
+    @pytest.mark.asyncio
+    async def test_detect_uppercase_agents_md(self, tmp_project_dir):
+        """Detect AGENTS.MD for projects using an uppercase extension."""
+        (tmp_project_dir / "AGENTS.MD").write_text(
+            "Uppercase extension guidance.",
+            encoding="utf-8",
+        )
+
+        detector = ProjectDetector()
+        ctx = await detector.detect(tmp_project_dir)
+
+        assert ctx.agent_md_content is not None
+        assert "Uppercase extension guidance." in ctx.agent_md_content
 
     @pytest.mark.asyncio
     async def test_graceful_no_git(self, tmp_project_dir):

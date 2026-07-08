@@ -22,6 +22,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         epilog=(
             "Examples:\n"
             "  myagent                              Start a new session\n"
+            "  myagent init                         Create project AGENTS.md\n"
             "  myagent --resume                     Resume the latest session\n"
             "  myagent --resume <session-id>        Resume a specific session\n"
             "  myagent --list-sessions              List all sessions\n"
@@ -30,6 +31,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "  myagent --mode think-max             Start with Think Max mode\n"
             "  myagent --dangerously-skip-permissions  Start with full trust mode\n"
         ),
+    )
+    parser.add_argument(
+        "command",
+        nargs="?",
+        choices=["init"],
+        help="One-shot command to run",
     )
     parser.add_argument(
         "--resume", nargs="?", const="__latest__", default=None,
@@ -57,6 +64,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--goal", help="Start with a goal")
     parser.add_argument("--config", help="Custom config path")
     parser.add_argument("--project-dir", help="Override project directory")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite generated files for commands that support it",
+    )
     return parser.parse_args(argv)
 
 
@@ -115,7 +127,11 @@ def _build_chat_window_factory(
 def _is_one_shot_command(args: argparse.Namespace) -> bool:
     """Return whether parsed args should exit without starting the REPL."""
 
-    return bool(args.list_sessions or (args.session and args.export))
+    return bool(
+        args.command == "init"
+        or args.list_sessions
+        or (args.session and args.export)
+    )
 
 
 def _sync_status_model_session(status_model: RuntimeStatusModel, session) -> None:
@@ -261,6 +277,14 @@ async def async_main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
 
     project_dir = Path(args.project_dir) if args.project_dir else Path.cwd()
+
+    if args.command == "init":
+        from myagent.cli.init import initialize_project_guidance
+
+        result = initialize_project_guidance(project_dir, force=args.force)
+        action = "Created" if result.created else "Already exists"
+        print(f"{action}: {result.path}")
+        return 0
 
     # Load config
     from myagent.config.loader import ConfigLoader

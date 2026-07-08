@@ -6,8 +6,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-cli_main = importlib.import_module("myagent.cli.main")
+from myagent.cli.init import initialize_project_guidance
 from myagent.cli.main import parse_args
+
+cli_main = importlib.import_module("myagent.cli.main")
 
 
 class TestArgParsing:
@@ -44,6 +46,46 @@ class TestArgParsing:
     def test_project_dir(self):
         args = parse_args(["--project-dir", "D:/work/project"])
         assert args.project_dir == "D:/work/project"
+
+    def test_init_command(self):
+        args = parse_args(["init"])
+        assert args.command == "init"
+        assert args.force is False
+
+    def test_init_force(self):
+        args = parse_args(["init", "--force"])
+        assert args.command == "init"
+        assert args.force is True
+
+
+def test_initialize_project_guidance_creates_agents_md(tmp_path):
+    result = initialize_project_guidance(tmp_path)
+
+    assert result.created is True
+    assert result.path == tmp_path / "AGENTS.md"
+    assert "Project Overview" in result.path.read_text(encoding="utf-8")
+
+
+def test_initialize_project_guidance_preserves_existing_agents_md(tmp_path):
+    guidance = tmp_path / "AGENTS.md"
+    guidance.write_text("custom guidance", encoding="utf-8")
+
+    result = initialize_project_guidance(tmp_path)
+
+    assert result.created is False
+    assert result.path == guidance
+    assert guidance.read_text(encoding="utf-8") == "custom guidance"
+
+
+def test_initialize_project_guidance_force_overwrites_existing_agents_md(tmp_path):
+    guidance = tmp_path / "AGENTS.md"
+    guidance.write_text("custom guidance", encoding="utf-8")
+
+    result = initialize_project_guidance(tmp_path, force=True)
+
+    assert result.created is True
+    assert result.path == guidance
+    assert "Project Overview" in guidance.read_text(encoding="utf-8")
 
 
 @pytest.mark.asyncio

@@ -12,6 +12,8 @@ from myagent.agent.project import ProjectContext
 
 logger = logging.getLogger("myagent.context.builder")
 
+PROJECT_GUIDANCE_CHAR_LIMIT = 12000
+
 
 @dataclass
 class ToolCallRecord:
@@ -267,7 +269,9 @@ tool usage limit."""
             parts.append(f"Structure: {ctx.structure_summary}")
         # Project guidance files
         if ctx.agent_md_content:
-            parts.append(f"Project guidance:\n{ctx.agent_md_content[:2000]}")
+            parts.append(
+                f"Project guidance:\n{ctx.agent_md_content[:PROJECT_GUIDANCE_CHAR_LIMIT]}"
+            )
         return "\n".join(parts)
 
     async def _format_memory_index(self) -> str:

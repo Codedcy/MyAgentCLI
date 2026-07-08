@@ -99,6 +99,9 @@ def test_is_one_shot_command_identifies_list_and_export_boundaries():
     assert cli_main._is_one_shot_command(
         cli_main.parse_args(["--session", "2026-07-05-existing"])
     ) is True
+    assert cli_main._is_one_shot_command(
+        cli_main.parse_args(["init"])
+    ) is True
     assert cli_main._is_one_shot_command(cli_main.parse_args([])) is False
     assert cli_main._is_one_shot_command(
         cli_main.parse_args(["--resume", "2026-07-05-existing"])
@@ -227,6 +230,7 @@ async def test_async_main_resume_passes_chat_window_factory_and_keeps_status_wir
     [
         ["--list-sessions"],
         ["--session", "2026-07-05-existing", "--export", "markdown"],
+        ["init"],
     ],
 )
 async def test_async_main_one_shot_commands_do_not_build_chat_window_factory(

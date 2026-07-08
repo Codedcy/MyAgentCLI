@@ -1,6 +1,6 @@
 # AGENTS.md
 
-This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
+This file provides guidance to coding agents when working with code in this repository.
 
 ## Project Overview
 
@@ -57,7 +57,7 @@ Infrastructure Layer (LiteLLM + MCP Protocol)
 
 - **Execution Model**: Single ReAct Loop for all interactions. Goal mode is a tracking overlay — on `done`, check if goal is achieved; if not, re-enter loop.
 - **Sub-agents**: Spawned via `spawn_subagent` tool. Model decides parallelism/pipeline/loop-until patterns. Max concurrent = min(16, CPU cores - 2). Global cap: 1000 per session. Sub-agent context window = 1M (same as main).
-- **Context Management**: Six-layer structure (L0-L6). Auto-compact at 75% usage, guided toward 30% (non-binding). Hard truncation only at 90%. Four-layer progressive compression. All records persisted to files; tool results summarized in context.
+- **Context Management**: Six-layer structure (L0-L6). Root `AGENTS.md` is loaded into L3 Project Context at startup. Auto-compact at 75% usage, guided toward 30% (non-binding). Hard truncation only at 90%. Four-layer progressive compression. All records persisted to files; tool results summarized in context.
 - **No Complexity Router**: Model autonomously judges task complexity and orchestration strategy. No hardcoded rules.
 - **User Interaction**: Pure natural language — no `/stop`, `/insert` commands. Agent interprets intent (stop/correct/insert new task) from user messages.
 - **Thinking Mode**: User-selected, default Think High. `/mode think-high|think-max|non-think`.
@@ -67,7 +67,7 @@ Infrastructure Layer (LiteLLM + MCP Protocol)
 - **Goal mode sub-agents default to background allowed**; non-Goal speculative exploration requires explicit user config opt-in.
 - **Tools**: Unified interface (built-in + MCP). Large tool results (>5000 chars) → sub-agent summarizes → returns summary + file reference.
 - **Sessions**: Organized by `<project-name>/<project-hash>/<session-id>/`. transcript.json + transcript.md per session. `--resume` and `--list-sessions` supported.
-- **Config**: 7-level priority (CLI args → runtime override → project config → project AGENT.md → user config → user AGENT.md → defaults).
+- **Config**: 7-level priority (CLI args → runtime override → project config → project `.myagent/AGENT.md` frontmatter → user config → user AGENT.md → defaults). Root `AGENTS.md` is project guidance, not a config merge source.
 
 See [Design Spec](docs/superpowers/specs/2026-07-02-myagentcli-design.md) for full details.
 
