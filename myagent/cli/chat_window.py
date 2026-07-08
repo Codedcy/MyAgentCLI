@@ -903,7 +903,7 @@ class ChatWindowController:
 
     def _build_layout(self) -> Layout:
         self._body_control = _ChatBodyControl(self._body_fragments, self._scroll_lines)
-        body = Window(content=self._body_control, wrap_lines=False)
+        body = Window(content=self._body_control, wrap_lines=False, char=" ")
         self._input_field = TextArea(
             height=self.input_controller.input_height_for_text(""),
             prompt=INPUT_PROMPT,

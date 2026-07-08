@@ -884,6 +884,15 @@ def test_mouse_wheel_on_body_scrolls_visual_transcript() -> None:
     assert "line-7" not in scrolled
 
 
+def test_body_window_uses_blank_background_to_clear_scrolled_cells() -> None:
+    controller = make_controller(status_pane=EmptyStatusPane())
+    layout = controller._build_layout()
+
+    body_window = layout.container.children[0]
+
+    assert body_window.char == " "
+
+
 def test_scroll_moves_within_single_multiline_transcript_entry() -> None:
     transcript = TranscriptBuffer()
     controller = make_controller(transcript=transcript)

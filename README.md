@@ -2,7 +2,7 @@
 
 MyAgentCLI 是一个个人 AI Agent CLI 助手，默认使用 DeepSeek V4 Pro，通过 LiteLLM 接入模型，提供固定聊天窗口、ReAct 工具循环、子 Agent、项目记忆、会话恢复和权限控制。
 
-项目仍处于 Alpha 阶段，但核心 CLI 工作流已经可用。本仓库当前自动化测试集覆盖 563 个用例。
+项目仍处于 Alpha 阶段，但核心 CLI 工作流已经可用。本仓库当前自动化测试集覆盖 564 个用例。
 
 ## 功能概览
 
