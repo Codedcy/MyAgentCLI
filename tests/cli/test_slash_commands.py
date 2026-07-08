@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from myagent.agent.prompt_capture import LastPromptCapture
 from myagent.cli.commands import CommandContext, CommandDispatcher
 from myagent.memory.dream import DreamResult
 
@@ -71,6 +72,72 @@ class TestCommandDispatcher:
 
         assert result.success
         dream_engine.run.assert_awaited_once_with(session_store=session_store)
+
+    @pytest.mark.asyncio
+    async def test_prompt_command_reports_missing_capture(self):
+        dispatcher = CommandDispatcher()
+        ctx = CommandContext(engine=SimpleNamespace(get_last_prompt_capture=lambda: None))
+
+        result = await dispatcher.dispatch("/prompt", ctx)
+
+        assert result.success
+        assert result.output == "No LLM prompt captured yet."
+
+    @pytest.mark.asyncio
+    async def test_prompt_command_renders_readable_capture(self):
+        capture = LastPromptCapture.capture(
+            model="deepseek-v4-pro",
+            thinking="Think High",
+            messages=[{"role": "user", "content": "hello"}],
+            tools=[],
+            captured_at="2026-07-08T12:34:56+00:00",
+        )
+        dispatcher = CommandDispatcher()
+        ctx = CommandContext(engine=SimpleNamespace(get_last_prompt_capture=lambda: capture))
+
+        result = await dispatcher.dispatch("/prompt", ctx)
+
+        assert result.success
+        assert "Last LLM prompt" in result.output
+        assert "deepseek-v4-pro" in result.output
+        assert "hello" in result.output
+
+    @pytest.mark.asyncio
+    async def test_prompt_command_renders_raw_json(self):
+        capture = LastPromptCapture.capture(
+            model="deepseek-v4-pro",
+            thinking="Think High",
+            messages=[{"role": "user", "content": "hello"}],
+            tools=[],
+            captured_at="2026-07-08T12:34:56+00:00",
+        )
+        dispatcher = CommandDispatcher()
+        ctx = CommandContext(engine=SimpleNamespace(get_last_prompt_capture=lambda: capture))
+
+        result = await dispatcher.dispatch("/prompt raw", ctx)
+
+        assert result.success
+        assert '"model": "deepseek-v4-pro"' in result.output
+        assert '"messages"' in result.output
+
+    @pytest.mark.asyncio
+    async def test_prompt_command_rejects_unknown_argument(self):
+        dispatcher = CommandDispatcher()
+        ctx = CommandContext(engine=SimpleNamespace(get_last_prompt_capture=lambda: None))
+
+        result = await dispatcher.dispatch("/prompt verbose", ctx)
+
+        assert not result.success
+        assert result.output == "Usage: /prompt [raw]"
+
+    @pytest.mark.asyncio
+    async def test_help_lists_prompt_command(self):
+        dispatcher = CommandDispatcher()
+
+        result = await dispatcher.dispatch("/help", CommandContext())
+
+        assert result.success
+        assert "/prompt [raw]" in result.output
 
     @pytest.mark.asyncio
     async def test_subagents_command_lists_pool_state_and_transcript_path(self):

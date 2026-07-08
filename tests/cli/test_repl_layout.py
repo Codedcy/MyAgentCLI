@@ -30,7 +30,7 @@ from myagent.agent.runtime_status import RuntimeStatusModel
 from myagent.cli.chat_window import ChatWindowController
 from myagent.cli.commands import CommandDispatcher, CommandResult
 from myagent.cli.renderer import Renderer
-from myagent.cli.repl import REPLEngine
+from myagent.cli.repl import REPLEngine, SlashCompleter
 from myagent.cli.rich_capture import capture_renderable, sanitize_terminal_text
 from myagent.cli.status import AgentInspectorPane
 from myagent.cli.transcript import TranscriptBuffer
@@ -1124,6 +1124,8 @@ async def test_chat_goal_command_bypasses_pending_submission_queue():
     [
         ("/subagents", "Sub-agents:\n\n- sub-001 [running] Draft PRD"),
         ("/subagent sub-001", "Sub-agent sub-001:\nfull output"),
+        ("/prompt", "Last LLM prompt\nModel: deepseek-v4-pro"),
+        ("/prompt raw", '{"model": "deepseek-v4-pro"}'),
     ],
 )
 @pytest.mark.asyncio
@@ -1152,6 +1154,10 @@ async def test_subagent_status_commands_bypass_pending_submission_queue(
     assert [(entry.role, entry.plain_text) for entry in entries] == [
         ("system", output),
     ]
+
+
+def test_slash_completer_includes_prompt_command():
+    assert "prompt" in SlashCompleter.BUILTIN_COMMANDS
 
 
 @pytest.mark.asyncio

@@ -1,5 +1,7 @@
 """Tests for AgentEngine ReAct loop."""
 
+import copy
+import gc
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -145,6 +147,70 @@ async def test_react_loop_iterates_multiple_turns():
     assert len(texts) == 1
     assert texts[0].content == "File contents: hello"
     assert isinstance(events[-1], (Done, Error))
+
+
+@pytest.mark.asyncio
+async def test_react_loop_captures_last_prompt_passed_to_llm():
+    messages = [{"role": "user", "content": "inspect prompt"}]
+    tools = [
+        {
+            "type": "function",
+            "function": {"name": "read", "parameters": {"type": "object"}},
+        }
+    ]
+    gen = _async_gen([FakeTextDelta("done"), FakeDone(FakeUsage())])
+    llm = MagicMock()
+    llm.model = "deepseek-v4-pro"
+    llm.token_count = MagicMock(return_value=42)
+    captured_call_kwargs = {}
+
+    def complete(**kwargs):
+        captured_call_kwargs["messages"] = copy.deepcopy(kwargs["messages"])
+        captured_call_kwargs["tools"] = copy.deepcopy(kwargs["tools"])
+        captured_call_kwargs["thinking"] = kwargs["thinking"]
+        return gen
+
+    llm.complete = MagicMock(side_effect=complete)
+
+    builder = MagicMock()
+    builder.build = AsyncMock(return_value=LLMRequest(
+        system="system prompt", messages=messages, tools=tools
+    ))
+
+    engine = AgentEngine(
+        llm=llm,
+        context_builder=builder,
+    )
+    session = SimpleNamespace(id="test", get_recent_messages=lambda: [])
+
+    events = [event async for event in engine.run("inspect", session)]
+
+    assert any(isinstance(event, TextChunk) for event in events)
+    capture = engine.get_last_prompt_capture()
+    assert capture.model == "deepseek-v4-pro"
+    assert capture.thinking == "Think High"
+    assert capture.messages == captured_call_kwargs["messages"]
+    assert capture.tools == captured_call_kwargs["tools"]
+    assert capture.estimated_tokens == 42
+    assert capture.messages[0] == {"role": "system", "content": "system prompt"}
+    messages[0]["content"] = "mutated"
+    tools[0]["function"]["name"] = "write"
+    assert capture.messages[1]["content"] == "inspect prompt"
+    assert capture.tools[0]["function"]["name"] == "read"
+
+
+def test_prompt_token_estimation_skips_async_token_counter_without_warning(recwarn):
+    llm = SimpleNamespace(token_count=AsyncMock(return_value=42))
+    engine = AgentEngine(llm=llm)
+
+    assert engine._estimate_prompt_tokens([{"role": "user", "content": "hello"}]) is None
+    gc.collect()
+
+    assert not [
+        warning
+        for warning in recwarn
+        if "was never awaited" in str(warning.message)
+    ]
 
 
 @pytest.mark.asyncio

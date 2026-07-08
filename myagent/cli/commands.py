@@ -45,6 +45,7 @@ class CommandDispatcher:
         self._commands["compact"] = self._cmd_compact
         self._commands["history"] = self._cmd_history
         self._commands["export"] = self._cmd_export
+        self._commands["prompt"] = self._cmd_prompt
         self._commands["subagents"] = self._cmd_subagents
         self._commands["subagent"] = self._cmd_subagent
         self._commands["help"] = self._cmd_help
@@ -217,6 +218,7 @@ class CommandDispatcher:
             ),
             "  /export [markdown|json]               — Export current session transcript",
             "  /history [N]                          — Show recent conversation history",
+            "  /prompt [raw]                         - Show the last full LLM prompt",
             "  /help                                 — Show this help message",
             "  /exit, /quit                          — Exit MyAgentCLI",
             "",
@@ -224,6 +226,20 @@ class CommandDispatcher:
             "Use Esc or Ctrl+C to interrupt a running agent, Ctrl+D to exit.",
         ]
         return CommandResult(output="\n".join(lines))
+
+    async def _cmd_prompt(self, args: str, ctx: CommandContext) -> CommandResult:
+        mode = args.strip().lower()
+        if mode not in ("", "raw"):
+            return CommandResult(output="Usage: /prompt [raw]", success=False)
+
+        get_capture = getattr(ctx.engine, "get_last_prompt_capture", None)
+        capture = get_capture() if callable(get_capture) else None
+        if capture is None:
+            return CommandResult(output="No LLM prompt captured yet.")
+
+        if mode == "raw":
+            return CommandResult(output=capture.to_json())
+        return CommandResult(output=capture.to_text())
 
     async def _cmd_subagents(self, args: str, ctx: CommandContext) -> CommandResult:
         pool = self._subagent_pool(ctx)

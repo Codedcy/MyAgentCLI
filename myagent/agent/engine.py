@@ -8,6 +8,7 @@ Design doc reference: §二 核心 Agent 循环
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import time
@@ -15,6 +16,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
 
+from myagent.agent.prompt_capture import LastPromptCapture
 from myagent.llm.provider import Done as LLMDone
 from myagent.llm.provider import TextDelta as LLMTextDelta
 from myagent.llm.provider import ThinkingDelta as LLMThinkingDelta
@@ -141,6 +143,76 @@ class AgentEngine:
         self.interrupt_event = asyncio.Event()
         self._session_token_totals: dict[object, int] = {}
         self._pending_background_subagents: set[str] = set()
+        self._last_prompt_capture: LastPromptCapture | None = None
+
+    def get_last_prompt_capture(self) -> LastPromptCapture | None:
+        return self._last_prompt_capture
+
+    def last_prompt_text(self) -> str:
+        if self._last_prompt_capture is None:
+            return "No LLM prompt captured yet."
+        return self._last_prompt_capture.to_text()
+
+    def last_prompt_json(self) -> str:
+        if self._last_prompt_capture is None:
+            return "No LLM prompt captured yet."
+        return self._last_prompt_capture.to_json()
+
+    def _capture_last_prompt(
+        self,
+        *,
+        messages: list[dict],
+        tools: list[dict] | None,
+        thinking: str,
+    ) -> None:
+        model = self._current_model_name()
+        estimated_tokens = self._estimate_prompt_tokens(messages)
+        self._last_prompt_capture = LastPromptCapture.capture(
+            model=model,
+            thinking=thinking,
+            messages=messages,
+            tools=tools,
+            estimated_tokens=estimated_tokens,
+        )
+
+    def _current_model_name(self) -> str:
+        model = getattr(self.llm, "model", None)
+        if isinstance(model, str) and model:
+            return model
+
+        model_config = getattr(self.config, "model", None)
+        provider = getattr(model_config, "provider", None)
+        configured_model = getattr(model_config, "model", None)
+        if provider and configured_model:
+            return f"{provider}/{configured_model}"
+        if configured_model:
+            return str(configured_model)
+        return "unknown"
+
+    def _estimate_prompt_tokens(self, messages: list[dict]) -> int | None:
+        token_counter = getattr(self.llm, "token_count", None)
+        if not callable(token_counter):
+            return None
+        if inspect.iscoroutinefunction(token_counter):
+            return None
+        try:
+            token_count = token_counter(messages)
+        except Exception:
+            logger.exception(
+                "Prompt token estimation failed",
+                extra={
+                    "category": "error",
+                    "component": "llm",
+                    "context": "last_prompt_capture_token_count",
+                },
+            )
+            return None
+        if inspect.isawaitable(token_count):
+            close = getattr(token_count, "close", None)
+            if callable(close):
+                close()
+            return None
+        return token_count if isinstance(token_count, int) else None
 
     async def run(
         self, user_input: str, session, active_skill: str | None = None
@@ -408,6 +480,11 @@ class AgentEngine:
 
             # ── Stream LLM response ──────────────────────────────
             try:
+                self._capture_last_prompt(
+                    messages=messages,
+                    tools=tools_list,
+                    thinking=thinking_mode,
+                )
                 async for event in self.llm.complete(
                     messages=messages,
                     tools=tools_list,

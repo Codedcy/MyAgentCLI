@@ -1,6 +1,6 @@
 """Shared metadata for chat control commands."""
 
-IMMEDIATE_CHAT_COMMANDS = frozenset({"goal", "subagent", "subagents"})
+IMMEDIATE_CHAT_COMMANDS = frozenset({"goal", "prompt", "subagent", "subagents"})
 
 
 def slash_command_name(text: str) -> str:

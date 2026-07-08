@@ -38,7 +38,7 @@ class SlashCompleter(Completer):
     # Built-in slash commands
     BUILTIN_COMMANDS = [
         "mode", "goal", "skills", "dream", "clear", "compact", "history",
-        "export", "subagents", "subagent", "help", "exit", "quit",
+        "export", "prompt", "subagents", "subagent", "help", "exit", "quit",
     ]
 
     # Mode values for /mode completion
