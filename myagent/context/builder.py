@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Literal
 
 from myagent.agent.project import ProjectContext
@@ -64,7 +65,7 @@ class LLMRequest:
 class ContextBuilder:
     """Assembles six-layer context for LLM API calls."""
 
-    _MEMORY_CONTENT_LIMIT = 1200
+    _MEMORY_INDEX_LIMIT = 200
 
     # Base L0 system prompt template. {model_description} is dynamically
     # populated at build time from the configured model name.
@@ -112,14 +113,6 @@ tool usage limit."""
         self.memory_store = memory_store
         self.skill_registry = skill_registry
         self.config = config
-        # Session-scoped memory cache (gap-27, gap-r6-06):
-        # - Caches recall results to avoid repeated semantic searches
-        # - Detects topic drift by comparing current input to cached key
-        # - Auto-expires after DRIFT_TURN_LIMIT turns to ensure freshness
-        self._memory_cache: dict[str, list] = {}
-        self._cache_key: str | None = None
-        self._turn_count_since_refresh: int = 0
-        self._recent_inputs: list[str] = []  # sliding window for drift detection
 
     def _build_l0_system_prompt(self) -> str:
         """Build the L0 system prompt with the configured model name (gap-17-05).
@@ -160,70 +153,6 @@ tool usage limit."""
                 )
         return self._L0_TEMPLATE.format(model_description=model_desc)
 
-    # Number of turns after which the cache auto-refreshes regardless of drift
-    _CACHE_TURN_LIMIT = 20
-    # Minimum keyword overlap ratio to consider the topic unchanged
-    _DRIFT_OVERLAP_THRESHOLD = 0.30
-
-    @staticmethod
-    def _tokenize_for_cache(text: str) -> set[str]:
-        """Extract significant lowercase words from text for cache/drift logic."""
-        import re
-        tokens = set()
-        for word in re.split(r'[\s,;:.!?()\[\]{}"\']+', text.lower()):
-            word = word.strip()
-            # Skip stop words and very short tokens
-            if len(word) < 3:
-                continue
-            if word in {'the', 'and', 'for', 'you', 'can', 'that', 'this',
-                        'with', 'have', 'from', 'are', 'not', 'but', 'all',
-                        'was', 'has', 'had', 'its', 'his', 'her', 'our',
-                        'will', 'would', 'could', 'should', 'been', 'being',
-                        'did', 'does', 'just', 'like', 'than', 'then', 'also',
-                        'into', 'over', 'such', 'only', 'very', 'much', 'some',
-                        '这些', '那些', '这个', '那个', '什么', '怎么', '为什么',
-                        'when', 'where', 'what', 'which', 'about', '他们',
-                        '我们', '你们', '它们', '因为', '所以', '但是', '虽然',
-                        '已经', '可以', '需要', '应该', '可能', '或者', '以及'}:
-                continue
-            tokens.add(word)
-        return tokens
-
-    @staticmethod
-    def _compute_cache_key(query: str) -> str:
-        """Compute a stable cache key from significant keywords in the query.
-
-        gap-20-09: Uses a content hash instead of raw query[:100] prefix.
-        Extracts significant keywords, sorts them for determinism, then
-        computes a SHA256 hash prefix. This avoids false cache hits when
-        two different inputs share the same first 100 characters.
-        """
-        import hashlib
-        tokens = sorted(ContextBuilder._tokenize_for_cache(query))
-        # Use the sorted, de-duplicated keyword set as input to hash
-        key_material = "|".join(tokens) if tokens else query[:100]
-        return hashlib.sha256(key_material.encode("utf-8")).hexdigest()[:16]
-
-    def _detect_topic_drift(self, current_input: str) -> bool:
-        """Check if the current input represents a topic change from the cache key.
-
-        Uses keyword overlap ratio: if less than _DRIFT_OVERLAP_THRESHOLD of
-        significant words from the current input overlap with the cached key's
-        significant words, consider it a topic drift.
-        """
-        if not self._cache_key:
-            return True
-
-        current_tokens = self._tokenize_for_cache(current_input)
-        cached_tokens = self._tokenize_for_cache(self._cache_key)
-
-        if not current_tokens:
-            return False
-
-        overlap = len(current_tokens & cached_tokens)
-        ratio = overlap / len(current_tokens) if current_tokens else 0
-        return ratio < self._DRIFT_OVERLAP_THRESHOLD
-
     async def build(
         self,
         current_input: str,
@@ -236,47 +165,19 @@ tool usage limit."""
         # L3: Project context (spec §三 六层模型 L3)
         l3 = self._format_project_context(project_context)
 
-        # L4: Relevant memories — session-scoped cache with drift detection (gap-r6-06)
-        # (spec §三 六层模型 L4, §六 记忆生命周期)
-        l4 = ""
+        # L4: Memory index only. Memory bodies are loaded later via read tool.
+        # (spec section 3: L4 memory layer)
+        memory_index = ""
         if self.memory_store:
             try:
-                # Track recent inputs for drift detection
-                self._recent_inputs.append(current_input[:200])
-                if len(self._recent_inputs) > 5:
-                    self._recent_inputs = self._recent_inputs[-5:]
-
-                self._turn_count_since_refresh += 1
-                # Condition 1: No cache yet — initial load
-                should_refresh = (
-                    self._cache_key is None
-                    or self._turn_count_since_refresh >= self._CACHE_TURN_LIMIT
-                    or self._detect_topic_drift(current_input)
-                )
-
-                if should_refresh:
-                    query = current_input[:200]
-                    from myagent.memory.recall import recall
-                    memories = await recall(query, self.memory_store, limit=10)
-                    # gap-20-09: Use a hash-based cache key instead of raw
-                    # query[:100] prefix. This prevents false cache hits when
-                    # two different inputs share the same first 100 characters
-                    # but diverge in topic thereafter.
-                    cache_key = self._compute_cache_key(current_input)
-                    self._memory_cache[cache_key] = memories
-                    self._cache_key = cache_key
-                    self._turn_count_since_refresh = 0
-                else:
-                    memories = self._memory_cache.get(self._cache_key, [])
-
-                l4 = self._format_memories(memories)
+                memory_index = await self._format_memory_index()
             except Exception:
                 logger.exception(
-                    "Failed to load memory context layer",
+                    "Failed to load memory index context layer",
                     extra={
                         "category": "error",
                         "component": "memory",
-                        "context": "context_l4_memory_layer",
+                        "context": "context_l4_memory_index",
                     },
                 )
 
@@ -310,8 +211,8 @@ tool usage limit."""
         system_parts = [self._build_l0_system_prompt()]
         if l3:
             system_parts.append(f"## Project Context\n{l3}")
-        if l4:
-            system_parts.append(f"## Relevant Memories\n{l4}")
+        if memory_index:
+            system_parts.append(f"## Memory Index\n{memory_index}")
         if skill_content:
             system_parts.append(f"## Active Skill\n{skill_content}")
         if l2:
@@ -369,27 +270,68 @@ tool usage limit."""
             parts.append(f"Project guidance:\n{ctx.agent_md_content[:2000]}")
         return "\n".join(parts)
 
-    def _format_memories(self, memories) -> str:
-        if not memories:
-            return ""
-        lines = []
-        for m in memories:
-            description = f": {m.description}" if m.description else ""
-            lines.append(f"- **{m.name}**{description}")
-            excerpt = self._memory_excerpt(m.content)
-            if excerpt:
-                lines.append("  Content:")
-                for line in excerpt.splitlines():
-                    lines.append(f"  {line}" if line else "  ")
+    async def _format_memory_index(self) -> str:
+        rows = []
+        for scope, base_dir in (
+            ("project", getattr(self.memory_store, "project_dir", None)),
+            ("user", getattr(self.memory_store, "user_dir", None)),
+        ):
+            entries = await self.memory_store.list_all(scope)
+            for entry in entries:
+                file_path = Path(base_dir) / entry.file if base_dir else Path(entry.file)
+                rows.append(
+                    {
+                        "scope": scope,
+                        "name": entry.name,
+                        "type": entry.type,
+                        "description": entry.description,
+                        "path": str(file_path),
+                    }
+                )
+
+        lines = [
+            (
+                "The entries below are available memory files. Only index "
+                "metadata is loaded here; memory bodies are not loaded automatically."
+            ),
+            (
+                "Use the read tool with the Path value when a memory seems "
+                "relevant, before relying on its content."
+            ),
+            "",
+        ]
+        total = len(rows)
+        if not rows:
+            lines.append("No memories indexed yet.")
+            return "\n".join(lines)
+
+        limited_rows = rows[:self._MEMORY_INDEX_LIMIT]
+        lines.extend([
+            "| # | Scope | Name | Type | Description | Path |",
+            "|---|-------|------|------|-------------|------|",
+        ])
+        for index, row in enumerate(limited_rows, 1):
+            lines.append(
+                "| "
+                f"{index} | "
+                f"{row['scope']} | "
+                f"{self._escape_table_cell(row['name'])} | "
+                f"{self._escape_table_cell(row['type'])} | "
+                f"{self._escape_table_cell(row['description'])} | "
+                f"{self._escape_table_cell(row['path'])} |"
+            )
+
+        if total > self._MEMORY_INDEX_LIMIT:
+            lines.append("")
+            lines.append(
+                "Memory index truncated to "
+                f"{self._MEMORY_INDEX_LIMIT} of {total} entries."
+            )
         return "\n".join(lines)
 
-    def _memory_excerpt(self, content: str) -> str:
-        text = content.strip()
-        if not text:
-            return ""
-        if len(text) > self._MEMORY_CONTENT_LIMIT:
-            text = text[:self._MEMORY_CONTENT_LIMIT].rstrip() + "\n..."
-        return text
+    @staticmethod
+    def _escape_table_cell(value) -> str:
+        return str(value or "").replace("|", "\\|").replace("\n", " ")
 
     def _format_skills_index(self, skills) -> str:
         if not skills:

@@ -2,7 +2,7 @@
 
 MyAgentCLI 是一个个人 AI Agent CLI 助手，默认使用 DeepSeek V4 Pro，通过 LiteLLM 接入模型，提供固定聊天窗口、ReAct 工具循环、子 Agent、项目记忆、会话恢复和权限控制。
 
-项目仍处于 Alpha 阶段，但核心 CLI 工作流已经可用。本仓库当前自动化测试集覆盖 581 个用例。
+项目仍处于 Alpha 阶段，但核心 CLI 工作流已经可用。本仓库当前自动化测试集覆盖 583 个用例。
 
 ## 功能概览
 
@@ -13,7 +13,7 @@ MyAgentCLI 是一个个人 AI Agent CLI 助手，默认使用 DeepSeek V4 Pro，
 - **内置工具**：文件读写编辑、glob、grep、bash、Web fetch/search、MCP 资源/提示、记忆写入、配置调整、任务管理、子 Agent 管理。
 - **权限系统**：按 read/write/exec/network 分级确认，支持 allow/deny 规则和 `--dangerously-skip-permissions` 全信任模式。
 - **会话持久化**：保存 JSON 与 Markdown transcript，支持恢复、列出、导出历史会话。
-- **项目记忆**：项目级 `.myagent/memory/` 与用户级记忆共同参与上下文构建，支持 `MEMORY.md` 索引和后台 dream 整合。
+- **项目记忆**：项目级与用户级 `MEMORY.md` 索引会进入上下文，正文按需通过索引路径读取，支持后台 dream 整合。
 - **CLI Runtime UX**：权限申请显示在底部临时托盘，工具输出默认折叠并可用 F3 展开，Agent 思考时显示计时。
 - **结构化日志**：使用 JSON Lines 异步日志，覆盖 LLM、工具、Agent、MCP、系统、记忆和子 Agent 事件。
 

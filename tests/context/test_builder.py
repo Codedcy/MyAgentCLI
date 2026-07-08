@@ -6,7 +6,7 @@ import pytest
 
 from myagent.agent.project import ProjectContext
 from myagent.context.builder import ContextBuilder, Message
-from myagent.memory.store import MemoryStore
+from myagent.memory.store import MemoryEntry, MemoryStore
 
 
 class TestContextBuilder:
@@ -66,14 +66,88 @@ class TestContextBuilder:
         ]
 
     @pytest.mark.asyncio
-    async def test_build_includes_recalled_memory_content_for_new_session(
-        self, tmp_path, monkeypatch
+    async def test_build_includes_memory_index_without_loading_memory_body(self, tmp_path):
+        class FakeMemoryStore:
+            project_dir = tmp_path / "project" / ".myagent" / "memory"
+            user_dir = tmp_path / "home" / ".myagent" / "memory"
+
+            async def list_all(self, scope):
+                if scope == "project":
+                    return [
+                        MemoryEntry(
+                            name="dev-team",
+                            description="开发团队配置",
+                            type="project",
+                            file="dev-team.md",
+                        )
+                    ]
+                return [
+                    MemoryEntry(
+                        name="user-style",
+                        description="用户偏好",
+                        type="user",
+                        file="user-style.md",
+                    )
+                ]
+
+            async def read(self, name):
+                raise AssertionError("ContextBuilder must not load memory bodies")
+
+        tool_reg = MagicMock()
+        tool_reg.get_schemas = MagicMock(return_value=[])
+        skill_reg = MagicMock()
+        skill_reg.list_all = MagicMock(return_value=[])
+
+        builder = ContextBuilder(tool_reg, FakeMemoryStore(), skill_reg)
+        request = await builder.build(
+            "完全无关的问题",
+            [],
+            ProjectContext(project_type="python"),
+        )
+
+        assert "## Memory Index" in request.system
+        assert "Use the read tool with the Path value" in request.system
+        assert "dev-team" in request.system
+        assert "user-style" in request.system
+        assert str(FakeMemoryStore.project_dir / "dev-team.md") in request.system
+        assert str(FakeMemoryStore.user_dir / "user-style.md") in request.system
+        assert "ContextBuilder must not load memory bodies" not in request.system
+
+    @pytest.mark.asyncio
+    async def test_build_limits_memory_index_to_200_entries(self, tmp_path):
+        class FakeMemoryStore:
+            project_dir = tmp_path / "project" / ".myagent" / "memory"
+            user_dir = tmp_path / "home" / ".myagent" / "memory"
+
+            async def list_all(self, scope):
+                if scope != "project":
+                    return []
+                return [
+                    MemoryEntry(
+                        name=f"memory-{index:03d}",
+                        description=f"description {index}",
+                        type="project",
+                        file=f"memory-{index:03d}.md",
+                    )
+                    for index in range(205)
+                ]
+
+        tool_reg = MagicMock()
+        tool_reg.get_schemas = MagicMock(return_value=[])
+        skill_reg = MagicMock()
+        skill_reg.list_all = MagicMock(return_value=[])
+
+        builder = ContextBuilder(tool_reg, FakeMemoryStore(), skill_reg)
+        request = await builder.build("hello", [], ProjectContext())
+
+        assert "memory-199" in request.system
+        assert "memory-200" not in request.system
+        assert "Memory index truncated to 200 of 205 entries." in request.system
+
+    @pytest.mark.asyncio
+    async def test_build_includes_memory_index_for_new_session(
+        self, tmp_path
     ):
-        import importlib
-
-        recall_module = importlib.import_module("myagent.memory.recall")
-        monkeypatch.setattr(recall_module, "_get_embedding_model", lambda: None)
-
         tool_reg = MagicMock()
         tool_reg.get_schemas = MagicMock(return_value=[])
         skill_reg = MagicMock()
@@ -115,7 +189,8 @@ class TestContextBuilder:
             ProjectContext(project_type="python"),
         )
 
-        assert "## Relevant Memories" in request.system
+        assert "## Memory Index" in request.system
         assert "dev-team" in request.system
-        assert "`spawn_subagent`" in request.system
-        assert "\u4ea7\u54c1\u7ecf\u7406" in request.system
+        assert str(memory_store.project_dir / "dev-team.md") in request.system
+        assert "`spawn_subagent`" not in request.system
+        assert "\u4ea7\u54c1\u7ecf\u7406" not in request.system
