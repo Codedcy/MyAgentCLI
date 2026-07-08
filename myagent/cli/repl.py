@@ -353,6 +353,7 @@ class REPLEngine:
         if self._subagent_autocontinue_task is task:
             self._subagent_autocontinue_task = None
         if task.cancelled():
+            self._submit_next_queued_chat_input()
             return
         try:
             task.result()
@@ -369,6 +370,7 @@ class REPLEngine:
                     ),
                 },
             )
+        self._submit_next_queued_chat_input()
 
     def _create_layout_controller(self):
         if self._status_pane is None:
@@ -1076,6 +1078,8 @@ class REPLEngine:
         set_agent_running = getattr(self._chat_window, "set_agent_running", None)
         if callable(set_agent_running):
             set_agent_running(running)
+        if not running:
+            self._submit_next_queued_chat_input()
 
     def _submit_chat_input(self, text: str):
         if is_immediate_chat_command(text):

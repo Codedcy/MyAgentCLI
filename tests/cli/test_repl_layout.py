@@ -1361,6 +1361,82 @@ async def test_queued_chat_submission_autostarts_after_active_turn_finishes():
 
 
 @pytest.mark.asyncio
+async def test_idle_transition_drains_visible_chat_submission_queue():
+    class RecordingEngine:
+        def __init__(self):
+            self.interrupt_event = SimpleNamespace(clear=lambda: None)
+            self.started = []
+            self.started_event = asyncio.Event()
+
+        async def run(self, text, session, active_skill=None):
+            self.started.append(text)
+            self.started_event.set()
+            yield TextChunk("answer")
+            yield Done()
+
+    transcript = TranscriptBuffer()
+    chat = make_real_chat_controller(transcript=transcript)
+    engine = RecordingEngine()
+    repl = active_chat_repl(chat, engine=engine, renderer=Renderer())
+    repl._current_session = SimpleNamespace(id="session-1")
+
+    chat.set_agent_running(True)
+    chat._handle_submit("queued after final output")
+    queued_lines = chat._conversation_lines(height=5, width=80)
+    assert any("1. queued after final output" in line for line in queued_lines)
+
+    repl._set_chat_agent_running(False)
+
+    await asyncio.wait_for(engine.started_event.wait(), timeout=1.0)
+    await repl._drain_chat_submission_tasks(cancel=False)
+
+    assert engine.started == ["queued after final output"]
+    assert chat.pop_next_queued_submission() is None
+
+
+@pytest.mark.asyncio
+async def test_subagent_autocontinue_completion_drains_chat_submission_queue():
+    class RecordingEngine:
+        def __init__(self):
+            self.interrupt_event = SimpleNamespace(clear=lambda: None)
+            self.started = []
+            self.started_event = asyncio.Event()
+
+        async def run(self, text, session, active_skill=None):
+            self.started.append(text)
+            self.started_event.set()
+            yield TextChunk("answer")
+            yield Done()
+
+    transcript = TranscriptBuffer()
+    chat = make_real_chat_controller(transcript=transcript)
+    engine = RecordingEngine()
+    repl = active_chat_repl(chat, engine=engine, renderer=Renderer())
+    repl._current_session = SimpleNamespace(id="session-1")
+
+    async def noop():
+        return None
+
+    internal_task = asyncio.create_task(noop())
+    await internal_task
+    repl._chat_submission_tasks.add(internal_task)
+    repl._subagent_autocontinue_task = internal_task
+
+    chat.set_agent_running(True)
+    chat._handle_submit("queued behind autocontinue")
+    queued_lines = chat._conversation_lines(height=5, width=80)
+    assert any("1. queued behind autocontinue" in line for line in queued_lines)
+
+    repl._on_subagent_autocontinue_done(internal_task)
+
+    await asyncio.wait_for(engine.started_event.wait(), timeout=1.0)
+    await repl._drain_chat_submission_tasks(cancel=False)
+
+    assert engine.started == ["queued behind autocontinue"]
+    assert chat.pop_next_queued_submission() is None
+
+
+@pytest.mark.asyncio
 async def test_chat_submission_appends_user_turn_only_when_processing_starts():
     class ControlledEngine:
         def __init__(self):
